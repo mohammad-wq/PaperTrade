@@ -1,0 +1,552 @@
+"use client";
+
+import { useEffect, useState, useMemo } from "react";
+import {
+  ShoppingCart,
+  Plus,
+  Search,
+  FileText,
+  AlertCircle,
+  Trash2,
+  X,
+  Layers,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { listPurchaseInvoicesAction, createPurchaseInvoiceAction } from "@/actions/invoices";
+import { listPurchaseOrdersAction } from "@/actions/orders";
+import { listPartiesAction } from "@/actions/parties";
+import { listProductsAction } from "@/actions/products";
+import { format } from "date-fns";
+
+type PurchaseInvoiceRow = {
+  id: string;
+  invoiceNo: string;
+  date: Date;
+  status: string;
+  totalAmount: number;
+  supplier: { id: string; name: string; phone: string | null };
+  location: { id: string; name: string };
+  purchaseOrder?: { id: string; orderNo: string } | null;
+  items: Array<{
+    id: string;
+    quantity: number;
+    unitCost: number;
+    lineTotal: number;
+    product: { id: string; productNo: string; name: string; unit: string };
+  }>;
+};
+
+type PartyOption = {
+  id: string;
+  name: string;
+  type: string;
+};
+
+type ProductOption = {
+  id: string;
+  productNo: string;
+  name: string;
+  unit: string;
+  costPrice: number;
+};
+
+type POOption = {
+  id: string;
+  orderNo: string;
+  supplierId: string;
+  locationId: string;
+  status: string;
+};
+
+type LineItem = {
+  productId: string;
+  quantity: number;
+  unitCost: number;
+};
+
+export default function PurchasesPage() {
+  const [invoices, setInvoices] = useState<PurchaseInvoiceRow[]>([]);
+  const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
+  const [products, setProducts] = useState<ProductOption[]>([]);
+  const [pos, setPos] = useState<POOption[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+
+  // Form state
+  const [supplierId, setSupplierId] = useState("");
+  const [locationId, setLocationId] = useState("");
+  const [purchaseOrderId, setPurchaseOrderId] = useState("");
+  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+  const [items, setItems] = useState<LineItem[]>([{ productId: "", quantity: 1, unitCost: 0 }]);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const [invRes, partyRes, prodRes, poRes] = await Promise.all([
+        listPurchaseInvoicesAction(),
+        listPartiesAction(),
+        listProductsAction(),
+        listPurchaseOrdersAction(),
+      ]);
+
+      if (invRes.success && invRes.data) {
+        setInvoices(invRes.data as PurchaseInvoiceRow[]);
+      }
+      if (partyRes.success && partyRes.data) {
+        const suppList = (partyRes.data as PartyOption[]).filter((p) => p.type === "SUPPLIER");
+        setSuppliers(suppList);
+      }
+      if (prodRes.success && prodRes.data) {
+        setProducts(prodRes.data as ProductOption[]);
+      }
+      if (poRes.success && poRes.data) {
+        setPos(poRes.data as POOption[]);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadData();
+  }, []);
+
+  const locations = useMemo(() => {
+    const map = new Map<string, string>();
+    invoices.forEach((i) => map.set(i.location.id, i.location.name));
+    if (map.size === 0) {
+      map.set("loc-shop", "Shop");
+      map.set("loc-warehouse", "Warehouse");
+    }
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [invoices]);
+
+  const filteredInvoices = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return invoices;
+    return invoices.filter(
+      (inv) =>
+        inv.invoiceNo.toLowerCase().includes(q) ||
+        inv.supplier.name.toLowerCase().includes(q) ||
+        inv.location.name.toLowerCase().includes(q),
+    );
+  }, [invoices, query]);
+
+  const totalPurchases = useMemo(
+    () => filteredInvoices.reduce((sum, i) => sum + i.totalAmount, 0),
+    [filteredInvoices],
+  );
+
+  const invoiceSubtotal = useMemo(
+    () => items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0),
+    [items],
+  );
+
+  function handleProductChange(index: number, pId: string) {
+    const product = products.find((p) => p.id === pId);
+    const updated = [...items];
+    updated[index].productId = pId;
+    if (product) {
+      updated[index].unitCost = product.costPrice || 0;
+    }
+    setItems(updated);
+  }
+
+  function handleQuantityChange(index: number, qty: number) {
+    const updated = [...items];
+    updated[index].quantity = qty;
+    setItems(updated);
+  }
+
+  function handleCostChange(index: number, cost: number) {
+    const updated = [...items];
+    updated[index].unitCost = cost;
+    setItems(updated);
+  }
+
+  function addItem() {
+    setItems([...items, { productId: "", quantity: 1, unitCost: 0 }]);
+  }
+
+  function removeItem(index: number) {
+    if (items.length <= 1) return;
+    setItems(items.filter((_, idx) => idx !== index));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setFormError(null);
+
+    if (!supplierId) {
+      setFormError("Please select a supplier.");
+      return;
+    }
+    if (!locationId) {
+      setFormError("Please select a receiving location.");
+      return;
+    }
+    if (items.some((i) => !i.productId || i.quantity <= 0)) {
+      setFormError("All line items must have a valid product and quantity > 0.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await createPurchaseInvoiceAction({
+        supplierId,
+        locationId,
+        purchaseOrderId: purchaseOrderId || null,
+        date: new Date(invoiceDate),
+        notes,
+        items: items.map((i) => ({
+          productId: i.productId,
+          quantity: i.quantity,
+          unitCost: i.unitCost,
+        })),
+      });
+
+      if (!res.success) {
+        setFormError(res.error || "Failed to record purchase invoice.");
+      } else {
+        setIsDialogOpen(false);
+        setItems([{ productId: "", quantity: 1, unitCost: 0 }]);
+        setNotes("");
+        setPurchaseOrderId("");
+        await loadData();
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Page Header */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <ShoppingCart className="h-5 w-5 text-amber-700" />
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Purchase Invoices</h1>
+          </div>
+          <p className="text-sm text-slate-600">
+            Receive paper shipments from suppliers, credit payables, and increase warehouse/shop stock.
+          </p>
+        </div>
+
+        <Button
+          onClick={() => {
+            if (!locationId && locations.length > 0) setLocationId(locations[0].id);
+            setIsDialogOpen(true);
+          }}
+          className="bg-amber-800 text-white hover:bg-amber-700 shadow-sm"
+        >
+          <Plus className="mr-1.5 h-4 w-4" />
+          Receive Purchase
+        </Button>
+      </div>
+
+      {/* Summary Banner */}
+      <Card className="border-amber-900/15 bg-white/80">
+        <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Purchases Amount</p>
+            <p className="text-2xl font-bold text-slate-900 mt-0.5">PKR {totalPurchases.toLocaleString()}</p>
+          </div>
+          <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900 self-start sm:self-auto">
+            {filteredInvoices.length} Supplier Invoices
+          </span>
+        </CardContent>
+      </Card>
+
+      {/* Search Filter */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search by invoice number, supplier, or location..."
+          className="pl-9 bg-white"
+        />
+      </div>
+
+      {/* Invoices List / Responsive Cards */}
+      {loading ? (
+        <Card>
+          <CardContent className="py-12 text-center text-slate-500 text-sm">
+            Loading purchase invoices...
+          </CardContent>
+        </Card>
+      ) : filteredInvoices.length === 0 ? (
+        <Card>
+          <CardContent className="py-12 text-center text-slate-500 text-sm">
+            No purchase invoices recorded yet.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {filteredInvoices.map((inv) => (
+            <Card key={inv.id} className="border-amber-950/10 hover:shadow-md transition-shadow bg-white flex flex-col justify-between">
+              <CardHeader className="pb-3 border-b border-slate-100">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base font-bold text-slate-900">{inv.invoiceNo}</CardTitle>
+                    <p className="text-xs font-medium text-amber-800">{inv.supplier.name}</p>
+                    {inv.supplier.phone && (
+                      <p className="text-[11px] text-slate-400">{inv.supplier.phone}</p>
+                    )}
+                  </div>
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                    {inv.status}
+                  </span>
+                </div>
+              </CardHeader>
+
+              <CardContent className="py-3 space-y-2 text-xs">
+                <div className="flex justify-between text-slate-600">
+                  <span>Received at:</span>
+                  <span className="font-semibold text-slate-800">{inv.location.name}</span>
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>Date:</span>
+                  <span>{format(new Date(inv.date), "dd MMM yyyy")}</span>
+                </div>
+                {inv.purchaseOrder && (
+                  <div className="flex justify-between text-slate-600">
+                    <span>Linked PO:</span>
+                    <span className="font-semibold text-emerald-800">{inv.purchaseOrder.orderNo}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-slate-600">
+                  <span>Items:</span>
+                  <span>{inv.items.length} product(s)</span>
+                </div>
+                <div className="flex justify-between border-t border-slate-100 pt-2 font-bold text-sm">
+                  <span>Total Amount:</span>
+                  <span className="text-slate-900">PKR {inv.totalAmount.toLocaleString()}</span>
+                </div>
+              </CardContent>
+
+              <div className="p-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end rounded-b-xl">
+                <Button
+                  asChild
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs border-slate-200 text-slate-700 hover:bg-white"
+                >
+                  <a href={`/api/pdf/purchase-invoice/${inv.id}`} target="_blank" rel="noreferrer">
+                    <FileText className="mr-1 h-3.5 w-3.5 text-amber-700" />
+                    Download PDF
+                  </a>
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* New Purchase Invoice Modal */}
+      {isDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs overflow-y-auto">
+          <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Record Purchase Invoice</h2>
+                <p className="text-xs text-slate-500">Receive stock from paper mill/supplier and post to payables</p>
+              </div>
+              <button
+                onClick={() => setIsDialogOpen(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {formError && (
+              <div className="mt-4 rounded-lg bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
+                <div className="space-y-1">
+                  <Label htmlFor="supplier" className="text-xs font-semibold">Supplier *</Label>
+                  <select
+                    id="supplier"
+                    value={supplierId}
+                    onChange={(e) => setSupplierId(e.target.value)}
+                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                    required
+                  >
+                    <option value="">Select supplier</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="location" className="text-xs font-semibold">Receiving Location *</Label>
+                  <select
+                    id="location"
+                    value={locationId}
+                    onChange={(e) => setLocationId(e.target.value)}
+                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                    required
+                  >
+                    <option value="">Select location</option>
+                    {locations.map((loc) => (
+                      <option key={loc.id} value={loc.id}>
+                        {loc.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="linked-po" className="text-xs font-semibold">Link to PO (Optional)</Label>
+                  <select
+                    id="linked-po"
+                    value={purchaseOrderId}
+                    onChange={(e) => setPurchaseOrderId(e.target.value)}
+                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                  >
+                    <option value="">No PO link</option>
+                    {pos.map((po) => (
+                      <option key={po.id} value={po.id}>
+                        {po.orderNo} ({po.status})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="pdate" className="text-xs font-semibold">Date *</Label>
+                  <Input
+                    id="pdate"
+                    type="date"
+                    value={invoiceDate}
+                    onChange={(e) => setInvoiceDate(e.target.value)}
+                    className="text-xs"
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Line items */}
+              <div className="space-y-2 border-t border-slate-100 pt-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">Stock Arrival Items</Label>
+                  <Button type="button" variant="outline" size="sm" onClick={addItem} className="h-7 text-xs">
+                    <Plus className="mr-1 h-3 w-3" /> Add Product
+                  </Button>
+                </div>
+
+                <div className="space-y-3">
+                  {items.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className="grid gap-2 sm:grid-cols-[1fr_100px_120px_100px_36px] items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50"
+                    >
+                      <div>
+                        <select
+                          value={item.productId}
+                          onChange={(e) => handleProductChange(idx, e.target.value)}
+                          className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+                          required
+                        >
+                          <option value="">Select paper item</option>
+                          {products.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.productNo} - {p.name} ({p.unit})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <Input
+                          type="number"
+                          min="1"
+                          value={item.quantity}
+                          onChange={(e) => handleQuantityChange(idx, Number(e.target.value) || 1)}
+                          className="h-8 text-xs text-right"
+                          placeholder="Qty"
+                          required
+                        />
+                      </div>
+
+                      <div>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={item.unitCost}
+                          onChange={(e) => handleCostChange(idx, Number(e.target.value) || 0)}
+                          className="h-8 text-xs text-right"
+                          placeholder="Unit Cost"
+                          required
+                        />
+                      </div>
+
+                      <div className="text-right text-xs font-semibold text-slate-800">
+                        PKR {(item.quantity * item.unitCost).toFixed(2)}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => removeItem(idx)}
+                        disabled={items.length <= 1}
+                        className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:text-rose-600 disabled:opacity-30"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Subtotal & Notes */}
+              <div className="border-t border-slate-100 pt-3 flex flex-col sm:flex-row justify-between items-start gap-4">
+                <div className="w-full sm:max-w-xs space-y-1">
+                  <Label htmlFor="pnotes" className="text-xs">Supplier Notes / Bill Reference</Label>
+                  <Input
+                    id="pnotes"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="e.g. Mill consignment #442"
+                    className="text-xs"
+                  />
+                </div>
+
+                <div className="w-full sm:w-60 rounded-xl bg-amber-50/50 p-3 border border-amber-100 space-y-1 text-right">
+                  <p className="text-xs text-amber-800">Purchase Grand Total</p>
+                  <p className="text-xl font-bold text-amber-950">PKR {invoiceSubtotal.toLocaleString()}</p>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
+                <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs">
+                  {submitting ? "Processing..." : "Save & Receive Stock"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
