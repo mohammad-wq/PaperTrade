@@ -57,7 +57,7 @@ export function SessionSecurityGuard() {
       });
     }
 
-    // 1. Cross-tab communication for coordinated logout handling
+    // 1. Cross-tab communication for coordinated logout handling & peer session discovery
     if (typeof window !== "undefined" && "BroadcastChannel" in window) {
       try {
         channel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
@@ -75,6 +75,16 @@ export function SessionSecurityGuard() {
                 window.location.href = `/login?reason=${data.reason || "expired"}`;
               });
             }
+          } else if (data.type === "PING_SESSION") {
+            // Another tab is querying if a legitimate browser session is active
+            if (sessionStorage.getItem(SESSION_STORAGE_KEY) === "active") {
+              channel?.postMessage({ type: "PONG_SESSION" });
+            }
+          } else if (data.type === "PONG_SESSION") {
+            // An active peer tab confirmed the session is alive in this browser session
+            try {
+              sessionStorage.setItem(SESSION_STORAGE_KEY, "active");
+            } catch {}
           }
         };
       } catch {
@@ -82,14 +92,25 @@ export function SessionSecurityGuard() {
       }
     }
 
-    // Ensure the current browser tab owns a local marker so duplicate tabs can share
-    // the same session state without triggering erroneous expiry on refresh.
+    // Check if the current browser tab owns a local session marker.
+    // When the browser is closed, all sessionStorage is wiped.
     const hasLocalMarker = typeof window !== "undefined" && sessionStorage.getItem(SESSION_STORAGE_KEY) === "active";
 
     if (!hasLocalMarker) {
-      try {
-        sessionStorage.setItem(SESSION_STORAGE_KEY, "active");
-      } catch {}
+      if (channel) {
+        // Query other open tabs in the same browser session
+        channel.postMessage({ type: "PING_SESSION" });
+        setTimeout(() => {
+          if (!isSubscribed || isLoggingOutRef.current) return;
+          const markerFound = sessionStorage.getItem(SESSION_STORAGE_KEY) === "active";
+          if (!markerFound) {
+            handleExpire("browser_closed");
+          }
+        }, 500);
+      } else {
+        // BroadcastChannel unavailable: expire cold session without marker
+        handleExpire("browser_closed");
+      }
     }
 
     // 2. Sleep / Lid-Close Detection via Web Worker Heartbeat

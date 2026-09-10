@@ -425,7 +425,9 @@ export default function PurchaseOrdersPage() {
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="posupplier" className="text-xs font-semibold">Supplier *</Label>
+                    <Label htmlFor="posupplier" className="text-xs font-semibold">
+                      Supplier <span className="text-rose-500">*</span>
+                    </Label>
                     {selectedSupplier && (
                       <span className="text-[11px] text-slate-500">
                         Payable: <strong className="text-amber-800">PKR {Number(selectedSupplier.balance || 0).toLocaleString()}</strong>
@@ -449,7 +451,9 @@ export default function PurchaseOrdersPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="polocation" className="text-xs font-semibold">Destination Location *</Label>
+                  <Label htmlFor="polocation" className="text-xs font-semibold">
+                    Destination Location <span className="text-rose-500">*</span>
+                  </Label>
                   <select
                     id="polocation"
                     value={locationId}
@@ -467,7 +471,9 @@ export default function PurchaseOrdersPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="podate" className="text-xs font-semibold">Order Date *</Label>
+                  <Label htmlFor="podate" className="text-xs font-semibold">
+                    Order Date <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="podate"
                     type="date"
@@ -555,7 +561,9 @@ export default function PurchaseOrdersPage() {
               {/* Subtotal & Notes */}
               <div className="border-t border-slate-100 pt-3 flex flex-col sm:flex-row justify-between items-start gap-4">
                 <div className="w-full sm:max-w-xs space-y-1">
-                  <Label htmlFor="ponotes" className="text-xs">Instructions / Notes</Label>
+                  <Label htmlFor="ponotes" className="text-xs">
+                    Instructions / Notes <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                  </Label>
                   <Input
                     id="ponotes"
                     value={notes}

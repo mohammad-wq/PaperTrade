@@ -13,7 +13,10 @@ import { canPerformAction } from "@/lib/auth/permissions";
 
 export async function listSaleInvoicesAction() {
   return runAction("sales.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "sales", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view sales invoices.");
+    }
     const invoices = await prisma.saleInvoice.findMany({
       orderBy: { date: "desc" },
       include: {
@@ -316,7 +319,10 @@ export async function createSaleInvoiceAction(raw: unknown) {
 
 export async function listPurchaseInvoicesAction() {
   return runAction("purchases.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "purchases", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view purchase invoices.");
+    }
     const invoices = await prisma.purchaseInvoice.findMany({
       orderBy: { date: "desc" },
       include: {

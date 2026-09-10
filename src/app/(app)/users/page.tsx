@@ -381,7 +381,9 @@ export default function UsersPage() {
             <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-1">
-                  <Label htmlFor="uname" className="text-xs font-semibold">Full Name *</Label>
+                  <Label htmlFor="uname" className="text-xs font-semibold">
+                    Full Name <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="uname"
                     value={name}
@@ -393,7 +395,9 @@ export default function UsersPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="urole" className="text-xs font-semibold">Account Role *</Label>
+                  <Label htmlFor="urole" className="text-xs font-semibold">
+                    Account Role <span className="text-rose-500">*</span>
+                  </Label>
                   <select
                     id="urole"
                     value={role}
@@ -409,7 +413,9 @@ export default function UsersPage() {
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-1">
-                  <Label htmlFor="uemail" className="text-xs font-semibold">Email Address *</Label>
+                  <Label htmlFor="uemail" className="text-xs font-semibold">
+                    Email Address <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="uemail"
                     type="email"
@@ -422,7 +428,9 @@ export default function UsersPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="upass" className="text-xs font-semibold">Password *</Label>
+                  <Label htmlFor="upass" className="text-xs font-semibold">
+                    Password <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="upass"
                     type="password"

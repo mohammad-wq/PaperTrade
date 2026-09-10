@@ -170,7 +170,9 @@ export default function StorageChargesPage() {
 
             <form onSubmit={handleSubmit} className="space-y-4 text-xs">
               <div className="space-y-1">
-                <Label htmlFor="stloc" className="text-xs font-semibold">Warehouse Location *</Label>
+                <Label htmlFor="stloc" className="text-xs font-semibold">
+                  Warehouse Location <span className="text-rose-500">*</span>
+                </Label>
                 <select
                   id="stloc"
                   value={locationId}
@@ -188,7 +190,9 @@ export default function StorageChargesPage() {
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <Label htmlFor="weight" className="text-xs font-semibold">Weight in Tonnes *</Label>
+                  <Label htmlFor="weight" className="text-xs font-semibold">
+                    Weight in Tonnes <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="weight"
                     type="number"
@@ -203,7 +207,9 @@ export default function StorageChargesPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="rate" className="text-xs font-semibold">Rate per Tonne (PKR) *</Label>
+                  <Label htmlFor="rate" className="text-xs font-semibold">
+                    Rate per Tonne (PKR) <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="rate"
                     type="number"
@@ -220,7 +226,9 @@ export default function StorageChargesPage() {
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <Label htmlFor="pstart" className="text-xs font-semibold">Period Start *</Label>
+                  <Label htmlFor="pstart" className="text-xs font-semibold">
+                    Period Start <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="pstart"
                     type="date"
@@ -232,7 +240,9 @@ export default function StorageChargesPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="pend" className="text-xs font-semibold">Period End *</Label>
+                  <Label htmlFor="pend" className="text-xs font-semibold">
+                    Period End <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="pend"
                     type="date"

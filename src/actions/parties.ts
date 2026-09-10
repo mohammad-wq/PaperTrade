@@ -140,6 +140,9 @@ export async function softDeletePartyAction(raw: unknown) {
 export async function adjustStockAction(raw: unknown) {
   return runAction("inventory.adjust", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions)) {
+      throw userError("You do not have permission to adjust inventory stock.");
+    }
     const input = parseInput(stockAdjustmentSchema, raw);
 
     const currentStock = await getStockOnHand(input.productId, input.locationId);
@@ -172,6 +175,9 @@ export async function adjustStockAction(raw: unknown) {
 export async function transferStockAction(raw: unknown) {
   return runAction("inventory.transfer", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions)) {
+      throw userError("You do not have permission to transfer inventory stock.");
+    }
     const input = parseInput(stockTransferSchema, raw);
 
     const fromStock = await getStockOnHand(input.productId, input.fromLocationId);

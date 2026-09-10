@@ -391,7 +391,9 @@ export default function PaymentsPage() {
 
             <form onSubmit={handleExpenseSubmit} className="mt-4 space-y-4">
               <div className="space-y-1">
-                <Label htmlFor="expense-description" className="text-xs font-semibold">Expense Description *</Label>
+                <Label htmlFor="expense-description" className="text-xs font-semibold">
+                  Expense Description <span className="text-rose-500">*</span>
+                </Label>
                 <Input
                   id="expense-description"
                   value={expenseDescription}
@@ -404,7 +406,9 @@ export default function PaymentsPage() {
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <Label htmlFor="expense-amount" className="text-xs font-semibold">Amount *</Label>
+                  <Label htmlFor="expense-amount" className="text-xs font-semibold">
+                    Amount (PKR) <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="expense-amount"
                     type="number"
@@ -419,7 +423,9 @@ export default function PaymentsPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="expense-method" className="text-xs font-semibold">Payment Method</Label>
+                  <Label htmlFor="expense-method" className="text-xs font-semibold">
+                    Payment Method <span className="text-rose-500">*</span>
+                  </Label>
                   <select
                     id="expense-method"
                     value={expenseMethod}
@@ -435,7 +441,9 @@ export default function PaymentsPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="expense-date" className="text-xs font-semibold">Expense Date *</Label>
+                <Label htmlFor="expense-date" className="text-xs font-semibold">
+                  Expense Date <span className="text-rose-500">*</span>
+                </Label>
                 <Input
                   id="expense-date"
                   type="date"
@@ -485,7 +493,9 @@ export default function PaymentsPage() {
 
             <form onSubmit={handleSubmit} className="mt-4 space-y-4">
               <div className="space-y-1">
-                <Label htmlFor="payparty" className="text-xs font-semibold">Party (Customer or Supplier) *</Label>
+                <Label htmlFor="payparty" className="text-xs font-semibold">
+                  Party (Customer or Supplier) <span className="text-rose-500">*</span>
+                </Label>
                 <select
                   id="payparty"
                   value={partyId}
@@ -516,7 +526,7 @@ export default function PaymentsPage() {
               {candidateInvoices.length > 0 && (
                 <div className="space-y-1">
                   <Label htmlFor="payinvoice" className="text-xs font-semibold">
-                    Link to Specific Invoice (Optional)
+                    Link to Specific Invoice <span className="text-slate-400 font-normal text-xs">(Optional)</span>
                   </Label>
                   <select
                     id="payinvoice"
@@ -536,7 +546,9 @@ export default function PaymentsPage() {
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <Label htmlFor="payamount" className="text-xs font-semibold">Amount (PKR) *</Label>
+                  <Label htmlFor="payamount" className="text-xs font-semibold">
+                    Amount (PKR) <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="payamount"
                     type="number"
@@ -551,7 +563,9 @@ export default function PaymentsPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="paymethod" className="text-xs font-semibold">Payment Method *</Label>
+                  <Label htmlFor="paymethod" className="text-xs font-semibold">
+                    Payment Method <span className="text-rose-500">*</span>
+                  </Label>
                   <select
                     id="paymethod"
                     value={method}
@@ -568,7 +582,9 @@ export default function PaymentsPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="paydate" className="text-xs font-semibold">Payment Date *</Label>
+                <Label htmlFor="paydate" className="text-xs font-semibold">
+                  Payment Date <span className="text-rose-500">*</span>
+                </Label>
                 <Input
                   id="paydate"
                   type="date"
@@ -580,7 +596,9 @@ export default function PaymentsPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="paynotes" className="text-xs">Notes / Cheque Number</Label>
+                <Label htmlFor="paynotes" className="text-xs">
+                  Notes / Cheque Number <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                </Label>
                 <Input
                   id="paynotes"
                   value={notes}

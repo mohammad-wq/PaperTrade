@@ -67,11 +67,23 @@ export async function calculateProfitLoss(params?: { startDate?: string; endDate
   for (const entry of expenseEntries) {
     const net = Number(entry.debit) - Number(entry.credit);
     if (net !== 0) {
-      const category = entry.referenceType === "STORAGE_CHARGE"
-        ? "Warehouse Storage Charges"
-        : entry.description?.includes("Labour")
-        ? "Handling & Labour Charges"
-        : "Other Operating Expenses";
+      let category = "Other Operating Expenses";
+      if (entry.referenceType === "STORAGE_CHARGE") {
+        category = "Warehouse Storage Charges";
+      } else if (entry.description) {
+        const colonIndex = entry.description.indexOf(":");
+        if (colonIndex > 0 && colonIndex < 35) {
+          const rawCategory = entry.description.substring(0, colonIndex).trim();
+          const normalized = rawCategory
+            .toLowerCase()
+            .split(/[\s_]+/)
+            .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(" ");
+          category = normalized || "Other Operating Expenses";
+        } else if (entry.description.toLowerCase().includes("labour")) {
+          category = "Handling & Labour Charges";
+        }
+      }
       expenseCategories.set(category, (expenseCategories.get(category) ?? 0) + net);
     }
   }

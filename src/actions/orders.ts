@@ -53,6 +53,7 @@ async function createDeliveryOrderStockMovements(
     locationId: string;
     destinationLocationId?: string | null;
     deliveredTo?: string | null;
+    saleInvoiceId?: string | null;
     items: Array<{ productId: string; quantity: number }>;
   },
 ) {
@@ -95,6 +96,37 @@ async function createDeliveryOrderStockMovements(
     return;
   }
 
+  // Check if stock has ALREADY been deducted by a linked Sale Invoice
+  if (order.saleInvoiceId) {
+    const existingSaleMovement = await tx.stockMovement.findFirst({
+      where: {
+        referenceType: "SALE_INVOICE",
+        referenceId: order.saleInvoiceId,
+      },
+    });
+    if (existingSaleMovement) {
+      // Stock already deducted upon sale invoice creation; avoid duplicate DELIVERY_OUT
+      return;
+    }
+  }
+
+  // Also check reverse link if SaleInvoice points to this delivery order
+  const linkedSaleInvoice = await tx.saleInvoice.findFirst({
+    where: { deliveryOrderId: order.id },
+    select: { id: true },
+  });
+  if (linkedSaleInvoice) {
+    const existingSaleMovement = await tx.stockMovement.findFirst({
+      where: {
+        referenceType: "SALE_INVOICE",
+        referenceId: linkedSaleInvoice.id,
+      },
+    });
+    if (existingSaleMovement) {
+      return;
+    }
+  }
+
   for (const item of order.items) {
     await tx.stockMovement.create({
       data: {
@@ -113,7 +145,10 @@ async function createDeliveryOrderStockMovements(
 
 export async function listPurchaseOrdersAction() {
   return runAction("orders.po.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "purchase-orders", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view purchase orders.");
+    }
     const orders = await prisma.purchaseOrder.findMany({
       orderBy: { date: "desc" },
       include: {
@@ -207,7 +242,7 @@ export async function updatePurchaseOrderStatusAction(raw: unknown) {
     return prisma.$transaction(async (tx) => {
       const order = await tx.purchaseOrder.findUnique({
         where: { id },
-        include: { items: true },
+        include: { items: true, invoices: true },
       });
 
       if (!order) {
@@ -215,19 +250,33 @@ export async function updatePurchaseOrderStatusAction(raw: unknown) {
       }
 
       if (status === PurchaseOrderStatus.FULFILLED && order.status !== PurchaseOrderStatus.FULFILLED) {
-        for (const item of order.items) {
-          await tx.stockMovement.create({
-            data: {
-              productId: item.productId,
-              locationId: order.locationId,
-              type: StockMovementType.PURCHASE_IN,
-              quantity: item.quantity,
-              referenceType: "PURCHASE_ORDER",
-              referenceId: order.id,
-              createdById: session.user.id,
-              notes: `Purchase Order fulfilled via ${order.orderNo}`,
-            },
-          });
+        const linkedInvoiceIds = order.invoices.map((inv: any) => inv.id);
+        const existingStockMovement = await tx.stockMovement.findFirst({
+          where: {
+            OR: [
+              { referenceType: "PURCHASE_ORDER", referenceId: order.id },
+              ...(linkedInvoiceIds.length > 0
+                ? [{ referenceType: "PURCHASE_INVOICE", referenceId: { in: linkedInvoiceIds } }]
+                : []),
+            ],
+          },
+        });
+
+        if (!existingStockMovement) {
+          for (const item of order.items) {
+            await tx.stockMovement.create({
+              data: {
+                productId: item.productId,
+                locationId: order.locationId,
+                type: StockMovementType.PURCHASE_IN,
+                quantity: item.quantity,
+                referenceType: "PURCHASE_ORDER",
+                referenceId: order.id,
+                createdById: session.user.id,
+                notes: `Purchase Order fulfilled via ${order.orderNo}`,
+              },
+            });
+          }
         }
       }
 
@@ -243,7 +292,10 @@ export async function updatePurchaseOrderStatusAction(raw: unknown) {
 
 export async function listDeliveryOrdersAction() {
   return runAction("orders.do.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "delivery-orders", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view delivery orders.");
+    }
     const orders = await prisma.deliveryOrder.findMany({
       orderBy: { date: "desc" },
       include: {
@@ -282,16 +334,31 @@ export async function createDeliveryOrderAction(raw: unknown) {
     return prisma.$transaction(async (tx) => {
       // If creating directly with DISPATCHED status, verify stock first
       if (input.status === DeliveryOrderStatus.DISPATCHED) {
-        for (const item of input.items) {
-          const available = await getStockOnHand(item.productId, input.locationId);
-          if (available < Number(item.quantity)) {
-            const product = await tx.product.findUnique({
-              where: { id: item.productId },
-              select: { name: true, productNo: true },
-            });
-            throw userError(
-              `Insufficient stock for "${product?.productNo ?? ""} ${product?.name ?? ""}". Available: ${available}, Required: ${item.quantity}.`,
-            );
+        let alreadyDeducted = false;
+        if (input.saleInvoiceId) {
+          const existingSaleMovement = await tx.stockMovement.findFirst({
+            where: {
+              referenceType: "SALE_INVOICE",
+              referenceId: input.saleInvoiceId,
+            },
+          });
+          if (existingSaleMovement) {
+            alreadyDeducted = true;
+          }
+        }
+
+        if (!alreadyDeducted) {
+          for (const item of input.items) {
+            const available = await getStockOnHand(item.productId, input.locationId);
+            if (available < Number(item.quantity)) {
+              const product = await tx.product.findUnique({
+                where: { id: item.productId },
+                select: { name: true, productNo: true },
+              });
+              throw userError(
+                `Insufficient stock for "${product?.productNo ?? ""} ${product?.name ?? ""}". Available: ${available}, Required: ${item.quantity}.`,
+              );
+            }
           }
         }
       }
@@ -328,6 +395,7 @@ export async function createDeliveryOrderAction(raw: unknown) {
           locationId: order.locationId,
           destinationLocationId: order.destinationLocationId,
           deliveredTo: order.deliveredTo,
+          saleInvoiceId: order.saleInvoiceId,
           items: input.items.map((item) => ({
             productId: item.productId,
             quantity: Number(item.quantity),
@@ -378,12 +446,44 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
         order.status !== DeliveryOrderStatus.DISPATCHED &&
         order.status !== DeliveryOrderStatus.DELIVERED
       ) {
-        for (const item of order.items) {
-          const available = await getStockOnHand(item.productId, order.locationId);
-          if (available < Number(item.quantity)) {
-            throw userError(
-              `Insufficient stock for "${item.product.productNo} - ${item.product.name}" to dispatch. Available: ${available} ${item.unit}, Required: ${item.quantity}.`,
-            );
+        let alreadyDeducted = false;
+        if (order.saleInvoiceId) {
+          const existingSaleMovement = await tx.stockMovement.findFirst({
+            where: {
+              referenceType: "SALE_INVOICE",
+              referenceId: order.saleInvoiceId,
+            },
+          });
+          if (existingSaleMovement) {
+            alreadyDeducted = true;
+          }
+        }
+        if (!alreadyDeducted) {
+          const linkedSaleInvoice = await tx.saleInvoice.findFirst({
+            where: { deliveryOrderId: order.id },
+            select: { id: true },
+          });
+          if (linkedSaleInvoice) {
+            const existingSaleMovement = await tx.stockMovement.findFirst({
+              where: {
+                referenceType: "SALE_INVOICE",
+                referenceId: linkedSaleInvoice.id,
+              },
+            });
+            if (existingSaleMovement) {
+              alreadyDeducted = true;
+            }
+          }
+        }
+
+        if (!alreadyDeducted) {
+          for (const item of order.items) {
+            const available = await getStockOnHand(item.productId, order.locationId);
+            if (available < Number(item.quantity)) {
+              throw userError(
+                `Insufficient stock for "${item.product.productNo} - ${item.product.name}" to dispatch. Available: ${available} ${item.unit}, Required: ${item.quantity}.`,
+              );
+            }
           }
         }
 
@@ -393,6 +493,7 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
           locationId: order.locationId,
           destinationLocationId: order.destinationLocationId,
           deliveredTo: order.deliveredTo,
+          saleInvoiceId: order.saleInvoiceId,
           items: order.items.map((item) => ({
             productId: item.productId,
             quantity: Number(item.quantity),

@@ -432,7 +432,7 @@ export default function ReturnsPage() {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1">
                   <Label htmlFor="targetInvoice" className="text-xs font-semibold">
-                    Original {tab === "SALES" ? "Sale Invoice" : "Purchase Invoice"} *
+                    Original {tab === "SALES" ? "Sale Invoice" : "Purchase Invoice"} <span className="text-rose-500">*</span>
                   </Label>
                   <select
                     id="targetInvoice"
@@ -457,7 +457,9 @@ export default function ReturnsPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="rdate" className="text-xs font-semibold">Date *</Label>
+                  <Label htmlFor="rdate" className="text-xs font-semibold">
+                    Date <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="rdate"
                     type="date"
@@ -470,7 +472,9 @@ export default function ReturnsPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="reason" className="text-xs font-semibold">Reason for Return *</Label>
+                <Label htmlFor="reason" className="text-xs font-semibold">
+                  Reason for Return <span className="text-rose-500">*</span>
+                </Label>
                 <Input
                   id="reason"
                   value={reason}

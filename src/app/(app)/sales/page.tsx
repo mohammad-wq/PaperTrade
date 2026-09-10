@@ -588,7 +588,9 @@ export default function SalesPage() {
               {customerType === "REGISTERED" ? (
                 <div className="space-y-1.5">
                   <div className="flex flex-wrap items-center justify-between gap-1">
-                    <Label htmlFor="customer" className="text-xs font-semibold">Select Registered Customer *</Label>
+                    <Label htmlFor="customer" className="text-xs font-semibold">
+                      Select Registered Customer <span className="text-rose-500">*</span>
+                    </Label>
                     {selectedCustomer && (
                       <div className="flex items-center gap-2 text-[11px]">
                         <span className="text-slate-500">
@@ -630,7 +632,9 @@ export default function SalesPage() {
 
                   <div className="grid gap-3 sm:grid-cols-3">
                     <div className="space-y-1">
-                      <Label htmlFor="walkInName" className="text-xs font-semibold text-slate-700">Customer Name *</Label>
+                      <Label htmlFor="walkInName" className="text-xs font-semibold text-slate-700">
+                        Customer Name <span className="text-rose-500">*</span>
+                      </Label>
                       <Input
                         id="walkInName"
                         value={walkInName}
@@ -642,7 +646,9 @@ export default function SalesPage() {
                     </div>
 
                     <div className="space-y-1">
-                      <Label htmlFor="walkInPhone" className="text-xs font-semibold text-slate-700">Phone (Optional)</Label>
+                      <Label htmlFor="walkInPhone" className="text-xs font-semibold text-slate-700">
+                        Phone <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                      </Label>
                       <Input
                         id="walkInPhone"
                         value={walkInPhone}
@@ -653,7 +659,9 @@ export default function SalesPage() {
                     </div>
 
                     <div className="space-y-1">
-                      <Label htmlFor="walkInAddress" className="text-xs font-semibold text-slate-700">Address / City (Optional)</Label>
+                      <Label htmlFor="walkInAddress" className="text-xs font-semibold text-slate-700">
+                        Address / City <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                      </Label>
                       <Input
                         id="walkInAddress"
                         value={walkInAddress}
@@ -682,7 +690,9 @@ export default function SalesPage() {
               {/* Location & Date */}
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <Label htmlFor="location" className="text-xs font-semibold">Dispatch Location *</Label>
+                  <Label htmlFor="location" className="text-xs font-semibold">
+                    Dispatch Location <span className="text-rose-500">*</span>
+                  </Label>
                   <select
                     id="location"
                     value={locationId}
@@ -700,7 +710,9 @@ export default function SalesPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="date" className="text-xs font-semibold">Invoice Date *</Label>
+                  <Label htmlFor="date" className="text-xs font-semibold">
+                    Invoice Date <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="date"
                     type="date"
@@ -858,7 +870,9 @@ export default function SalesPage() {
               {/* Subtotal & Notes */}
               <div className="border-t border-slate-100 pt-3 flex flex-col sm:flex-row justify-between items-start gap-4">
                 <div className="w-full sm:max-w-xs space-y-1">
-                  <Label htmlFor="notes" className="text-xs">Notes / Special Instructions</Label>
+                  <Label htmlFor="notes" className="text-xs">
+                    Notes / Special Instructions <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                  </Label>
                   <Input
                     id="notes"
                     value={notes}

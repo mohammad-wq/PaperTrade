@@ -7,11 +7,13 @@ import { calculateWeights } from "@/lib/weights";
 import { prisma } from "@/lib/db";
 import { requireSession } from "@/lib/auth/session";
 import { userError } from "@/lib/errors";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 const deleteProductSchema = z.object({ id: z.string().min(1, "Product is required") });
 
 export async function listProductsAction() {
   return runAction("products.list", async () => {
+    await requireSession();
     const products = await prisma.product.findMany({
       orderBy: [{ isActive: "desc" }, { createdAt: "desc" }],
       include: {
@@ -40,6 +42,11 @@ export async function upsertProductAction(raw: unknown) {
   return runAction("products.upsert", async () => {
     const session = await requireSession();
     const input = parseInput(productUpsertSchema, raw);
+
+    const actionType = input.id ? "update" : "create";
+    if (!canPerformAction(session.user.role, "products", actionType, (session.user as any).permissions)) {
+      throw userError(`You do not have permission to ${actionType} products.`);
+    }
     const normalizedInput = {
       ...input,
       isActive: input.isActive === true || input.isActive === "true",
@@ -113,7 +120,10 @@ export async function upsertProductAction(raw: unknown) {
 
 export async function softDeleteProductAction(raw: unknown) {
   return runAction("products.delete", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "products", "delete", (session.user as any).permissions)) {
+      throw userError("You do not have permission to delete products.");
+    }
     const input = parseInput(deleteProductSchema, raw);
 
     return prisma.$transaction(async (tx) => {

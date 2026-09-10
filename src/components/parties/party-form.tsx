@@ -106,13 +106,17 @@ export function PartyForm({
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="name">Party Name *</Label>
+              <Label htmlFor="name">
+                Party Name <span className="text-rose-500">*</span>
+              </Label>
               <Input id="name" placeholder="e.g. Al-Madina Paper Mart or Packages Ltd" {...register("name")} />
               {errors.name ? <p className="text-sm text-destructive">{errors.name.message}</p> : null}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="type">Party Type *</Label>
+              <Label htmlFor="type">
+                Party Type <span className="text-rose-500">*</span>
+              </Label>
               <select
                 id="type"
                 className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-base md:text-sm"
@@ -124,7 +128,9 @@ export function PartyForm({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="isActive">Account Status *</Label>
+              <Label htmlFor="isActive">
+                Account Status <span className="text-rose-500">*</span>
+              </Label>
               <select
                 id="isActive"
                 className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-base md:text-sm"
@@ -136,26 +142,34 @@ export function PartyForm({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="phone">Phone Number (optional)</Label>
+              <Label htmlFor="phone">
+                Phone Number <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+              </Label>
               <Input id="phone" placeholder="e.g. 0300-1234567" {...register("phone")} />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="email">Email Address (optional)</Label>
+              <Label htmlFor="email">
+                Email Address <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+              </Label>
               <Input id="email" type="email" placeholder="name@business.com" {...register("email")} />
               {errors.email ? <p className="text-sm text-destructive">{errors.email.message}</p> : null}
             </div>
 
             {type === PartyType.CUSTOMER ? (
               <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="creditLimit">Credit Limit in PKR (optional)</Label>
+                <Label htmlFor="creditLimit">
+                  Credit Limit in PKR <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                </Label>
                 <Input id="creditLimit" type="number" step="0.01" placeholder="e.g. 500000 (leave empty for unlimited)" {...register("creditLimit", { valueAsNumber: true })} />
                 {errors.creditLimit ? <p className="text-sm text-destructive">{errors.creditLimit.message}</p> : null}
               </div>
             ) : null}
 
             <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="address">Address & City (optional)</Label>
+              <Label htmlFor="address">
+                Address & City <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+              </Label>
               <Textarea id="address" placeholder="e.g. Shop # 14, Circular Road, Lahore" {...register("address")} />
             </div>
           </div>

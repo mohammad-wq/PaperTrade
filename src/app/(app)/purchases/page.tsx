@@ -390,7 +390,9 @@ export default function PurchasesPage() {
               <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="supplier" className="text-xs font-semibold">Supplier *</Label>
+                    <Label htmlFor="supplier" className="text-xs font-semibold">
+                      Supplier <span className="text-rose-500">*</span>
+                    </Label>
                     {selectedSupplier && (
                       <span className="text-[11px] text-slate-500">
                         Payable: <strong className="text-amber-800">PKR {Number(selectedSupplier.balance || 0).toLocaleString()}</strong>
@@ -414,7 +416,9 @@ export default function PurchasesPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="location" className="text-xs font-semibold">Receiving Location *</Label>
+                  <Label htmlFor="location" className="text-xs font-semibold">
+                    Receiving Location <span className="text-rose-500">*</span>
+                  </Label>
                   <select
                     id="location"
                     value={locationId}
@@ -432,7 +436,9 @@ export default function PurchasesPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="linked-po" className="text-xs font-semibold">Link to PO (Optional)</Label>
+                  <Label htmlFor="linked-po" className="text-xs font-semibold">
+                    Link to PO <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                  </Label>
                   <select
                     id="linked-po"
                     value={purchaseOrderId}
@@ -449,7 +455,9 @@ export default function PurchasesPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="pdate" className="text-xs font-semibold">Date *</Label>
+                  <Label htmlFor="pdate" className="text-xs font-semibold">
+                    Date <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="pdate"
                     type="date"
@@ -537,7 +545,9 @@ export default function PurchasesPage() {
               {/* Subtotal & Notes */}
               <div className="border-t border-slate-100 pt-3 flex flex-col sm:flex-row justify-between items-start gap-4">
                 <div className="w-full sm:max-w-xs space-y-1">
-                  <Label htmlFor="pnotes" className="text-xs">Supplier Notes / Bill Reference</Label>
+                  <Label htmlFor="pnotes" className="text-xs">
+                    Supplier Notes / Bill Reference <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                  </Label>
                   <Input
                     id="pnotes"
                     value={notes}

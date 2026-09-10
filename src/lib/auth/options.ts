@@ -21,7 +21,19 @@ export const authOptions: NextAuthOptions = {
     maxAge: 2 * 60 * 60, // 2 hours maximum session lifetime
   },
   jwt: {
-    maxAge: 2 * 60 * 60, // Keep JWT lifetime aligned with the session cookie
+    maxAge: 2 * 60 * 60, // Keep JWT lifetime aligned
+  },
+  cookies: {
+    sessionToken: {
+      name: process.env.NODE_ENV === "production" ? "__Secure-next-auth.session-token" : "next-auth.session-token",
+      options: {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        secure: process.env.NODE_ENV === "production",
+        // No maxAge specified: browser natively discards the cookie when closed
+      },
+    },
   },
   pages: {
     signIn: "/login",

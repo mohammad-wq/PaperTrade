@@ -124,17 +124,23 @@ export function ProductForm({
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <div className="space-y-2">
-              <Label htmlFor="productNo">Product No</Label>
+              <Label htmlFor="productNo">
+                Product No <span className="text-rose-500">*</span>
+              </Label>
               <Input id="productNo" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("productNo")} />
               {errors.productNo ? <p className="text-sm text-destructive">{errors.productNo.message}</p> : null}
             </div>
             <div className="space-y-2 md:col-span-2 xl:col-span-2">
-              <Label htmlFor="name">Product name</Label>
+              <Label htmlFor="name">
+                Product Name <span className="text-rose-500">*</span>
+              </Label>
               <Input id="name" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("name")} />
               {errors.name ? <p className="text-sm text-destructive">{errors.name.message}</p> : null}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="categoryId">Category</Label>
+              <Label htmlFor="categoryId">
+                Category <span className="text-rose-500">*</span>
+              </Label>
               <select
                 id="categoryId"
                 className="flex min-h-11 w-full rounded-md border border-emerald-100 bg-white/80 px-3 py-2 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200"
@@ -150,7 +156,9 @@ export function ProductForm({
               {errors.categoryId ? <p className="text-sm text-destructive">{errors.categoryId.message}</p> : null}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="qualityId">Quality</Label>
+              <Label htmlFor="qualityId">
+                Quality <span className="text-rose-500">*</span>
+              </Label>
               <select
                 id="qualityId"
                 className="flex min-h-11 w-full rounded-md border border-emerald-100 bg-white/80 px-3 py-2 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200"
@@ -167,7 +175,9 @@ export function ProductForm({
             </div>
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <Label htmlFor="unit">Dealing Unit</Label>
+                <Label htmlFor="unit">
+                  Dealing Unit <span className="text-rose-500">*</span>
+                </Label>
                 <span className="text-[10px] uppercase font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
                   Default: Packets
                 </span>
@@ -183,7 +193,9 @@ export function ProductForm({
               <p className="text-[11px] text-slate-500">All local customer dealing defaults to packets.</p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="serialNo">Serial No</Label>
+              <Label htmlFor="serialNo">
+                Serial No <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+              </Label>
               <Input id="serialNo" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("serialNo")} />
             </div>
           </div>
@@ -223,18 +235,24 @@ export function ProductForm({
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="space-y-2">
-              <Label htmlFor="length">Length (Inches)</Label>
+              <Label htmlFor="length">
+                Length (Inches) <span className="text-rose-500">*</span>
+              </Label>
               <Input id="length" type="number" step="0.01" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("length", { valueAsNumber: true })} />
               {errors.length ? <p className="text-sm text-destructive">{errors.length.message}</p> : null}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="breadth">Breadth (Inches)</Label>
+              <Label htmlFor="breadth">
+                Breadth (Inches) <span className="text-rose-500">*</span>
+              </Label>
               <Input id="breadth" type="number" step="0.01" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("breadth", { valueAsNumber: true })} />
               {errors.breadth ? <p className="text-sm text-destructive">{errors.breadth.message}</p> : null}
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="gsm">GSM</Label>
+                <Label htmlFor="gsm">
+                  GSM <span className="text-rose-500">*</span>
+                </Label>
                 <button
                   type="button"
                   onClick={() => setShowGsmHelper((prev) => !prev)}
@@ -248,7 +266,9 @@ export function ProductForm({
             </div>
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <Label htmlFor="reorderLevel">Reorder Level (Packets)</Label>
+                <Label htmlFor="reorderLevel">
+                  Reorder Level <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                </Label>
                 <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">Packets</span>
               </div>
               <Input id="reorderLevel" type="number" step="1" min="0" placeholder="e.g. 20" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200 text-xs" {...register("reorderLevel", { valueAsNumber: true })} />
@@ -415,26 +435,36 @@ export function ProductForm({
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <div className="space-y-2">
-              <Label htmlFor="costPrice">Cost price ({watch("unit")})</Label>
+              <Label htmlFor="costPrice">
+                Cost Price ({watch("unit")}) <span className="text-rose-500">*</span>
+              </Label>
               <Input id="costPrice" type="number" step="0.01" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("costPrice", { valueAsNumber: true })} />
               {errors.costPrice ? <p className="text-sm text-destructive">{errors.costPrice.message}</p> : null}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="retailPrice">Retail price</Label>
+              <Label htmlFor="retailPrice">
+                Retail Price <span className="text-rose-500">*</span>
+              </Label>
               <Input id="retailPrice" type="number" step="0.01" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("retailPrice", { valueAsNumber: true })} />
               {errors.retailPrice ? <p className="text-sm text-destructive">{errors.retailPrice.message}</p> : null}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="wholesalePrice">Wholesale price</Label>
+              <Label htmlFor="wholesalePrice">
+                Wholesale Price <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+              </Label>
               <Input id="wholesalePrice" type="number" step="0.01" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("wholesalePrice", { valueAsNumber: true })} />
               {errors.wholesalePrice ? <p className="text-sm text-destructive">{errors.wholesalePrice.message}</p> : null}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="labourCharges">Labour charges</Label>
+              <Label htmlFor="labourCharges">
+                Labour Charges <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+              </Label>
               <Input id="labourCharges" type="number" step="0.01" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("labourCharges", { valueAsNumber: true })} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="isActive">Status</Label>
+              <Label htmlFor="isActive">
+                Status <span className="text-rose-500">*</span>
+              </Label>
               <select
                 id="isActive"
                 className="flex min-h-11 w-full rounded-md border border-emerald-100 bg-white/80 px-3 py-2 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200"
@@ -447,7 +477,9 @@ export function ProductForm({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="remarks">Remarks</Label>
+            <Label htmlFor="remarks">
+              Remarks <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+            </Label>
             <Textarea id="remarks" className="border-emerald-100 bg-white/80 focus-visible:ring-emerald-200" {...register("remarks")} />
             {errors.remarks ? <p className="text-sm text-destructive">{errors.remarks.message}</p> : null}
           </div>

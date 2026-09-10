@@ -557,7 +557,9 @@ export default function DeliveryOrdersPage() {
                 {orderType === "CUSTOMER" ? (
                   <>
                     <div className="space-y-1">
-                      <Label htmlFor="docustomer" className="text-xs font-semibold">Customer *</Label>
+                      <Label htmlFor="docustomer" className="text-xs font-semibold">
+                        Customer <span className="text-rose-500">*</span>
+                      </Label>
                       <select
                         id="docustomer"
                         value={customerId}
@@ -575,7 +577,9 @@ export default function DeliveryOrdersPage() {
                     </div>
 
                     <div className="space-y-1">
-                      <Label htmlFor="dolocation" className="text-xs font-semibold">Dispatch Location *</Label>
+                      <Label htmlFor="dolocation" className="text-xs font-semibold">
+                        Dispatch Location <span className="text-rose-500">*</span>
+                      </Label>
                       <select
                         id="dolocation"
                         value={locationId}
@@ -596,7 +600,7 @@ export default function DeliveryOrdersPage() {
                   <>
                     <div className="space-y-1">
                       <Label htmlFor="dofromlocation" className="text-xs font-semibold text-rose-800">
-                        Source Location (From) *
+                        Source Location (From) <span className="text-rose-500">*</span>
                       </Label>
                       <select
                         id="dofromlocation"
@@ -616,7 +620,7 @@ export default function DeliveryOrdersPage() {
 
                     <div className="space-y-1">
                       <Label htmlFor="dotolocation" className="text-xs font-semibold text-emerald-800">
-                        Destination Location (To) *
+                        Destination Location (To) <span className="text-rose-500">*</span>
                       </Label>
                       <select
                         id="dotolocation"
@@ -637,7 +641,9 @@ export default function DeliveryOrdersPage() {
                 )}
 
                 <div className="space-y-1">
-                  <Label htmlFor="dodate" className="text-xs font-semibold">Date *</Label>
+                  <Label htmlFor="dodate" className="text-xs font-semibold">
+                    Date <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="dodate"
                     type="date"
@@ -652,7 +658,9 @@ export default function DeliveryOrdersPage() {
               {/* Logistics Details */}
               <div className="grid gap-4 sm:grid-cols-3 border-t border-slate-100 pt-3">
                 <div className="space-y-1">
-                  <Label htmlFor="vehicleNo" className="text-xs">Vehicle Number</Label>
+                  <Label htmlFor="vehicleNo" className="text-xs">
+                    Vehicle Number <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                  </Label>
                   <Input
                     id="vehicleNo"
                     value={vehicleNo}
@@ -662,7 +670,9 @@ export default function DeliveryOrdersPage() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label htmlFor="driverName" className="text-xs">Driver Name</Label>
+                  <Label htmlFor="driverName" className="text-xs">
+                    Driver Name <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                  </Label>
                   <Input
                     id="driverName"
                     value={driverName}
@@ -672,7 +682,9 @@ export default function DeliveryOrdersPage() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label htmlFor="deliveredTo" className="text-xs">Destination Address</Label>
+                  <Label htmlFor="deliveredTo" className="text-xs">
+                    Destination Address / Note <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                  </Label>
                   <Input
                     id="deliveredTo"
                     value={deliveredTo}
@@ -757,7 +769,9 @@ export default function DeliveryOrdersPage() {
 
               {/* Notes */}
               <div className="border-t border-slate-100 pt-3">
-                <Label htmlFor="donotes" className="text-xs">Delivery Instructions</Label>
+                <Label htmlFor="donotes" className="text-xs">
+                  Delivery Instructions <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                </Label>
                 <Input
                   id="donotes"
                   value={notes}

@@ -306,7 +306,9 @@ export default function ExpensesPage() {
 
             <form onSubmit={handleSubmit} className="mt-4 space-y-4">
               <div className="space-y-1">
-                <Label htmlFor="category" className="text-xs font-semibold">Expense Category *</Label>
+                <Label htmlFor="category" className="text-xs font-semibold">
+                  Expense Category <span className="text-rose-500">*</span>
+                </Label>
                 <select
                   id="category"
                   value={category}
@@ -324,7 +326,9 @@ export default function ExpensesPage() {
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <Label htmlFor="amount" className="text-xs font-semibold">Amount (PKR) *</Label>
+                  <Label htmlFor="amount" className="text-xs font-semibold">
+                    Amount (PKR) <span className="text-rose-500">*</span>
+                  </Label>
                   <Input
                     id="amount"
                     type="number"
@@ -339,7 +343,9 @@ export default function ExpensesPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label htmlFor="method" className="text-xs font-semibold">Payment Mode *</Label>
+                  <Label htmlFor="method" className="text-xs font-semibold">
+                    Payment Mode <span className="text-rose-500">*</span>
+                  </Label>
                   <select
                     id="method"
                     value={method}
@@ -356,7 +362,9 @@ export default function ExpensesPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="date" className="text-xs font-semibold">Expense Date *</Label>
+                <Label htmlFor="date" className="text-xs font-semibold">
+                  Expense Date <span className="text-rose-500">*</span>
+                </Label>
                 <Input
                   id="date"
                   type="date"
@@ -368,7 +376,9 @@ export default function ExpensesPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="description" className="text-xs font-semibold">Description / Purpose *</Label>
+                <Label htmlFor="description" className="text-xs font-semibold">
+                  Description / Purpose <span className="text-rose-500">*</span>
+                </Label>
                 <Input
                   id="description"
                   placeholder="e.g. Electricity bill for shop / Generator diesel / Office tea"
@@ -380,7 +390,9 @@ export default function ExpensesPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="notes" className="text-xs font-semibold">Internal Notes (Optional)</Label>
+                <Label htmlFor="notes" className="text-xs font-semibold">
+                  Internal Notes <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                </Label>
                 <Textarea
                   id="notes"
                   placeholder="e.g. Paid to building caretaker, receipt #418"
@@ -417,3 +429,4 @@ export default function ExpensesPage() {
     </div>
   );
 }
+

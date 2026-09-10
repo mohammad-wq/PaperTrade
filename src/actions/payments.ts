@@ -4,12 +4,16 @@ import { parseInput, runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
+import { canPerformAction } from "@/lib/auth/permissions";
 import { miscExpenseSchema, paymentSchema } from "@/schemas/payment";
 import { AccountType, PartyType } from "@prisma/client";
 
 export async function listPaymentsAction() {
   return runAction("payments.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "payments", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view payments.");
+    }
     const payments = await prisma.payment.findMany({
       orderBy: { date: "desc" },
       include: {
@@ -29,6 +33,12 @@ export async function listPaymentsAction() {
 export async function createMiscExpenseAction(raw: unknown) {
   return runAction("payments.miscExpense.create", async () => {
     const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "payments", "create", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "expenses", "create", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to record expenses.");
+    }
     const input = parseInput(miscExpenseSchema, raw);
 
     const expenseId = `MISC-${Date.now().toString().slice(-6)}`;
@@ -73,6 +83,9 @@ export async function createMiscExpenseAction(raw: unknown) {
 export async function createPaymentAction(raw: unknown) {
   return runAction("payments.create", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "payments", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to record payments.");
+    }
     const input = parseInput(paymentSchema, raw);
 
     const party = await prisma.party.findUnique({

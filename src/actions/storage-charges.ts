@@ -3,12 +3,17 @@
 import { parseInput, runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
+import { userError } from "@/lib/errors";
+import { canPerformAction } from "@/lib/auth/permissions";
 import { storageChargeSchema } from "@/schemas/inventory";
 import { AccountType } from "@prisma/client";
 
 export async function listStorageChargesAction() {
   return runAction("storageCharges.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "storage-charges", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view storage charges.");
+    }
     const charges = await prisma.warehouseStorageCharge.findMany({
       orderBy: { createdAt: "desc" },
       include: {
@@ -28,6 +33,9 @@ export async function listStorageChargesAction() {
 export async function createStorageChargeAction(raw: unknown) {
   return runAction("storageCharges.create", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "storage-charges", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to create storage charges.");
+    }
     const input = parseInput(storageChargeSchema, raw);
 
     const totalCharge = input.weightInTonnes * input.ratePerTonne;

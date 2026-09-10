@@ -4,12 +4,16 @@ import { parseInput, runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
+import { canPerformAction } from "@/lib/auth/permissions";
 import { saleReturnSchema, purchaseReturnSchema } from "@/schemas/return";
 import { AccountType, StockMovementType } from "@prisma/client";
 
 export async function listReturnsAction() {
   return runAction("returns.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "returns", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view returns.");
+    }
     const [saleReturns, purchaseReturns] = await Promise.all([
       prisma.saleReturn.findMany({
         orderBy: { date: "desc" },
@@ -67,6 +71,9 @@ export async function listReturnsAction() {
 export async function createSaleReturnAction(raw: unknown) {
   return runAction("returns.sale.create", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "returns", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to record returns.");
+    }
     const input = parseInput(saleReturnSchema, raw);
 
     const invoice = await prisma.saleInvoice.findUnique({
@@ -184,6 +191,9 @@ export async function createSaleReturnAction(raw: unknown) {
 export async function createPurchaseReturnAction(raw: unknown) {
   return runAction("returns.purchase.create", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "returns", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to record returns.");
+    }
     const input = parseInput(purchaseReturnSchema, raw);
 
     const invoice = await prisma.purchaseInvoice.findUnique({
