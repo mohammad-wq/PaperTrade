@@ -3,9 +3,8 @@
 import { runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
-import { getStockOnHand } from "@/lib/stock";
 import { startOfDay, endOfDay } from "date-fns";
-import { PartyType } from "@prisma/client";
+import { StockMovementType } from "@prisma/client";
 
 export async function getDashboardMetricsAction() {
   return runAction("dashboard.metrics", async () => {
@@ -21,6 +20,7 @@ export async function getDashboardMetricsAction() {
       parties,
       recentSales,
       recentPurchases,
+      ledgerSums,
     ] = await Promise.all([
       prisma.saleInvoice.aggregate({
         where: { date: { gte: todayStart, lte: todayEnd } },
@@ -51,9 +51,48 @@ export async function getDashboardMetricsAction() {
         orderBy: { date: "desc" },
         include: { supplier: { select: { name: true } }, location: { select: { name: true } } },
       }),
+      prisma.ledgerEntry.groupBy({
+        by: ["accountType"],
+        _sum: { debit: true, credit: true },
+      }),
     ]);
 
-    // Calculate low stock alerts
+    // Batch query stock movements for all active products across locations (replaces N+1 query loop)
+    const productIds = activeProducts.map((p) => p.id);
+    const stockMovements = productIds.length > 0
+      ? await prisma.stockMovement.groupBy({
+          by: ["productId", "locationId", "type"],
+          where: { productId: { in: productIds } },
+          _sum: { quantity: true },
+        })
+      : [];
+
+    const INBOUND_SET = new Set<StockMovementType>([
+      StockMovementType.PURCHASE_IN,
+      StockMovementType.TRANSFER_IN,
+      StockMovementType.SALE_RETURN,
+    ]);
+    const OUTBOUND_SET = new Set<StockMovementType>([
+      StockMovementType.SALE_OUT,
+      StockMovementType.TRANSFER_OUT,
+      StockMovementType.DELIVERY_OUT,
+      StockMovementType.PURCHASE_RETURN,
+    ]);
+
+    const stockMap = new Map<string, number>();
+    for (const row of stockMovements) {
+      const key = `${row.productId}:${row.locationId}`;
+      const qty = Number(row._sum.quantity ?? 0);
+      let diff = 0;
+      if (row.type === StockMovementType.ADJUSTMENT || INBOUND_SET.has(row.type)) {
+        diff = qty;
+      } else if (OUTBOUND_SET.has(row.type)) {
+        diff = -qty;
+      }
+      stockMap.set(key, (stockMap.get(key) ?? 0) + diff);
+    }
+
+    // Calculate low stock alerts in-memory
     const lowStockAlerts: Array<{
       productId: string;
       productNo: string;
@@ -66,7 +105,7 @@ export async function getDashboardMetricsAction() {
 
     for (const product of activeProducts) {
       for (const loc of locations) {
-        const available = await getStockOnHand(product.id, loc.id);
+        const available = stockMap.get(`${product.id}:${loc.id}`) ?? 0;
         const availableInPackets =
           product.unit === "REAM" ? available * 5 : product.unit === "SHEET" ? available / 100 : available;
         const reorder = Number(product.reorderLevel);
@@ -83,12 +122,6 @@ export async function getDashboardMetricsAction() {
         }
       }
     }
-
-    // Calculate receivables and payables from LedgerEntry
-    const ledgerSums = await prisma.ledgerEntry.groupBy({
-      by: ["accountType"],
-      _sum: { debit: true, credit: true },
-    });
 
     let totalReceivables = 0;
     let totalPayables = 0;

@@ -6,12 +6,29 @@ import { Role } from "@prisma/client";
 import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
+import { existsSync } from "fs";
 import path from "path";
 import os from "os";
 
 const execAsync = promisify(exec);
 
 export const dynamic = "force-dynamic";
+
+function findPsqlPath(): string {
+  if (process.platform === "win32") {
+    const candidates = [
+      "psql.exe",
+      "C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe",
+      "C:\\Program Files\\PostgreSQL\\16\\bin\\psql.exe",
+      "C:\\Program Files\\PostgreSQL\\15\\bin\\psql.exe",
+      "C:\\Program Files\\PostgreSQL\\14\\bin\\psql.exe",
+    ];
+    for (const p of candidates) {
+      if (p === "psql.exe" || existsSync(p)) return p;
+    }
+  }
+  return "psql";
+}
 
 export async function POST(request: NextRequest) {
   // 1. Enforce Authentication and OWNER role
@@ -45,7 +62,8 @@ export async function POST(request: NextRequest) {
       const tempPath = path.join(os.tmpdir(), `restore_${Date.now()}.sql`);
       try {
         await fs.writeFile(tempPath, sqlContent, "utf8");
-        await execAsync(`psql "${dbUrl}" -f "${tempPath}"`, { timeout: 60000 });
+        const psqlBin = findPsqlPath();
+        await execAsync(`"${psqlBin}" "${dbUrl}" -f "${tempPath}"`, { timeout: 60000 });
         restoredViaPsql = true;
       } catch {
         // psql not available or failed; fallback to raw query execution below
@@ -54,10 +72,29 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 3. Fallback to executing via Prisma raw query execution
+    // 3. Fallback to executing statement-by-statement inside a Prisma transaction
     if (!restoredViaPsql) {
-      // Execute the entire script in a raw transaction
-      await prisma.$executeRawUnsafe(sqlContent);
+      const cleanSql = sqlContent
+        .replace(/--.*$/gm, "")
+        .replace(/\/\*[\s\S]*?\*\//g, "");
+
+      const statements = cleanSql
+        .split(";")
+        .map((s) => s.trim())
+        .filter((s) => {
+          if (!s) return false;
+          const upper = s.toUpperCase();
+          return upper !== "BEGIN" && upper !== "COMMIT";
+        });
+
+      await prisma.$transaction(
+        async (tx) => {
+          for (const statement of statements) {
+            await tx.$executeRawUnsafe(statement);
+          }
+        },
+        { timeout: 60000, maxWait: 10000 },
+      );
     }
 
     return NextResponse.json({

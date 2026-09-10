@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/options";
 import { prisma } from "@/lib/db";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { generateDocShareToken } from "@/lib/tokens";
 
 export async function GET(request: NextRequest) {
   // 1. Enforce authentication
@@ -31,7 +32,8 @@ export async function GET(request: NextRequest) {
 
   try {
     const origin = request.nextUrl.origin;
-    const directPdfUrl = `${origin}/api/pdf/${type}/${id}?download=true`;
+    const token = generateDocShareToken(type, id);
+    const directPdfUrl = `${origin}/api/pdf/${type}/${id}?token=${token}&download=true`;
 
     let phone = "";
     let docTitle = "";

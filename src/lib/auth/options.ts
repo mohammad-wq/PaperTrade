@@ -15,6 +15,9 @@ const credentialsSchema = z.object({
 // preventing user enumeration attacks via timing analysis.
 const DUMMY_HASH = "$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4h/4J6YV4y";
 
+// Detect HTTPS protocol. On HTTP LAN deployments, browsers reject cookies with __Secure- prefix and secure: true.
+const useSecureCookies = process.env.NEXTAUTH_URL?.startsWith("https://") ?? false;
+
 export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
@@ -25,12 +28,12 @@ export const authOptions: NextAuthOptions = {
   },
   cookies: {
     sessionToken: {
-      name: process.env.NODE_ENV === "production" ? "__Secure-next-auth.session-token" : "next-auth.session-token",
+      name: useSecureCookies ? "__Secure-next-auth.session-token" : "next-auth.session-token",
       options: {
         httpOnly: true,
         sameSite: "lax",
         path: "/",
-        secure: process.env.NODE_ENV === "production",
+        secure: useSecureCookies,
         // No maxAge specified: browser natively discards the cookie when closed
       },
     },

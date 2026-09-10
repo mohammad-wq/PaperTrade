@@ -23,10 +23,18 @@ export async function listLedgerEntriesAction(filters?: {
       where.accountType = filters.accountType;
     }
     if (filters?.startDate || filters?.endDate) {
-      where.date = {
-        ...(filters.startDate ? { gte: new Date(filters.startDate) } : {}),
-        ...(filters.endDate ? { lte: new Date(filters.endDate) } : {}),
-      };
+      const dateFilter: Record<string, Date> = {};
+      if (filters.startDate) {
+        const start = new Date(filters.startDate);
+        start.setHours(0, 0, 0, 0);
+        dateFilter.gte = start;
+      }
+      if (filters.endDate) {
+        const end = new Date(filters.endDate);
+        end.setHours(23, 59, 59, 999);
+        dateFilter.lte = end;
+      }
+      where.date = dateFilter;
     }
 
     const entries = await prisma.ledgerEntry.findMany({

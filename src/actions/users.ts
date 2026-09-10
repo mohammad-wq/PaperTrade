@@ -115,3 +115,59 @@ export async function updateUserPermissionsAction(raw: unknown) {
     };
   });
 }
+
+export async function updateUserAction(raw: unknown) {
+  return runAction("users.update", async () => {
+    const session = await requireRole([Role.OWNER]);
+    const input = parseInput(updateUserSchema, raw);
+
+    if (input.id === session.user.id && !input.isActive) {
+      throw new Error("USER: You cannot deactivate your own account.");
+    }
+
+    if (input.id === session.user.id && input.role !== Role.OWNER) {
+      throw new Error("USER: You cannot remove your own Owner role.");
+    }
+
+    const normalizedEmail = input.email.toLowerCase().trim();
+    const existingWithEmail = await prisma.user.findFirst({
+      where: {
+        email: normalizedEmail,
+        id: { not: input.id },
+      },
+    });
+    if (existingWithEmail) {
+      throw new Error("USER: A user with this email address already exists.");
+    }
+
+    const updateData: Record<string, unknown> = {
+      name: input.name,
+      email: normalizedEmail,
+      role: input.role,
+      isActive: input.isActive,
+      permissions: normalizeUserPermissions(input.permissions ?? {}),
+    };
+
+    if (input.password && input.password.trim().length > 0) {
+      updateData.passwordHash = await hash(input.password, 12);
+    }
+
+    const user = await prisma.user.update({
+      where: { id: input.id },
+      data: updateData,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        isActive: true,
+        permissions: true,
+      },
+    });
+
+    return {
+      ...user,
+      permissions: normalizeUserPermissions(user.permissions as Record<string, unknown> | null),
+    };
+  });
+}

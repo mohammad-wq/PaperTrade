@@ -8,6 +8,7 @@ import { canPerformAction } from "@/lib/auth/permissions";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { saleReturnSchema, purchaseReturnSchema } from "@/schemas/return";
+import { getStockOnHand } from "@/lib/stock";
 import { AccountType, StockMovementType } from "@prisma/client";
 
 export async function listReturnsAction() {
@@ -214,6 +215,7 @@ export async function createPurchaseReturnAction(raw: unknown) {
       const invoice = await tx.purchaseInvoice.findUnique({
         where: { id: input.purchaseInvoiceId },
         include: {
+          location: { select: { id: true, name: true } },
           items: true,
           returns: { include: { items: true } },
         },
@@ -223,7 +225,7 @@ export async function createPurchaseReturnAction(raw: unknown) {
         throw userError("Purchase invoice not found.");
       }
 
-      // Validate quantities against original invoice
+      // Validate quantities against original invoice and available stock on hand
       for (const returnItem of input.items) {
         const origItem = invoice.items.find((i) => i.productId === returnItem.productId);
         if (!origItem) {
@@ -239,6 +241,13 @@ export async function createPurchaseReturnAction(raw: unknown) {
         if (returnItem.quantity > maxReturnable) {
           throw userError(
             `Return quantity (${returnItem.quantity}) exceeds maximum returnable quantity (${maxReturnable}) for this purchase item.`,
+          );
+        }
+
+        const available = await getStockOnHand(returnItem.productId, invoice.locationId, tx);
+        if (available < returnItem.quantity) {
+          throw userError(
+            `Insufficient stock on hand at ${invoice.location.name} to process purchase return. Available: ${available}, Requested: ${returnItem.quantity}.`,
           );
         }
       }

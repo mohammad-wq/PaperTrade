@@ -7,6 +7,7 @@ import { prisma } from "@/lib/db";
 import { DocumentPdfView } from "@/pdf/documents";
 import { format } from "date-fns";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { verifyDocShareToken } from "@/lib/tokens";
 
 export const dynamic = "force-dynamic";
 
@@ -23,12 +24,6 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { type: string; id: string } },
 ) {
-  // 1. Enforce authentication
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
-    return new NextResponse("Unauthorized", { status: 401 });
-  }
-
   const { type, id } = params;
 
   if (!ALLOWED_DOC_TYPES.has(type)) {
@@ -37,6 +32,15 @@ export async function GET(
 
   if (!id || typeof id !== "string" || id.length > 64) {
     return new NextResponse("Invalid document identifier", { status: 400 });
+  }
+
+  // 1. Enforce authentication or valid document share token (for WhatsApp recipients)
+  const token = request.nextUrl.searchParams.get("token");
+  const isValidShareToken = token ? verifyDocShareToken(type, id, token) : false;
+
+  const session = await getServerSession(authOptions);
+  if (!session?.user && !isValidShareToken) {
+    return new NextResponse("Unauthorized", { status: 401 });
   }
 
   // Rate limit PDF generation to mitigate denial-of-service / scraping

@@ -83,6 +83,7 @@ async function generateProgrammaticSqlDump(): Promise<string> {
   await dumpTable("LedgerEntry", () => prisma.ledgerEntry.findMany());
   await dumpTable("Payment", () => prisma.payment.findMany());
   await dumpTable("WarehouseStorageCharge", () => prisma.warehouseStorageCharge.findMany());
+  await dumpTable("Expense", () => prisma.expense.findMany());
   await dumpTable("AppSetting", () => prisma.appSetting.findMany());
 
   lines.push(`-- Re-enable foreign key checks`);
