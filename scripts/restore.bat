@@ -1,7 +1,7 @@
 @echo off
 REM ==============================================================================
-REM Paper Trade - Database Restore Script (Windows)
-REM Restores a specified .sql file into the Docker PostgreSQL container.
+REM Paper Trade - Database Restore Script (Native Windows)
+REM Restores a specified .sql file into the local PostgreSQL database.
 REM Usage: Drag and drop a .sql file onto this script, or run:
 REM scripts\restore.bat backups\papertrade_backup_YYYYMMDD_HHMMSS.sql
 REM ==============================================================================
@@ -35,13 +35,21 @@ if /i not "%CONFIRM%"=="YES" (
     exit /b 0
 )
 
+REM Check if psql is in PATH; if not, check default PostgreSQL install location
+where psql >nul 2>&1
+if errorlevel 1 (
+    if exist "C:\Program Files\PostgreSQL\16\bin\psql.exe" (
+        set PATH=C:\Program Files\PostgreSQL\16\bin;%PATH%
+    )
+)
+
 echo Restoring database from %BACKUP_FILE%...
-type "%BACKUP_FILE%" | docker compose exec -T db psql -U postgres papertrade
+psql -U postgres -d paperbiz -f "%BACKUP_FILE%"
 
 if %ERRORLEVEL% EQU 0 (
     echo [SUCCESS] Database restored successfully!
 ) else (
-    echo [ERROR] Restore failed. Please ensure Docker Desktop is running.
+    echo [ERROR] Restore failed. Please ensure PostgreSQL service is running and credentials are set.
 )
 
 pause

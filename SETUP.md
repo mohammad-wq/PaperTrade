@@ -1,184 +1,361 @@
-# Paper Trade Business Management System — Windows Deployment & Operations Manual
+# Paper Trade Business Management System — Native Windows Deployment & Operations Manual
 
-This guide covers the deployment, configuration, and day-to-day operation of the Paper Trade Management System on a **Windows Server PC**, including network configuration for multiple counter and office workstations.
+This guide covers the production deployment, service configuration, and day-to-day operations of the Paper Trade Management System on a **Native Windows PC** (Windows 10 / 11 / Server).
+
+> [!IMPORTANT]
+> **Zero Virtualization & Lightweight Native Execution**:
+> This setup runs **100% natively on Windows** using **Node.js LTS** and a local **PostgreSQL Windows Service**.
+> It has **no dependency on Docker Desktop, WSL2, or Hyper-V**. By eliminating the Docker/WSL2 virtualization layer, the server PC saves **1 to 2 GB of RAM at idle**, making it perfectly suited for budget and commercial office hardware.
 
 ---
 
 ## Architecture Overview
 
 ```
- [Office / Counter PC 2]              [Counter PC 3]
-     (Web Browser)                        (Web Browser)
-           │                                    │
-           └──────────────┬─────────────────────┘
-                          │ LAN Network Cable / Switch
-                          ▼
-            ┌───────────────────────────┐
-            │   Windows Server PC       │
-            │                           │
-            │   ┌───────────────────┐   │
-            │   │  Docker Desktop   │   │
-            │   │  (WSL 2 Engine)   │   │
-            │   │                   │   │
-            │   │  ┌─────────────┐  │   │
-            │   │  │ Next.js App │  │   │
-            │   │  │ (Port 3000) │  │   │
-            │   │  └──────┬──────┘  │   │
-            │   │         │         │   │
-            │   │  ┌──────┴──────┐  │   │
-            │   │  │ PostgreSQL  │  │   │
-            │   │  │ (Port 5432) │  │   │
-            │   │  └─────────────┘  │   │
-            │   └───────────────────┘   │
-            └───────────────────────────┘
+ [Counter PC 1 / Cashier]             [Warehouse PC 2]              [Manager Laptop]
+     (Web Browser)                        (Web Browser)                 (Web Browser)
+           │                                    │                             │
+           └────────────────────────┬───────────┴─────────────────────────────┘
+                                    │ Local Office LAN (Cable / Wi-Fi)
+                                    ▼
+         ┌─────────────────────────────────────────────────────────────┐
+         │                  Windows Server PC (Host)                   │
+         │                                                             │
+         │  ┌───────────────────────────────────────────────────────┐  │
+         │  │  Next.js 14 Standalone Application (Port 3000)        │  │
+         │  │  - Managed by NSSM Windows Service (or start.bat)     │  │
+         │  │  - Auto-starts on boot, auto-restarts on crash       │  │
+         │  └──────────────────────────┬────────────────────────────┘  │
+         │                             │ Native TCP localhost:5432     │
+         │                             ▼                               │
+         │  ┌───────────────────────────────────────────────────────┐  │
+         │  │  PostgreSQL 16 Windows Service (Port 5432)            │  │
+         │  │  - Service Name: postgresql-x64-16                    │  │
+         │  │  - Native disk storage & zero WSL2 RAM overhead       │  │
+         │  └──────────────────────────┬────────────────────────────┘  │
+         │                             ▼                               │
+         │                [C:\PaperTrade\backups\]                     │
+         └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 1. Server PC Prerequisites (Windows 10 / 11)
+## 1. System Requirements
 
-The **Server PC** is the main machine that hosts the Docker containers and database.
-
-### 1.1 Enable Hardware Virtualization in BIOS/UEFI
-- Ensure **Intel VT-x** or **AMD-V** is enabled in your computer's BIOS/UEFI settings. (In Windows, open **Task Manager** -> **Performance** tab -> **CPU** -> look for **Virtualization: Enabled**).
-
-### 1.2 Install Docker Desktop for Windows
-1. Download installer from: [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
-2. Run `Docker Desktop Installer.exe`.
-3. Ensure the checkbox for WSL 2 engine is enabled.
-4. Restart your computer when prompted.
-5. Launch Docker Desktop and wait until the whale icon in the system tray shows **"Engine running"** (green light).
+- **Operating System**: Windows 10 (64-bit), Windows 11 (64-bit), or Windows Server 2016+
+- **Hardware**: Minimum 4 GB RAM (8 GB recommended), 2-core CPU, 10 GB free disk space
+- **Software to Install**:
+  1. PostgreSQL 16 for Windows (Official EnterpriseDB Installer)
+  2. Node.js 20 LTS for Windows
+  3. NSSM (Non-Sucking Service Manager) — for background service setup
 
 ---
 
-## 2. First-Time Application Setup
+## 2. Step-by-Step Installation
 
-### 2.1 Extract Project Files
-Place the project folder in a dedicated path on your Server PC, for example:
-`C:\PaperTrade`
+### Step 2.1: Install PostgreSQL for Windows
 
-### 2.2 Configure Environment (.env)
-1. Open **Command Prompt** in the project folder:
+1. Download the official PostgreSQL 16 installer for Windows:
+   - **Download Link**: [https://www.enterprisedb.com/downloads/postgres-postgresql-downloads](https://www.enterprisedb.com/downloads/postgres-postgresql-downloads)
+   - Select **PostgreSQL 16.x for Windows x86-64**.
+2. Run the downloaded installer (`postgresql-16.x-x-windows-x64.exe`).
+3. Follow the installation wizard:
+   - **Installation Directory**: Keep default (`C:\Program Files\PostgreSQL\16`).
+   - **Components**: Ensure *PostgreSQL Server*, *pgAdmin 4*, and *Command Line Tools* are selected.
+   - **Data Directory**: Keep default (`C:\Program Files\PostgreSQL\16\data`).
+   - **Password**: Enter a secure password for the `postgres` superuser (e.g. `password` or your chosen password). **Remember this password.**
+   - **Port**: Keep `5432`.
+   - **Advanced Options**: Keep default locale.
+4. Click **Next** to complete the installation. Uncheck the "Stack Builder" prompt at the finish screen.
+5. **Verify PostgreSQL is running**:
+   Open **Command Prompt** and run:
+   ```cmd
+   sc query postgresql-x64-16
+   ```
+   You should see `STATE : 4 RUNNING`.
+
+---
+
+### Step 2.2: Create the Application Database & User
+
+You can create the database using either the command line (`psql`) or the graphical tool (`pgAdmin 4`).
+
+#### Method A: Using Command Prompt (`psql`)
+1. Open Command Prompt and connect to PostgreSQL:
+   ```cmd
+   "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres
+   ```
+   Enter the password you created during PostgreSQL installation.
+2. Run the following SQL commands:
+   ```sql
+   -- 1. Create user (replace 'password' with your desired password)
+   CREATE USER "user" WITH PASSWORD 'password';
+
+   -- 2. Create the application database
+   CREATE DATABASE paperbiz OWNER "user";
+
+   -- 3. Grant full privileges
+   GRANT ALL PRIVILEGES ON DATABASE paperbiz TO "user";
+
+   -- 4. Exit psql
+   \q
+   ```
+
+> [!TIP]
+> If you prefer using the default `postgres` superuser directly, you can simply run:
+> `CREATE DATABASE paperbiz;`
+> In that case, your connection string will be: `postgresql://postgres:YOUR_PASSWORD@localhost:5432/paperbiz?schema=public`
+
+#### Method B: Using pgAdmin 4 (GUI)
+1. Open **pgAdmin 4** from your Start menu.
+2. Enter your master password to connect to **Servers** -> **PostgreSQL 16**.
+3. Right-click **Login/Group Roles** -> **Create** -> **Login/Group Role...**
+   - General tab: Name = `user`
+   - Definition tab: Password = `password`
+   - Privileges tab: Check *Can login?* -> Click **Save**.
+4. Right-click **Databases** -> **Create** -> **Database...**
+   - General tab: Database = `paperbiz`, Owner = `user` (or `postgres`)
+   - Click **Save**.
+
+---
+
+### Step 2.3: Install Node.js 20 LTS for Windows
+
+1. Download **Node.js LTS (v20+)**:
+   - **Download Link**: [https://nodejs.org/](https://nodejs.org/) (Select Windows Installer `.msi`).
+2. Run the `.msi` installer. Accept the license agreement, keep default paths, and ensure **"Add to PATH"** is enabled.
+3. Finish the installation.
+4. Verify Node.js in a new Command Prompt:
+   ```cmd
+   node -v
+   npm -v
+   ```
+
+---
+
+### Step 2.4: Deploy Application Files
+
+1. Copy or extract the application folder to a dedicated location on your server machine, for example:
+   `C:\PaperTrade`
+2. Ensure the standalone build files and dependencies are in place:
+   ```text
+   C:\PaperTrade\
+   ├── server.js              (Next.js standalone entrypoint)
+   ├── .next\
+   │   ├── static\            (Static assets copied from .next/static)
+   ├── public\                (Public icons, images, and fonts)
+   ├── prisma\                (schema.prisma, migrations\, seed.js)
+   ├── node_modules\          (Dependencies bundle)
+   ├── package.json
+   ├── .env.example
+   ├── start.bat
+   ├── stop.bat
+   └── scripts\
+   ```
+3. Open Command Prompt in `C:\PaperTrade` and create your production `.env` file:
    ```cmd
    cd /d C:\PaperTrade
    copy .env.example .env
    ```
-2. Open `.env` in Notepad to customize your stationery headers:
-   - `BUSINESS_NAME="Paper Trade Co."`
-   - `BUSINESS_PHONE="+92 300 1234567"`
-   - `BUSINESS_ADDRESS="Main Paper Market, Karachi"`
+4. Open `.env` in Notepad and update the configuration:
+   ```ini
+   # Database URL pointing to your native local PostgreSQL
+   DATABASE_URL="postgresql://user:password@localhost:5432/paperbiz?schema=public"
 
-### 2.3 Build and Launch Containers
-In Command Prompt:
-```cmd
-docker compose build app
-docker compose up -d
-```
-*Wait 2–3 minutes while the application container compiles and the database initializes.*
+   # Auth secrets (replace with random 32+ character strings)
+   NEXTAUTH_URL="http://localhost:3000"
+   NEXTAUTH_SECRET="replace-with-a-secure-random-string-at-least-32-chars"
+   AUTH_SECRET="replace-with-a-secure-random-string-at-least-32-chars"
 
-### 2.4 Run Database Migrations & Initial Seed Data
-Run these two one-time commands to create the database tables and seed the default owner account:
-```cmd
-# 1. Apply schema migrations
-docker compose exec app npx prisma migrate deploy
-
-# 2. Seed initial paper categories, qualities, and owner credentials
-docker compose exec app npx prisma db seed
-```
-
-### 2.5 Verify Local Access
-Open your browser to:
-**[http://localhost:3000](http://localhost:3000)**
-
-Log in with:
-- **Email:** `owner@example.com`
-- **Password:** `ChangeMe123!`
+   # Business stationery headers
+   BUSINESS_NAME="Paper Trade Co."
+   BUSINESS_ADDRESS="Shop floor & Main Warehouse"
+   BUSINESS_PHONE="+92 300 1234567"
+   ```
 
 ---
 
-## 3. Desktop Shortcut Creation (Windows)
+### Step 2.5: Run Migrations & Initial Seed Data
 
-To provide staff with a one-click launcher without touching command prompts:
+In Command Prompt inside `C:\PaperTrade`, run the one-time migration and seed commands against the native PostgreSQL database:
+
+```cmd
+# 1. Apply database migrations to create all tables
+npx prisma migrate deploy
+
+# 2. Seed initial paper categories, qualities, and default owner account
+npx prisma db seed
+```
+
+> **Default Seed Credentials**:
+> - **Email**: `owner@example.com`
+> - **Password**: `ChangeMe123!`
+> *(You can modify these in `.env` before running the seed).*
+
+---
+
+## 3. Production Service Setup via NSSM (Recommended)
+
+To run Paper Trade as a true Windows background service that:
+- **Starts automatically when the computer boots up** (even before anyone logs in),
+- **Restarts automatically if the application encounters an error or crashes**,
+- **Runs completely headless in the background without keeping command prompt windows open**,
+
+use **NSSM (Non-Sucking Service Manager)**:
+
+### 3.1 Download NSSM
+1. Download NSSM from: [https://nssm.cc/download](https://nssm.cc/download) (or direct zip: [nssm-2.24.zip](https://nssm.cc/release/nssm-2.24.zip)).
+2. Open the downloaded zip archive, enter the `nssm-2.24\win64\` folder, and copy `nssm.exe`.
+3. Paste `nssm.exe` into `C:\Windows\System32` (or keep it inside `C:\PaperTrade\`).
+
+### 3.2 Register and Configure the Windows Service
+Open **Command Prompt as Administrator** (Right-click Command Prompt -> *Run as administrator*), then execute:
+
+```cmd
+# 1. Register server.js as a Windows Service named "PaperTrade"
+nssm install PaperTrade "C:\Program Files\nodejs\node.exe" "C:\PaperTrade\server.js"
+
+# 2. Set the application working directory (CRITICAL for locating .env and assets)
+nssm set PaperTrade AppDirectory "C:\PaperTrade"
+
+# 3. Configure auto-restart delay (wait 5 seconds before restarting on failure)
+nssm set PaperTrade AppRestartDelay 5000
+
+# 4. Configure service log files for diagnostics
+if not exist "C:\PaperTrade\logs" mkdir "C:\PaperTrade\logs"
+nssm set PaperTrade AppStdout "C:\PaperTrade\logs\service-stdout.log"
+nssm set PaperTrade AppStderr "C:\PaperTrade\logs\service-stderr.log"
+
+# 5. Set a descriptive service title
+nssm set PaperTrade Description "Paper Trade ERP Standalone Production Service"
+
+# 6. Start the service
+nssm start PaperTrade
+```
+
+### 3.3 Managing the NSSM Service
+- **Check Status**: `nssm status PaperTrade` (should return `SERVICE_RUNNING`)
+- **Stop Service**: `nssm stop PaperTrade` (or `net stop PaperTrade`)
+- **Restart Service**: `nssm restart PaperTrade`
+- **Edit Service Settings**: `nssm edit PaperTrade` (opens the GUI configuration editor)
+- **Uninstall Service**: `nssm remove PaperTrade confirm`
+
+---
+
+## 4. Fallback Alternative: Task Scheduler & start.bat
+
+If installing NSSM is not preferred, use this built-in Windows fallback to start the application automatically when a user logs in.
+
+### 4.1 Manual / Shortcut Launch (`start.bat`)
+- Double-clicking **`start.bat`** launches `node server.js` in a minimized background window, checks that `http://localhost:3000` is healthy, and automatically opens your default web browser to the login page.
+- Double-clicking **`stop.bat`** terminates the process on port 3000 and cleanly shuts down the server.
+
+### 4.2 Auto-Start at User Login via Task Scheduler (GUI Guide)
+1. Press `Win + R`, type `taskschd.msc`, and press **Enter**.
+2. In the right-hand panel, click **Create Task...** (do not click *Create Basic Task*).
+3. **General Tab**:
+   - **Name**: `Paper Trade ERP Server`
+   - **Description**: `Starts Paper Trade standalone server at logon`
+   - Select **Run only when user is logged on**
+   - Check **Run with highest privileges**
+4. **Triggers Tab**:
+   - Click **New...**
+   - **Begin the task**: Select **At log on**
+   - Click **OK**
+5. **Actions Tab**:
+   - Click **New...**
+   - **Action**: **Start a program**
+   - **Program/script**: `C:\Program Files\nodejs\node.exe`
+   - **Add arguments**: `server.js`
+   - **Start in**: `C:\PaperTrade` *(CRITICAL: Must point to your project directory)*
+   - Click **OK**
+6. **Conditions Tab**:
+   - Uncheck **Start the task only if the computer is on AC power** (so it starts on laptops running on battery).
+7. **Settings Tab**:
+   - Check **Allow task to be run on demand**
+   - Check **If the running task does not end when requested, force it to stop**
+   - Uncheck **Stop the task if it runs longer than 3 days**
+8. Click **OK** to save the task.
+
+---
+
+## 5. Desktop Shortcuts & Daily Staff Workflow
+
+To give staff a one-click launcher without touching command prompts:
 
 1. Open File Explorer to `C:\PaperTrade`.
 2. Right-click **`start.bat`** -> **Send to** -> **Desktop (create shortcut)**.
 3. On your Desktop, right-click the shortcut and select **Properties**:
-   - **Start in:** Verify it is set to `C:\PaperTrade` (required so Docker Compose finds configuration files).
-   - **Run:** Ensure it is set to **Normal window** so system startup feedback is visible.
-   - **Change Icon:** Click *Change Icon...*, enter `%SystemRoot%\System32\shell32.dll`, and choose a suitable icon.
-4. Rename the shortcut to **Paper Trade**.
-5. Repeat for **`stop.bat`** and name it **Stop Paper Trade** for clean end-of-day shutdowns.
+   - **Target**: `C:\PaperTrade\start.bat`
+   - **Start in**: `C:\PaperTrade`
+   - **Run**: Set to **Normal window**
+   - **Change Icon**: Click *Change Icon...*, enter `%SystemRoot%\System32\shell32.dll`, and pick a suitable icon.
+4. Rename the shortcut to **Paper Trade ERP**.
+5. Repeat for **`stop.bat`** and name it **Stop Paper Trade**.
+
+> **Note on NSSM**: If NSSM is used, the server is always running in the background. Clicking the **Paper Trade ERP** shortcut will instantly detect that port 3000 is active, skip startup, and immediately open the browser.
 
 ---
 
-## 4. Local Area Network (LAN) Multi-PC Setup
+## 6. Local Area Network (LAN) Multi-PC Access
 
-To allow other computers on your office network to access the system:
+To allow billing counter PCs, warehouse laptops, and office workstations to access the system:
 
-### 4.1 Allow Port 3000 through Windows Defender Firewall
-Open **Command Prompt as Administrator** and execute:
+### 6.1 Allow Port 3000 in Windows Defender Firewall
+Open **Command Prompt as Administrator** and run:
 ```cmd
 netsh advfirewall firewall add rule name="PaperBusinessApp" dir=in action=allow protocol=TCP localport=3000
 ```
 
-### 4.2 Find Server PC's Local IPv4 Address
+### 6.2 Find Server PC IPv4 Address
 In Command Prompt:
 ```cmd
 ipconfig
 ```
-Look for **Ethernet adapter Ethernet** (or Wi-Fi adapter if on wireless):
-- Note the **IPv4 Address** (e.g., `192.168.1.50`).
+Look for **IPv4 Address** under your active Ethernet or Wi-Fi adapter (e.g. `192.168.1.50`).
 
-> **Recommendation**: Configure a static IP on the Server PC or set a DHCP Reservation in your office router so the Server IP never changes.
+> **Tip**: Configure a static IP on the Server PC or set a DHCP Reservation in your office router so the Server IP never changes.
 
-### 4.3 Connect from Counter / Client PCs
-On any other PC connected to the office network:
-1. Open Google Chrome or Microsoft Edge.
-2. Enter:
+### 6.3 Connect from Client Workstations
+On any other PC, tablet, or phone on the same office network:
+1. Open Google Chrome, Microsoft Edge, or Firefox.
+2. Navigate to:
    ```text
    http://192.168.1.50:3000
    ```
-   *(Replace with your Server PC's IPv4 Address).*
-3. Create a browser bookmark on each client workstation for quick access.
+   *(Replace with your Server PC's actual IPv4 address).*
+3. Bookmark the URL for daily access.
 
 ---
 
-## 5. Daily Operations
+## 7. Automated Database Backups
 
-### Morning Launch:
-- Double-click the **Paper Trade** shortcut (or `start.bat`).
-- The launcher verifies Docker Desktop is running, boots containers, waits for the web service to respond, and automatically opens your browser.
+### Method 1: In-App Instant Backup & Restore
+1. Log in as an **OWNER**.
+2. Go to **Settings** -> **Database Backup & Restore**.
+3. Click **"Backup Database Now (.sql)"** to instantly download a timestamped SQL snapshot. Save this file to a USB flash drive.
 
-### Evening Shutdown:
-- Double-click the **Stop Paper Trade** shortcut (or `stop.bat`).
-- All containers stop gracefully, flushing all database transactions to persistent disk storage.
-
----
-
-## 6. Automated Backup Strategy
-
-### In-App Backups:
-Any user with the **OWNER** role can navigate to **Settings** -> **Database Backup & Restore** and download a complete `.sql` snapshot at any time.
-
-### Automated Nightly Backups (Windows Task Scheduler):
-1. Press `Win + R`, type `taskschd.msc`, and press Enter.
-2. Click **Create Basic Task...** in the right sidebar.
-   - **Name:** `Paper Trade Nightly Backup`
-   - **Trigger:** Daily at `20:00` (8:00 PM)
-   - **Action:** Start a program
-   - **Program/script:** `C:\PaperTrade\scripts\backup.bat`
-   - **Start in:** `C:\PaperTrade`
-3. Click **Finish**.
-*Every day at 8:00 PM, a timestamped snapshot (`papertrade_backup_YYYYMMDD_HHMMSS.sql`) will be stored in `C:\PaperTrade\backups\`.*
+### Method 2: Scheduled Nightly Backups (Task Scheduler)
+1. Press `Win + R`, type `taskschd.msc`, press **Enter**.
+2. Click **Create Basic Task...**:
+   - **Name**: `Paper Trade Nightly Backup`
+   - **Trigger**: Daily at `20:00` (8:00 PM)
+   - **Action**: Start a program
+   - **Program/script**: `C:\PaperTrade\scripts\backup.bat`
+   - **Start in**: `C:\PaperTrade`
+3. Click **Finish**. Timestamped snapshots will be saved automatically to `C:\PaperTrade\backups\`.
 
 ---
 
-## 7. Windows Troubleshooting Reference
+## 8. Windows Troubleshooting Reference
 
 | Symptom | Diagnostic Step | Fix |
 | :--- | :--- | :--- |
-| `start.bat` reports Docker is not running | Whale icon in system tray is grey or missing | Open Docker Desktop from Start menu. Wait for the green "Engine running" badge. |
-| Port 3000 conflict | Run: `netstat -ano \| findstr :3000` | Identify the conflicting PID and terminate it in Task Manager. |
-| Client PC displays "This site can't be reached" | Run: `ping 192.168.1.50` from client PC | Check physical LAN cable. Verify Windows Firewall rule (`netsh advfirewall ...`). |
-| Database won't start | Check container logs: `docker compose logs db` | Verify adequate free disk space on `C:\`. |
-| Container logs inspection | Run: `docker compose logs -f app` | Shows Next.js application output in real time. |
+| **PostgreSQL service not running** | Run: `sc query postgresql-x64-16` | Open **Services** (`services.msc`), right-click **postgresql-x64-16**, and select **Start**. Set Startup Type to **Automatic**. |
+| **Node / NSSM service stopped** | Run: `nssm status PaperTrade` | Run `nssm start PaperTrade`. Inspect logs in `C:\PaperTrade\logs\service-stderr.log`. |
+| **Port 3000 already in use** | Run: `netstat -ano \| findstr :3000` | Identify conflicting process PID in Task Manager and terminate it, or run `stop.bat`. |
+| **Database authentication failed** | Check `.env` `DATABASE_URL` | Ensure username, password, port (5432), and database name (`paperbiz`) match PostgreSQL credentials. |
+| **Client PC cannot connect over LAN** | Run `ping <SERVER-IP>` from client | Ensure both PCs are on the same subnet. Verify Windows Firewall rule (`netsh advfirewall...`). |
+| **Pending schema migrations** | Run: `npx prisma migrate status` | In `C:\PaperTrade`, run: `npx prisma migrate deploy` followed by `npx prisma db seed`. |
+| **Prisma query engine missing** | Check error in `service-stderr.log` | Run `npx prisma generate` inside `C:\PaperTrade`. |
+

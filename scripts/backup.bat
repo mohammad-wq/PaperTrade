@@ -1,7 +1,7 @@
 @echo off
 REM ==============================================================================
-REM Paper Trade - Automatic / Manual Database Backup Script (Windows)
-REM Runs pg_dump inside the docker db container and saves a timestamped .sql file.
+REM Paper Trade - Automatic / Manual Database Backup Script (Native Windows)
+REM Runs native pg_dump against local PostgreSQL and saves a timestamped .sql file.
 REM ==============================================================================
 
 cd /d "%~dp0\.."
@@ -18,13 +18,21 @@ echo Starting Paper Trade Database Backup...
 echo Target file: %BACKUP_FILE%
 echo ======================================================
 
-docker compose exec -T db pg_dump -U postgres papertrade --no-owner --no-acl --clean --if-exists > "%BACKUP_FILE%"
+REM Check if pg_dump is in PATH; if not, check default PostgreSQL install location
+where pg_dump >nul 2>&1
+if errorlevel 1 (
+    if exist "C:\Program Files\PostgreSQL\16\bin\pg_dump.exe" (
+        set PATH=C:\Program Files\PostgreSQL\16\bin;%PATH%
+    )
+)
+
+pg_dump -U postgres -d paperbiz --no-owner --no-acl --clean --if-exists > "%BACKUP_FILE%"
 
 if %ERRORLEVEL% EQU 0 (
     echo [SUCCESS] Backup completed successfully!
     echo File saved: %BACKUP_FILE%
 ) else (
-    echo [ERROR] Backup failed. Please ensure Docker Desktop is running.
+    echo [ERROR] Backup failed. Please ensure PostgreSQL service is running and credentials are set.
 )
 
 pause

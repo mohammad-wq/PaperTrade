@@ -1,32 +1,47 @@
 @echo off
 REM ==============================================================================
-REM Paper Trade - One-Click Launcher (Windows)
-REM Starts Docker containers, monitors health, and opens your default web browser.
+REM Paper Trade - Native Windows Launcher
+REM Starts the standalone Node.js server, monitors health, and opens default browser.
+REM 100% Native Windows - Zero Docker / Virtualization overhead.
 REM ==============================================================================
 
 cd /d "%~dp0"
 
 echo ======================================================================
-echo  Starting Paper Trade Management System...
+echo  Starting Paper Trade Management System (Native Windows)...
 echo ======================================================================
 echo.
 
-REM 1. Check if Docker Desktop is running
-echo [1/3] Checking Docker Desktop status...
-docker info >nul 2>&1
+REM 1. Quick check: is the application ALREADY running?
+echo [1/3] Checking application status...
+where curl >nul 2>&1
+if not errorlevel 1 (
+    curl -s -f -L -o nul http://localhost:3000 >nul 2>&1
+    if not errorlevel 1 (
+        echo Application is already running and responsive!
+        goto app_ready
+    )
+) else (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = [System.Net.WebRequest]::Create('http://localhost:3000'); $r.Timeout = 1000; $res = $r.GetResponse(); exit 0 } catch { exit 1 }" >nul 2>&1
+    if not errorlevel 1 (
+        echo Application is already running and responsive!
+        goto app_ready
+    )
+)
+
+REM 2. Verify Node.js is installed
+where node >nul 2>&1
 if errorlevel 1 (
     echo.
     echo ======================================================================
-    echo  [ERROR] Docker Desktop is not running!
+    echo  [ERROR] Node.js is not installed or not in system PATH!
     echo ======================================================================
     echo.
-    echo  Docker Desktop must be running before Paper Trade can start.
+    echo  Node.js LTS (v20 or newer) is required to run Paper Trade natively.
     echo.
     echo  Steps to fix:
-    echo   1. Open "Docker Desktop" from your Start Menu or Desktop.
-    echo   2. Wait 30-60 seconds until the whale icon in your taskbar system
-    echo      tray (bottom-right corner) shows "Engine running".
-    echo   3. Run this launcher again.
+    echo   1. Download and install Node.js LTS from: https://nodejs.org/
+    echo   2. Restart Command Prompt after installation.
     echo.
     echo ======================================================================
     echo Press any key to exit...
@@ -34,50 +49,55 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM 2. Start Docker containers in detached mode
-echo [2/3] Starting database and application services...
-docker compose up -d
-if errorlevel 1 (
-    echo.
-    echo ======================================================================
-    echo  [ERROR] Failed to start Docker containers!
-    echo ======================================================================
-    echo.
-    echo  Possible causes:
-    echo   1. Port 3000 or Port 5432 is already in use by another application.
-    echo   2. Docker Desktop engine is still initializing. Please wait a moment.
-    echo   3. The application image has not been built yet. Run: docker compose build
-    echo.
-    echo  Troubleshooting:
-    echo   - Check container status: docker compose ps
-    echo   - View diagnostic logs:   docker compose logs
-    echo.
-    echo ======================================================================
-    echo Press any key to exit...
-    pause >nul
-    exit /b 1
+REM 3. Verify PostgreSQL service is running (optional check)
+sc query postgresql-x64-16 >nul 2>&1
+if not errorlevel 1 (
+    sc query postgresql-x64-16 | findstr /i "RUNNING" >nul 2>&1
+    if errorlevel 1 (
+        echo [!] PostgreSQL service (postgresql-x64-16) is stopped. Attempting to start...
+        net start postgresql-x64-16 >nul 2>&1
+    )
 )
 
-REM 3. Poll until application responds on http://localhost:3000
+REM 4. Locate server.js
+set SERVER_JS=server.js
+if not exist "%SERVER_JS%" (
+    if exist ".next\standalone\server.js" (
+        set SERVER_JS=.next\standalone\server.js
+    ) else (
+        echo.
+        echo ======================================================================
+        echo  [ERROR] server.js not found in current directory or .next\standalone!
+        echo ======================================================================
+        echo.
+        echo  Please ensure the standalone build files are located in this folder.
+        echo.
+        pause
+        exit /b 1
+    )
+)
+
+REM 5. Start server.js in background window
+echo [2/3] Launching Node.js standalone server...
+start "Paper Trade Server" /min cmd /c "node %SERVER_JS%"
+
+REM 6. Poll until application responds on http://localhost:3000
 echo.
-echo [3/3] Waiting for application to initialize...
+echo [3/3] Waiting for application to initialize on http://localhost:3000...
 set ATTEMPTS=0
 set MAX_ATTEMPTS=30
 
 :poll_loop
 set /a ATTEMPTS+=1
 
-REM Check if curl is available
 where curl >nul 2>&1
 if errorlevel 1 goto try_powershell
 
-REM Use curl to test connection
-curl -s -f -L -o nul http://localhost:3000
+curl -s -f -L -o nul http://localhost:3000 >nul 2>&1
 if not errorlevel 1 goto app_ready
 goto check_timeout
 
 :try_powershell
-REM Fallback for systems without curl
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = [System.Net.WebRequest]::Create('http://localhost:3000'); $r.Timeout = 1500; $res = $r.GetResponse(); exit 0 } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 goto app_ready
 
@@ -117,18 +137,18 @@ echo ======================================================================
 echo  [WARNING] Application startup is taking longer than expected.
 echo ======================================================================
 echo.
-echo  The background containers were started, but the web server has not
-echo  responded on http://localhost:3000 yet.
+echo  The web server has not responded on http://localhost:3000 yet.
 echo.
 echo  Likely causes:
-echo   1. Database migrations or initial setup may still be finishing.
-echo   2. Your computer may be experiencing heavy CPU/memory load.
-echo   3. A container encountered an error during boot.
-echo.
-echo  What to do next:
-echo   - Wait 15-30 seconds, then try opening http://localhost:3000 manually.
-echo   - Open Command Prompt in this folder and check logs:
-echo       docker compose logs app
+echo   1. PostgreSQL service is not running.
+echo      - Open Services (services.msc) and ensure "postgresql-x64-16" is Running.
+echo      - Or run in Admin CMD: sc query postgresql-x64-16
+echo   2. Database credentials in .env are incorrect.
+echo      - Check DATABASE_URL in .env (e.g. postgresql://user:password@localhost:5432/paperbiz)
+echo   3. Port 3000 is occupied by another application.
+echo      - Run: netstat -ano | findstr :3000
+echo   4. Pending database migrations.
+echo      - Run: npx prisma migrate deploy
 echo.
 echo ======================================================================
 echo Press any key to exit...

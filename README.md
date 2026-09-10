@@ -8,14 +8,14 @@ The entire system is completely **airgapped** and runs 100% locally with zero ex
 
 ---
 
-## Table of Contents
-1. [Architecture & Business Logic](#architecture--business-logic)
+### Table of Contents
+1. [Architecture & Deployment Models](#architecture--deployment-models)
 2. [Quick Launch Procedure (Daily Operations)](#quick-launch-procedure-daily-operations)
-   - [Windows Daily Launch & Shutdown](#windows-daily-launch--shutdown)
-   - [Linux Daily Launch & Shutdown](#linux-daily-launch--shutdown)
-3. [Setup Guide on a New Device (First-Time Setup)](#setup-guide-on-a-new-device-first-time-setup)
-   - [Option A: Windows Setup (Windows 10 / 11)](#option-a-windows-setup-windows-10--11)
-   - [Option B: Linux Setup (Ubuntu / Debian / Fedora / Arch)](#option-b-linux-setup-ubuntu--debian--fedora--arch)
+   - [Windows Client Production (Daily Launch & Shutdown)](#windows-client-production-daily-launch--shutdown)
+   - [Linux Developer Setup (Daily Launch & Shutdown)](#linux-developer-setup-daily-launch--shutdown)
+3. [Setup Guides (First-Time Installation)](#setup-guides-first-time-installation)
+   - [Path A: Client Production Setup (Native Windows — Recommended, No Docker)](#path-a-client-production-setup-native-windows--recommended-no-docker)
+   - [Path B: Developer Local Setup (Docker Compose on Ubuntu / Linux)](#path-b-developer-local-setup-docker-compose-on-ubuntu--linux)
 4. [Desktop Shortcut Setup](#desktop-shortcut-setup)
    - [Windows Desktop Shortcut](#windows-desktop-shortcut)
    - [Linux Application Launcher (.desktop)](#linux-application-launcher-desktop)
@@ -24,139 +24,162 @@ The entire system is completely **airgapped** and runs 100% locally with zero ex
    - [Configuring the Firewall](#configuring-the-firewall)
    - [Connecting from Client Workstations](#connecting-from-client-workstations)
 6. [Database Backup & Restore Operations](#database-backup--restore-operations)
-7. [Troubleshooting & Diagnostics](#troubleshooting--diagnostics)
+7. [Troubleshooting & Diagnostics (Native Windows & Linux)](#troubleshooting--diagnostics-native-windows--linux)
 8. [Developer Conventions & Maintenance](#developer-conventions--maintenance)
 
 ---
 
-## Architecture & Business Logic
+## Architecture & Deployment Models
+
+The system supports two distinct deployment models:
+
+### 1. Client Production Setup: Native Windows (Zero Docker Overhead)
+Designed for budget commercial Windows hardware. Running Docker Desktop on Windows requires WSL2 virtualization, consuming 1 to 2 GB of RAM at idle. The native setup runs **Node.js LTS** and a native **PostgreSQL 16 Windows Service** directly on the Windows OS with zero virtualization overhead.
 
 ```
-   [Counter PC 1 / Cashier]             [Warehouse PC 2]              [Manager Laptop]
+ [Counter PC 1 / Cashier]             [Warehouse PC 2]              [Manager Laptop]
      (Web Browser)                        (Web Browser)                 (Web Browser)
            │                                    │                             │
            └────────────────────────┬───────────┴─────────────────────────────┘
                                     │ Local Office LAN (Cable / Wi-Fi)
                                     ▼
          ┌─────────────────────────────────────────────────────────────┐
-         │              Server PC (Windows or Linux)                   │
+         │             Windows Server PC (Client Machine)              │
          │                                                             │
          │  ┌───────────────────────────────────────────────────────┐  │
-         │  │                 Docker Compose Stack                  │  │
-         │  │                                                       │  │
-         │  │  ┌───────────────────────┐  ┌──────────────────────┐  │  │
-         │  │  │   papertrade-app      │  │    papertrade-db     │  │  │
-         │  │  │ Next.js 14 Standalone │  │ PostgreSQL 16 Alpine │  │  │
-         │  │  │ (Port 3000)           │◄─┤ (Port 5432)          │  │  │
-         │  │  └───────────────────────┘  └──────────┬───────────┘  │  │
-         │  └────────────────────────────────────────┼──────────────┘  │
-         │                                           ▼                 │
-         │                             [Persistent Storage Volume]     │
-         │                             [Nightly Backups Folder]        │
+         │  │   Next.js 14 Standalone Server (Port 3000)            │  │
+         │  │   - Managed by NSSM Windows Service (or start.bat)    │  │
+         │  │   - Auto-starts on boot, auto-restarts on crash      │  │
+         │  └──────────────────────────┬────────────────────────────┘  │
+         │                             │ Native TCP localhost:5432     │
+         │                             ▼                               │
+         │  ┌───────────────────────────────────────────────────────┐  │
+         │  │   PostgreSQL 16 Windows Service (Port 5432)           │  │
+         │  │   - Database: paperbiz                                │  │
+         │  │   - Zero WSL2 virtualization / 100% native disk I/O  │  │
+         │  └──────────────────────────┬────────────────────────────┘  │
+         │                             ▼                               │
+         │                [C:\PaperTrade\backups\]                     │
          └─────────────────────────────────────────────────────────────┘
 ```
 
-- **Packet-First Industry Dealing**:
-  All local customer transactions default to **Packets** (1 Ream = 5 Packets, 1 Packet = 100 Sheets). Reorder thresholds, stock valuation, and prices are evaluated in packet equivalents.
-- **Walk-in & Long-Term Client Billing**:
-  Cashiers can invoice registered accounts with ledger balances or immediate walk-in counter clients with instant cash settlement.
-- **Transactional Consistency**:
-  Every multi-table action (Sales, Purchases, Returns, Dispatches, Cash Receipts) runs inside strict `prisma.$transaction` locks to guarantee atomic ledger and inventory consistency.
+### 2. Developer Setup: Docker Compose Stack (Ubuntu / Linux)
+Designed for local development and integration testing on Ubuntu/Linux using standard containers:
+- **`papertrade-app`**: Next.js 14 standalone image
+- **`papertrade-db`**: PostgreSQL 16 Alpine container
 
 ---
 
 ## Quick Launch Procedure (Daily Operations)
 
-Once the application is installed on your Server PC, day-to-day operations require no technical knowledge.
+Once installed, day-to-day operations require no technical knowledge.
 
-### Windows Daily Launch & Shutdown
+### Windows Client Production (Daily Launch & Shutdown)
 
-#### To Start:
-1. Double-click **`start.bat`** (or your **Paper Trade** Desktop Shortcut).
-2. The launcher will automatically:
-   - Check that **Docker Desktop** is running. If not, it politely alerts you to open Docker Desktop first.
-   - Start the PostgreSQL database and Next.js web application containers.
-   - Actively poll `http://localhost:3000` until the web server is online.
-   - Automatically open your default web browser to the login page (`http://localhost:3000`).
+#### With NSSM Background Service (Recommended):
+- The application and database start **automatically on boot**.
+- Staff can simply double-click the **Paper Trade ERP** desktop shortcut (`start.bat`).
+- The launcher instantly detects that `http://localhost:3000` is active and opens the default browser immediately.
+
+#### With Standalone Launcher (`start.bat` fallback):
+1. Double-click **`start.bat`** (or desktop shortcut).
+2. The launcher automatically:
+   - Verifies Node.js and the PostgreSQL service (`postgresql-x64-16`) are running.
+   - Starts `node server.js` in a minimized background window.
+   - Actively polls `http://localhost:3000` until responsive.
+   - Automatically opens your default web browser to `http://localhost:3000`.
 
 #### To Stop:
-1. Double-click **`stop.bat`** (or your **Stop Paper Trade** Desktop Shortcut).
-2. Containers stop gracefully, ensuring all database transactions are safely committed to disk and system RAM/ports are freed.
+1. Double-click **`stop.bat`** (or desktop shortcut).
+2. The script stops the NSSM service or cleanly terminates any Node process on port 3000, ensuring all data is preserved and ports are released.
 
 ---
 
-### Linux Daily Launch & Shutdown
+### Linux Developer Setup (Daily Launch & Shutdown)
 
 #### To Start:
-Open a terminal in the project directory (or double-click your desktop launcher) and run:
 ```bash
 ./start.sh
 ```
-The script checks the Docker service, starts the Compose stack in detached mode, polls `http://localhost:3000`, and opens your default browser via `xdg-open`.
+Starts the Docker Compose stack in detached mode, polls `http://localhost:3000`, and opens your default browser via `xdg-open`.
 
 #### To Stop:
 ```bash
 ./stop.sh
 ```
-Cleanly stops containers and unbinds network ports.
+Stops Compose containers cleanly.
 
 ---
 
-## Setup Guide on a New Device (First-Time Setup)
-
-Follow the instructions below depending on whether your Server PC runs Windows or Linux.
+## Setup Guides (First-Time Installation)
 
 ---
 
-### Option A: Windows Setup (Windows 10 / 11)
+### Path A: Client Production Setup (Native Windows — Recommended, No Docker)
 
-#### Step 1: Install Docker Desktop for Windows
-1. Download **Docker Desktop for Windows**:
-   [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
-2. Run the installer (`Docker Desktop Installer.exe`).
-3. Ensure the option **"Use WSL 2 instead of Hyper-V (recommended)"** is checked.
-4. Restart your computer when prompted.
-5. Open Docker Desktop from the Start menu. Wait 30–60 seconds until the whale icon in your taskbar system tray (bottom-right) turns green and shows **"Engine running"**.
+> [!IMPORTANT]
+> **No Docker Desktop Required**: The client production PC does **not** need Docker Desktop or WSL2 installed.
+> For the complete, detailed step-by-step installation manual, refer to [**SETUP.md**](SETUP.md).
 
-> **BIOS Virtualization Note**: If Docker Desktop reports that hardware virtualization is disabled, enter your PC BIOS/UEFI settings and enable **Intel Virtualization Technology (VT-x)** or **AMD-V**.
+#### Quick Setup Summary:
 
-#### Step 2: Copy Project Files
-Place the project folder in a clean path on your hard drive, for example:
-`C:\PaperTrade`
+1. **Install PostgreSQL 16 for Windows**:
+   - Download official installer: [EnterpriseDB PostgreSQL 16](https://www.enterprisedb.com/downloads/postgres-postgresql-downloads).
+   - Install on port `5432`, keep default data directory, set a master password for `postgres`.
+   - Verify service is running: `sc query postgresql-x64-16`
 
-#### Step 3: Configure Environment
-Open **Command Prompt** (`cmd`) inside `C:\PaperTrade`:
-```cmd
-cd /d C:\PaperTrade
-copy .env.example .env
-```
-*(Optional: Open `.env` in Notepad to adjust your business name, contact phone, or owner credentials).*
+2. **Create Database & User**:
+   Open Command Prompt and run:
+   ```cmd
+   "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres
+   CREATE USER "user" WITH PASSWORD 'password';
+   CREATE DATABASE paperbiz OWNER "user";
+   GRANT ALL PRIVILEGES ON DATABASE paperbiz TO "user";
+   \q
+   ```
 
-#### Step 4: Build Application Image & Launch Containers
-```cmd
-docker compose build app
-docker compose up -d
-```
-*The initial build compiles the Next.js standalone package inside Alpine Linux. This takes approximately 2–3 minutes.*
+3. **Install Node.js 20 LTS for Windows**:
+   - Download and install `.msi` from [nodejs.org](https://nodejs.org/).
 
-#### Step 5: Initialize Database (Migrations & Seed Data)
-Execute these two one-time commands to create the database schema and populate initial catalog items:
-```cmd
-# 1. Apply schema migrations
-docker compose exec app npx prisma migrate deploy
+4. **Copy Application Standalone Build**:
+   - Place project files in `C:\PaperTrade`.
+   - Create `.env`:
+     ```cmd
+     cd /d C:\PaperTrade
+     copy .env.example .env
+     ```
+   - In `.env`, ensure `DATABASE_URL` points to native local Postgres:
+     ```ini
+     DATABASE_URL="postgresql://user:password@localhost:5432/paperbiz?schema=public"
+     ```
 
-# 2. Seed initial paper categories, qualities, and default owner account
-docker compose exec app npx prisma db seed
-```
+5. **Deploy Migrations & Seed Data**:
+   ```cmd
+   npx prisma migrate deploy
+   npx prisma db seed
+   ```
 
-#### Step 6: Log In
-Open your browser to: **`http://localhost:3000`**
-- **Email:** `owner@example.com` (or value from `.env`)
-- **Password:** `ChangeMe123!`
+6. **Register Windows Service with NSSM (Recommended)**:
+   - Download NSSM from [nssm.cc](https://nssm.cc/download) and place `nssm.exe` in `C:\Windows\System32`.
+   - Run Command Prompt as Administrator:
+     ```cmd
+     nssm install PaperTrade "C:\Program Files\nodejs\node.exe" "C:\PaperTrade\server.js"
+     nssm set PaperTrade AppDirectory "C:\PaperTrade"
+     nssm set PaperTrade AppRestartDelay 5000
+     nssm set PaperTrade AppStdout "C:\PaperTrade\logs\service-stdout.log"
+     nssm set PaperTrade AppStderr "C:\PaperTrade\logs\service-stderr.log"
+     nssm start PaperTrade
+     ```
+   *(Alternatively, configure Task Scheduler to run `server.js` at login as detailed in [SETUP.md](SETUP.md)).*
+
+7. **Log In**:
+   - Browse to: **`http://localhost:3000`**
+   - **Email:** `owner@example.com`
+   - **Password:** `ChangeMe123!`
 
 ---
 
-### Option B: Linux Setup (Ubuntu / Debian / Fedora / Arch)
+### Path B: Developer Local Setup (Docker Compose on Ubuntu / Linux)
 
 #### Step 1: Install Docker & Docker Compose
 On Ubuntu / Debian:
@@ -237,7 +260,7 @@ Open your browser to: **`http://localhost:3000`**
    *(On Windows 11, click **Show more options** first).*
 3. Go to your Desktop, right-click the shortcut, and select **Properties**:
    - **Target:** `C:\PaperTrade\start.bat`
-   - **Start in:** `C:\PaperTrade` *(CRITICAL: must point to project root so Compose files are found).*
+   - **Start in:** `C:\PaperTrade` *(CRITICAL: must point to project root folder).*
    - **Run:** Set to **Normal window** *(ensures status and startup messages are visible).*
    - **Change Icon:** Click **Change Icon...**, type `%SystemRoot%\System32\shell32.dll`, and pick a business icon.
 4. Rename the shortcut to **Paper Trade ERP**.
@@ -364,17 +387,30 @@ Add the following line to back up daily at 8:00 PM:
 
 ---
 
-## Troubleshooting & Diagnostics
+## Troubleshooting & Diagnostics (Native Windows & Linux)
+
+### Native Windows Production Diagnostics (Client Server PC)
+
+> [!NOTE]
+> The client production setup has **zero dependency on Docker Desktop**. All troubleshooting on the client machine involves native Windows services and processes.
+
+| Symptom | Component | Diagnostic Step | Resolution |
+| :--- | :--- | :--- | :--- |
+| **PostgreSQL service is not running** | PostgreSQL | Run in CMD: `sc query postgresql-x64-16` | Open Windows **Services** (`services.msc`), find **postgresql-x64-16**, right-click and choose **Start**. Ensure Startup Type is set to **Automatic**. |
+| **Node process or NSSM service is not running** | Application | Run in Admin CMD: `nssm status PaperTrade` | Run `nssm start PaperTrade`. If not using NSSM, check Task Manager for `node.exe` or re-run `start.bat`. Check error logs in `C:\PaperTrade\logs\service-stderr.log`. |
+| **Port 3000 is already in use** | Network Port | Run: `netstat -ano \| findstr :3000` | Identify conflicting process PID in the rightmost column. Terminate it via Task Manager or run `stop.bat` (which automatically terminates processes bound to port 3000). |
+| **Client PC cannot connect over LAN** | Firewall / LAN | Run: `ping <SERVER-IP>` from counter PC | Ensure both PCs are connected to the same subnet/router. Verify Windows Firewall rule was added: `netsh advfirewall firewall add rule name="PaperBusinessApp" dir=in action=allow protocol=TCP localport=3000`. |
+| **Database authentication failure** | Configuration | Check `DATABASE_URL` in `.env` | Ensure credentials match: `postgresql://user:password@localhost:5432/paperbiz?schema=public`. Test login via `psql -U user -d paperbiz`. |
+| **Database schema missing tables** | Prisma | Run: `npx prisma migrate status` | In `C:\PaperTrade`, run `npx prisma migrate deploy` followed by `npx prisma db seed`. |
+
+### Developer Local Diagnostics (Docker Compose on Linux)
 
 | Symptom | Operating System | Diagnostic Step | Solution |
 | :--- | :--- | :--- | :--- |
-| Launcher says Docker is not running | **Windows** | Whale icon in system tray is grey or missing. | Open Docker Desktop from Start menu. Wait for the green "Engine running" status. |
-| Launcher says Docker is not running | **Linux** | `systemctl is-active docker` returns inactive. | Run `sudo systemctl start docker`. Ensure user is in docker group (`sudo usermod -aG docker $USER`). |
-| Port 3000 is already in use | **Windows** | Run `netstat -ano \| findstr :3000` | Terminate conflicting process in Task Manager or change host port in `docker-compose.yml`. |
+| Docker daemon not running | **Linux** | `systemctl is-active docker` returns inactive. | Run `sudo systemctl start docker`. Ensure user is in docker group (`sudo usermod -aG docker $USER`). |
 | Port 3000 is already in use | **Linux** | Run `sudo ss -tulpn \| grep 3000` | Identify PID using port 3000 and stop it (`kill <PID>`). |
-| Client PC cannot connect over LAN | **Both** | Ping server IP from client: `ping <SERVER-IP>` | Verify both PCs are on the same subnet. Verify Windows Firewall rule (`netsh advfirewall...`) or Linux UFW (`sudo ufw allow 3000/tcp`). |
-| Standalone App won't start | **Both** | Run `docker compose logs app` | Check for configuration errors in `.env`. Rebuild container with `docker compose build app`. |
-| Database won't start | **Both** | Run `docker compose logs db` | Check available disk space on server drive. Check volume permissions. |
+| Standalone App won't start in Docker | **Linux** | Run `docker compose logs app` | Check for configuration errors in `.env`. Rebuild container with `docker compose build app`. |
+| Database won't start in Docker | **Linux** | Run `docker compose logs db` | Check available disk space on server drive. Check volume permissions. |
 
 ---
 

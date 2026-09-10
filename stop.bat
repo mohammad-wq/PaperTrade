@@ -1,7 +1,7 @@
 @echo off
 REM ==============================================================================
-REM Paper Trade - One-Click Shutdown (Windows)
-REM Stops and cleans up Docker containers cleanly.
+REM Paper Trade - One-Click Shutdown (Native Windows)
+REM Stops the background Windows service or kills the standalone Node.js process.
 REM ==============================================================================
 
 cd /d "%~dp0"
@@ -11,27 +11,18 @@ echo  Stopping Paper Trade Management System...
 echo ======================================================================
 echo.
 
-REM Check if Docker is running
-docker info >nul 2>&1
-if errorlevel 1 (
-    echo [!] Docker Desktop is not running or already stopped.
-    echo Containers are already offline.
-    timeout /t 3 /nobreak >nul
-    exit /b 0
+REM 1. If installed as NSSM Windows Service, stop the service
+sc query PaperTrade >nul 2>&1
+if not errorlevel 1 (
+    echo Stopping PaperTrade Windows Service...
+    net stop PaperTrade >nul 2>&1
 )
 
-echo Stopping containers and releasing resources...
-docker compose down
-
-if errorlevel 1 (
-    echo.
-    echo ======================================================================
-    echo  [WARNING] Encountered an issue while stopping containers.
-    echo ======================================================================
-    echo  Check container status with: docker compose ps
-    echo.
-    pause
-    exit /b 1
+REM 2. Terminate any active process listening on port 3000
+echo Terminating process on port 3000...
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :3000 ^| findstr LISTENING') do (
+    echo  - Ending process PID %%a...
+    taskkill /F /PID %%a >nul 2>&1
 )
 
 echo.
