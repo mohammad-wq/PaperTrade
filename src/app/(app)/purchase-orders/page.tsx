@@ -48,6 +48,7 @@ type PartyOption = {
   id: string;
   name: string;
   type: string;
+  balance?: number;
 };
 
 type ProductOption = {
@@ -138,6 +139,11 @@ export default function PurchaseOrdersPage() {
     [items],
   );
 
+  const selectedSupplier = useMemo(
+    () => suppliers.find((s) => s.id === supplierId),
+    [suppliers, supplierId],
+  );
+
   function handleProductChange(index: number, pId: string) {
     const prod = products.find((p) => p.id === pId);
     const updated = [...items];
@@ -170,6 +176,12 @@ export default function PurchaseOrdersPage() {
   }
 
   async function handleStatusChange(id: string, status: PurchaseOrderStatus) {
+    const actionName =
+      status === PurchaseOrderStatus.FULFILLED
+        ? "fulfill this purchase order and receive inventory stock"
+        : `change status to ${status}`;
+    if (!window.confirm(`Are you sure you want to ${actionName}?`)) return;
+
     const res = await updatePurchaseOrderStatusAction({ id, status });
     if (res.success) {
       await loadData();
@@ -195,6 +207,8 @@ export default function PurchaseOrdersPage() {
       return;
     }
 
+    if (!window.confirm("Confirm: create this purchase order?")) return;
+
     setSubmitting(true);
     try {
       const res = await createPurchaseOrderAction({
@@ -214,6 +228,9 @@ export default function PurchaseOrdersPage() {
         setFormError(res.error || "Failed to create purchase order.");
       } else {
         setIsDialogOpen(false);
+        setSupplierId("");
+        setLocationId("");
+        setOrderDate(new Date().toISOString().slice(0, 10));
         setItems([{ productId: "", quantity: 1, unitCost: 0 }]);
         setNotes("");
         await loadData();
@@ -407,7 +424,14 @@ export default function PurchaseOrdersPage() {
             <form onSubmit={handleSubmit} className="mt-4 space-y-4">
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="space-y-1">
-                  <Label htmlFor="posupplier" className="text-xs font-semibold">Supplier *</Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="posupplier" className="text-xs font-semibold">Supplier *</Label>
+                    {selectedSupplier && (
+                      <span className="text-[11px] text-slate-500">
+                        Payable: <strong className="text-amber-800">PKR {Number(selectedSupplier.balance || 0).toLocaleString()}</strong>
+                      </span>
+                    )}
+                  </div>
                   <select
                     id="posupplier"
                     value={supplierId}

@@ -1,7 +1,7 @@
 import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import { Role } from "@prisma/client";
-import { canAccessPath } from "@/lib/auth/permissions";
+import { canAccessPath, normalizeUserPermissions } from "@/lib/auth/permissions";
 
 export default withAuth(
   function middleware(req) {
@@ -13,7 +13,8 @@ export default withAuth(
     }
 
     const role = token.role as Role;
-    if (!canAccessPath(role, pathname)) {
+    const permissions = normalizeUserPermissions(token.permissions as Record<string, unknown> | undefined);
+    if (!canAccessPath(role, pathname, permissions)) {
       return NextResponse.redirect(new URL("/dashboard", req.url));
     }
 
@@ -48,6 +49,7 @@ export const config = {
     "/sales/:path*",
     "/returns/:path*",
     "/payments/:path*",
+    "/expenses/:path*",
     "/reports/:path*",
     "/financial-reports/:path*",
     "/calculator/:path*",

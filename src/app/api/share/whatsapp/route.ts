@@ -54,11 +54,14 @@ export async function GET(request: NextRequest) {
         phone = po.supplier.phone || "";
       }
     } else if (type === "delivery-order") {
-      const doRec = await prisma.deliveryOrder.findUnique({ where: { id }, include: { customer: true } });
+      const doRec = await prisma.deliveryOrder.findUnique({
+        where: { id },
+        include: { customer: true, destinationLocation: true, location: true },
+      });
       if (doRec) {
-        docTitle = `Delivery Order #${doRec.doNo}`;
-        partyName = doRec.customer.name;
-        phone = doRec.customer.phone || "";
+        docTitle = doRec.customer ? `Delivery Order #${doRec.doNo}` : `Transfer Order #${doRec.doNo}`;
+        partyName = doRec.customer?.name || (doRec.destinationLocation ? `Transfer to ${doRec.destinationLocation.name}` : "Internal Transfer");
+        phone = doRec.customer?.phone || "";
       }
     } else if (type === "sale-return") {
       const ret = await prisma.saleReturn.findUnique({ where: { id }, include: { customer: true } });

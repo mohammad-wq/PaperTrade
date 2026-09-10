@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { listPaymentsAction, createPaymentAction } from "@/actions/payments";
+import { listPaymentsAction, createMiscExpenseAction, createPaymentAction } from "@/actions/payments";
 import { listPartiesAction } from "@/actions/parties";
 import { listSaleInvoicesAction, listPurchaseInvoicesAction } from "@/actions/invoices";
 import { PaymentMethod, PartyType } from "@prisma/client";
@@ -57,6 +57,7 @@ export default function PaymentsPage() {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isExpenseDialogOpen, setIsExpenseDialogOpen] = useState(false);
 
   // Form state
   const [partyId, setPartyId] = useState("");
@@ -65,8 +66,14 @@ export default function PaymentsPage() {
   const [method, setMethod] = useState<PaymentMethod>(PaymentMethod.CASH);
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState("");
+  const [expenseDescription, setExpenseDescription] = useState("");
+  const [expenseAmount, setExpenseAmount] = useState<number | "">("");
+  const [expenseMethod, setExpenseMethod] = useState<PaymentMethod>(PaymentMethod.CASH);
+  const [expenseDate, setExpenseDate] = useState(new Date().toISOString().slice(0, 10));
   const [formError, setFormError] = useState<string | null>(null);
+  const [expenseFormError, setExpenseFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [expenseSubmitting, setExpenseSubmitting] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -151,6 +158,8 @@ export default function PaymentsPage() {
       return;
     }
 
+    if (!window.confirm("Confirm: record this payment?")) return;
+
     setSubmitting(true);
     try {
       const isCust = selectedParty?.type === PartyType.CUSTOMER;
@@ -171,11 +180,52 @@ export default function PaymentsPage() {
         setPartyId("");
         setInvoiceId("");
         setAmount("");
+        setMethod(PaymentMethod.CASH);
+        setPaymentDate(new Date().toISOString().slice(0, 10));
         setNotes("");
         await loadData();
       }
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleExpenseSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setExpenseFormError(null);
+
+    if (!expenseDescription.trim()) {
+      setExpenseFormError("Please enter an expense description.");
+      return;
+    }
+    if (!expenseAmount || expenseAmount <= 0) {
+      setExpenseFormError("Expense amount must be greater than 0.");
+      return;
+    }
+
+    if (!window.confirm("Confirm: record this miscellaneous expense?")) return;
+
+    setExpenseSubmitting(true);
+    try {
+      const res = await createMiscExpenseAction({
+        amount: Number(expenseAmount),
+        method: expenseMethod,
+        date: new Date(expenseDate),
+        description: expenseDescription.trim(),
+      });
+
+      if (!res.success) {
+        setExpenseFormError(res.error || "Failed to record expense.");
+      } else {
+        setIsExpenseDialogOpen(false);
+        setExpenseDescription("");
+        setExpenseAmount("");
+        setExpenseMethod(PaymentMethod.CASH);
+        setExpenseDate(new Date().toISOString().slice(0, 10));
+        await loadData();
+      }
+    } finally {
+      setExpenseSubmitting(false);
     }
   }
 
@@ -193,13 +243,23 @@ export default function PaymentsPage() {
           </p>
         </div>
 
-        <Button
-          onClick={() => setIsDialogOpen(true)}
-          className="bg-emerald-800 text-white hover:bg-emerald-700 shadow-sm"
-        >
-          <Plus className="mr-1.5 h-4 w-4" />
-          Record Payment
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setIsExpenseDialogOpen(true)}
+            className="border-amber-200 bg-amber-50 text-amber-900 hover:bg-amber-100"
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            Record Misc Expense
+          </Button>
+          <Button
+            onClick={() => setIsDialogOpen(true)}
+            className="bg-emerald-800 text-white hover:bg-emerald-700 shadow-sm"
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            Record Payment
+          </Button>
+        </div>
       </div>
 
       {/* Summary Cards */}
@@ -305,6 +365,100 @@ export default function PaymentsPage() {
         </div>
       )}
 
+      {/* Record Misc Expense Dialog */}
+      {isExpenseDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs overflow-y-auto">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Record Miscellaneous Expense</h2>
+                <p className="text-xs text-slate-500">Post general business expenses directly to the ledger so reports reflect true operating costs.</p>
+              </div>
+              <button
+                onClick={() => setIsExpenseDialogOpen(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {expenseFormError && (
+              <div className="mt-4 rounded-lg bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{expenseFormError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleExpenseSubmit} className="mt-4 space-y-4">
+              <div className="space-y-1">
+                <Label htmlFor="expense-description" className="text-xs font-semibold">Expense Description *</Label>
+                <Input
+                  id="expense-description"
+                  value={expenseDescription}
+                  onChange={(e) => setExpenseDescription(e.target.value)}
+                  placeholder="e.g. Office stationery, courier charges, maintenance"
+                  className="text-xs"
+                  required
+                />
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label htmlFor="expense-amount" className="text-xs font-semibold">Amount *</Label>
+                  <Input
+                    id="expense-amount"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={expenseAmount}
+                    onChange={(e) => setExpenseAmount(e.target.value === "" ? "" : Number(e.target.value))}
+                    placeholder="0.00"
+                    className="text-xs"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="expense-method" className="text-xs font-semibold">Payment Method</Label>
+                  <select
+                    id="expense-method"
+                    value={expenseMethod}
+                    onChange={(e) => setExpenseMethod(e.target.value as PaymentMethod)}
+                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                  >
+                    <option value={PaymentMethod.CASH}>Cash</option>
+                    <option value={PaymentMethod.BANK}>Bank</option>
+                    <option value={PaymentMethod.CHEQUE}>Cheque</option>
+                    <option value={PaymentMethod.OTHER}>Other</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="expense-date" className="text-xs font-semibold">Expense Date *</Label>
+                <Input
+                  id="expense-date"
+                  type="date"
+                  value={expenseDate}
+                  onChange={(e) => setExpenseDate(e.target.value)}
+                  className="text-xs"
+                  required
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setIsExpenseDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={expenseSubmitting} className="bg-amber-800 text-white hover:bg-amber-700">
+                  {expenseSubmitting ? "Posting..." : "Post Expense"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Record Payment Dialog */}
       {isDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs overflow-y-auto">
@@ -349,6 +503,14 @@ export default function PaymentsPage() {
                     </option>
                   ))}
                 </select>
+                {selectedParty && (
+                  <div className="mt-1.5 rounded-lg bg-slate-50 border border-slate-200 p-2.5 flex items-center justify-between text-xs">
+                    <span className="text-slate-600">Current Ledger Balance:</span>
+                    <span className={`font-bold ${selectedParty.balance > 0 ? "text-amber-800" : "text-slate-900"}`}>
+                      PKR {selectedParty.balance.toLocaleString()} ({selectedParty.type === PartyType.CUSTOMER ? "Receivable" : "Payable"})
+                    </span>
+                  </div>
+                )}
               </div>
 
               {candidateInvoices.length > 0 && (

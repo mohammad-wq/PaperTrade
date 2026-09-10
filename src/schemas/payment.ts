@@ -16,4 +16,12 @@ export const paymentSchema = z
     path: ["saleInvoiceId"],
   });
 
+export const miscExpenseSchema = z.object({
+  amount: z.coerce.number().gt(0, "Amount must be greater than 0"),
+  method: z.nativeEnum(PaymentMethod).default(PaymentMethod.CASH),
+  date: z.coerce.date(),
+  description: z.string().trim().min(3, "Expense description is required").max(500),
+});
+
 export type PaymentInput = z.infer<typeof paymentSchema>;
+export type MiscExpenseInput = z.infer<typeof miscExpenseSchema>;

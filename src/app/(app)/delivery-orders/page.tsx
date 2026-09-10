@@ -22,11 +22,13 @@ import {
   listDeliveryOrdersAction,
   createDeliveryOrderAction,
   updateDeliveryOrderStatusAction,
+  listLocationsAction,
 } from "@/actions/orders";
 import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { DeliveryOrderStatus, Unit } from "@prisma/client";
 import { format } from "date-fns";
+import { cn } from "@/lib/utils";
 
 type DORow = {
   id: string;
@@ -37,14 +39,21 @@ type DORow = {
   driverName: string | null;
   deliveredTo: string | null;
   notes: string | null;
-  customer: { id: string; name: string; phone: string | null };
+  customer: { id: string; name: string; phone: string | null } | null;
   location: { id: string; name: string };
+  destinationLocation?: { id: string; name: string } | null;
   linkedSaleInvoice?: { id: string; invoiceNo: string } | null;
   items: Array<{
     id: string;
     quantity: number;
     product: { id: string; productNo: string; name: string };
   }>;
+};
+
+type LocationOption = {
+  id: string;
+  name: string;
+  address?: string | null;
 };
 
 type PartyOption = {
@@ -70,14 +79,17 @@ export default function DeliveryOrdersPage() {
   const [orders, setOrders] = useState<DORow[]>([]);
   const [customers, setCustomers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
+  const [dbLocations, setDbLocations] = useState<LocationOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   // Form state
+  const [orderType, setOrderType] = useState<"CUSTOMER" | "INTERNAL_TRANSFER">("CUSTOMER");
   const [customerId, setCustomerId] = useState("");
   const [locationId, setLocationId] = useState("");
+  const [destinationLocationId, setDestinationLocationId] = useState("");
   const [orderDate, setOrderDate] = useState(new Date().toISOString().slice(0, 10));
   const [vehicleNo, setVehicleNo] = useState("");
   const [driverName, setDriverName] = useState("");
@@ -92,10 +104,11 @@ export default function DeliveryOrdersPage() {
   async function loadData() {
     setLoading(true);
     try {
-      const [doRes, partyRes, prodRes] = await Promise.all([
+      const [doRes, partyRes, prodRes, locRes] = await Promise.all([
         listDeliveryOrdersAction(),
         listPartiesAction(),
         listProductsAction(),
+        listLocationsAction(),
       ]);
 
       if (doRes.success && doRes.data) {
@@ -108,6 +121,9 @@ export default function DeliveryOrdersPage() {
       if (prodRes.success && prodRes.data) {
         setProducts(prodRes.data as ProductOption[]);
       }
+      if (locRes.success && locRes.data) {
+        setDbLocations(locRes.data as LocationOption[]);
+      }
     } finally {
       setLoading(false);
     }
@@ -118,6 +134,7 @@ export default function DeliveryOrdersPage() {
   }, []);
 
   const locations = useMemo(() => {
+    if (dbLocations.length > 0) return dbLocations;
     const map = new Map<string, string>();
     orders.forEach((o) => map.set(o.location.id, o.location.name));
     if (map.size === 0) {
@@ -125,7 +142,7 @@ export default function DeliveryOrdersPage() {
       map.set("loc-warehouse", "Warehouse");
     }
     return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
-  }, [orders]);
+  }, [dbLocations, orders]);
 
   const filteredOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -133,7 +150,8 @@ export default function DeliveryOrdersPage() {
       const matchesQuery =
         !q ||
         order.doNo.toLowerCase().includes(q) ||
-        order.customer.name.toLowerCase().includes(q) ||
+        (order.customer?.name && order.customer.name.toLowerCase().includes(q)) ||
+        (order.destinationLocation?.name && order.destinationLocation.name.toLowerCase().includes(q)) ||
         (order.driverName && order.driverName.toLowerCase().includes(q)) ||
         (order.vehicleNo && order.vehicleNo.toLowerCase().includes(q));
       const matchesStatus = statusFilter === "ALL" || order.status === statusFilter;
@@ -173,7 +191,7 @@ export default function DeliveryOrdersPage() {
   }
 
   async function handleStatusChange(id: string, status: DeliveryOrderStatus) {
-    const actionLabel = status === DeliveryOrderStatus.DISPATCHED ? "dispatch goods and deduce stock" : "update status";
+    const actionLabel = status === DeliveryOrderStatus.DISPATCHED ? "dispatch goods and update stock" : "update status";
     if (!window.confirm(`Are you sure you want to ${actionLabel}?`)) return;
 
     const res = await updateDeliveryOrderStatusAction({ id, status });
@@ -188,29 +206,49 @@ export default function DeliveryOrdersPage() {
     e.preventDefault();
     setFormError(null);
 
-    if (!customerId) {
+    if (orderType === "CUSTOMER" && !customerId) {
       setFormError("Please select a customer.");
       return;
     }
     if (!locationId) {
-      setFormError("Please select a dispatch location.");
+      setFormError("Please select a dispatch/source location.");
       return;
+    }
+    if (orderType === "INTERNAL_TRANSFER") {
+      if (!destinationLocationId) {
+        setFormError("Please select a destination location for the internal transfer.");
+        return;
+      }
+      if (destinationLocationId === locationId) {
+        setFormError("Source and destination locations cannot be the same.");
+        return;
+      }
     }
     if (items.some((i) => !i.productId || i.quantity <= 0)) {
       setFormError("All line items must have a valid product and quantity > 0.");
       return;
     }
 
+    const confirmMsg =
+      orderType === "INTERNAL_TRANSFER"
+        ? "Confirm: create internal stock transfer between locations?"
+        : "Confirm: create this delivery order?";
+    if (!window.confirm(confirmMsg)) return;
+
     setSubmitting(true);
     try {
       const res = await createDeliveryOrderAction({
-        customerId,
+        orderType,
+        customerId: orderType === "CUSTOMER" ? customerId : null,
         locationId,
+        destinationLocationId: orderType === "INTERNAL_TRANSFER" ? destinationLocationId : null,
         date: new Date(orderDate),
         status: DeliveryOrderStatus.DRAFT,
         vehicleNo,
         driverName,
-        deliveredTo,
+        deliveredTo: orderType === "INTERNAL_TRANSFER"
+          ? (locations.find(l => l.id === destinationLocationId)?.name || deliveredTo)
+          : deliveredTo,
         notes,
         items: items.map((i) => ({
           productId: i.productId,
@@ -223,6 +261,11 @@ export default function DeliveryOrdersPage() {
         setFormError(res.error || "Failed to create delivery order.");
       } else {
         setIsDialogOpen(false);
+        setOrderType("CUSTOMER");
+        setCustomerId("");
+        setLocationId("");
+        setDestinationLocationId("");
+        setOrderDate(new Date().toISOString().slice(0, 10));
         setItems([{ productId: "", quantity: 1, unit: Unit.PACKET }]);
         setVehicleNo("");
         setDriverName("");
@@ -333,9 +376,17 @@ export default function DeliveryOrdersPage() {
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <CardTitle className="text-base font-bold text-slate-900">{order.doNo}</CardTitle>
-                    <p className="text-xs font-medium text-amber-900">{order.customer.name}</p>
-                    {order.customer.phone && (
-                      <p className="text-[11px] text-slate-400">{order.customer.phone}</p>
+                    {order.customer ? (
+                      <>
+                        <p className="text-xs font-medium text-amber-900">{order.customer.name}</p>
+                        {order.customer.phone && (
+                          <p className="text-[11px] text-slate-400">{order.customer.phone}</p>
+                        )}
+                      </>
+                    ) : (
+                      <span className="mt-1 inline-flex items-center rounded-md bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-800 border border-sky-200">
+                        Internal: {order.location.name} &rarr; {order.destinationLocation?.name ?? "Transfer"}
+                      </span>
                     )}
                   </div>
                   {getStatusBadge(order.status)}
@@ -347,6 +398,12 @@ export default function DeliveryOrdersPage() {
                   <span>From Location:</span>
                   <span className="font-semibold text-slate-800">{order.location.name}</span>
                 </div>
+                {order.destinationLocation && (
+                  <div className="flex justify-between text-slate-600">
+                    <span>To Location:</span>
+                    <span className="font-semibold text-sky-800">{order.destinationLocation.name}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-slate-600">
                   <span>Date:</span>
                   <span>{format(new Date(order.date), "dd MMM yyyy")}</span>
@@ -365,7 +422,7 @@ export default function DeliveryOrdersPage() {
                 )}
                 {order.deliveredTo && (
                   <div className="flex justify-between text-slate-600">
-                    <span>Destination:</span>
+                    <span>Destination Note:</span>
                     <span className="truncate max-w-[150px]">{order.deliveredTo}</span>
                   </div>
                 )}
@@ -455,42 +512,129 @@ export default function DeliveryOrdersPage() {
             )}
 
             <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-              <div className="grid gap-4 sm:grid-cols-3">
-                <div className="space-y-1">
-                  <Label htmlFor="docustomer" className="text-xs font-semibold">Customer *</Label>
-                  <select
-                    id="docustomer"
-                    value={customerId}
-                    onChange={(e) => setCustomerId(e.target.value)}
-                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
-                    required
+              {/* Transfer Type Selection */}
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                <Label className="text-xs font-semibold text-slate-700 block mb-2">Delivery / Transfer Type</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOrderType("CUSTOMER");
+                      setDestinationLocationId("");
+                    }}
+                    className={cn(
+                      "flex items-center justify-center gap-2 rounded-md py-2 px-3 text-xs font-semibold transition-all",
+                      orderType === "CUSTOMER"
+                        ? "bg-amber-800 text-white shadow-sm"
+                        : "bg-white text-slate-700 hover:bg-slate-100 border border-slate-200",
+                    )}
                   >
-                    <option value="">Select customer</option>
-                    {customers.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                    <span>Customer Delivery</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOrderType("INTERNAL_TRANSFER");
+                      setCustomerId("");
+                      if (!destinationLocationId && locations.length > 1) {
+                        const other = locations.find((l) => l.id !== locationId);
+                        if (other) setDestinationLocationId(other.id);
+                      }
+                    }}
+                    className={cn(
+                      "flex items-center justify-center gap-2 rounded-md py-2 px-3 text-xs font-semibold transition-all",
+                      orderType === "INTERNAL_TRANSFER"
+                        ? "bg-sky-700 text-white shadow-sm"
+                        : "bg-white text-slate-700 hover:bg-slate-100 border border-slate-200",
+                    )}
+                  >
+                    <span>Internal Transfer (Shop &harr; Warehouse)</span>
+                  </button>
                 </div>
+              </div>
 
-                <div className="space-y-1">
-                  <Label htmlFor="dolocation" className="text-xs font-semibold">Dispatch Location *</Label>
-                  <select
-                    id="dolocation"
-                    value={locationId}
-                    onChange={(e) => setLocationId(e.target.value)}
-                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
-                    required
-                  >
-                    <option value="">Select location</option>
-                    {locations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>
-                        {loc.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="grid gap-4 sm:grid-cols-3">
+                {orderType === "CUSTOMER" ? (
+                  <>
+                    <div className="space-y-1">
+                      <Label htmlFor="docustomer" className="text-xs font-semibold">Customer *</Label>
+                      <select
+                        id="docustomer"
+                        value={customerId}
+                        onChange={(e) => setCustomerId(e.target.value)}
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                        required
+                      >
+                        <option value="">Select customer</option>
+                        {customers.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="dolocation" className="text-xs font-semibold">Dispatch Location *</Label>
+                      <select
+                        id="dolocation"
+                        value={locationId}
+                        onChange={(e) => setLocationId(e.target.value)}
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                        required
+                      >
+                        <option value="">Select location</option>
+                        {locations.map((loc) => (
+                          <option key={loc.id} value={loc.id}>
+                            {loc.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="space-y-1">
+                      <Label htmlFor="dofromlocation" className="text-xs font-semibold text-rose-800">
+                        Source Location (From) *
+                      </Label>
+                      <select
+                        id="dofromlocation"
+                        value={locationId}
+                        onChange={(e) => setLocationId(e.target.value)}
+                        className="w-full rounded-md border border-rose-200 bg-rose-50/30 px-3 py-2 text-xs font-medium"
+                        required
+                      >
+                        <option value="">Select source</option>
+                        {locations.map((loc) => (
+                          <option key={loc.id} value={loc.id}>
+                            {loc.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="dotolocation" className="text-xs font-semibold text-emerald-800">
+                        Destination Location (To) *
+                      </Label>
+                      <select
+                        id="dotolocation"
+                        value={destinationLocationId}
+                        onChange={(e) => setDestinationLocationId(e.target.value)}
+                        className="w-full rounded-md border border-emerald-200 bg-emerald-50/30 px-3 py-2 text-xs font-medium"
+                        required
+                      >
+                        <option value="">Select destination</option>
+                        {locations.map((loc) => (
+                          <option key={loc.id} value={loc.id} disabled={loc.id === locationId}>
+                            {loc.name} {loc.id === locationId ? "(Source)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
+                )}
 
                 <div className="space-y-1">
                   <Label htmlFor="dodate" className="text-xs font-semibold">Date *</Label>

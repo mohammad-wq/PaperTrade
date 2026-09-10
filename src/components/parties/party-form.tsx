@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { PartyType } from "@prisma/client";
@@ -45,6 +45,10 @@ export function PartyForm({
     () => ({
       ...EMPTY_VALUES,
       ...initialValues,
+      name: initialValues?.name ?? "",
+      phone: initialValues?.phone ?? "",
+      email: initialValues?.email ?? "",
+      address: initialValues?.address ?? "",
       creditLimit: initialValues?.creditLimit ?? 0,
       type: initialValues?.type ?? PartyType.CUSTOMER,
     }),
@@ -54,12 +58,17 @@ export function PartyForm({
   const {
     register,
     handleSubmit,
+    reset,
     formState: { errors, isSubmitting },
     watch,
   } = useForm<PartyInput>({
     resolver: zodResolver(partySchema),
     defaultValues,
   });
+
+  useEffect(() => {
+    reset(defaultValues);
+  }, [defaultValues, reset]);
 
   const type = watch("type");
 
@@ -68,7 +77,14 @@ export function PartyForm({
     const action = initialValues?.name ? "update this party" : "create this party";
     if (!window.confirm(`Confirm: ${action}?`)) return;
     try {
-      await onSubmit(values);
+      const sanitized: PartyInput = {
+        ...values,
+        phone: values.phone?.trim() || "",
+        email: values.email?.trim() || "",
+        address: values.address?.trim() || "",
+        creditLimit: values.type === PartyType.CUSTOMER ? (values.creditLimit ?? null) : null,
+      };
+      await onSubmit(sanitized);
     } catch (error) {
       setServerError(error instanceof Error ? error.message : "Unable to save party.");
     }
@@ -90,57 +106,57 @@ export function PartyForm({
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="name">Name</Label>
-              <Input id="name" {...register("name")} />
+              <Label htmlFor="name">Party Name *</Label>
+              <Input id="name" placeholder="e.g. Al-Madina Paper Mart or Packages Ltd" {...register("name")} />
               {errors.name ? <p className="text-sm text-destructive">{errors.name.message}</p> : null}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="type">Type</Label>
+              <Label htmlFor="type">Party Type *</Label>
               <select
                 id="type"
                 className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-base md:text-sm"
                 {...register("type")}
               >
-                <option value={PartyType.CUSTOMER}>Customer</option>
-                <option value={PartyType.SUPPLIER}>Supplier</option>
+                <option value={PartyType.CUSTOMER}>Customer (Buyer)</option>
+                <option value={PartyType.SUPPLIER}>Supplier (Paper Mill / Vendor)</option>
               </select>
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="isActive">Status</Label>
+              <Label htmlFor="isActive">Account Status *</Label>
               <select
                 id="isActive"
                 className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-base md:text-sm"
                 {...register("isActive", { setValueAs: (value) => value === "true" })}
               >
-                <option value="true">Active</option>
-                <option value="false">Inactive</option>
+                <option value="true">Active (Can trade)</option>
+                <option value="false">Inactive (Suspended)</option>
               </select>
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="phone">Phone</Label>
-              <Input id="phone" {...register("phone")} />
+              <Label htmlFor="phone">Phone Number (optional)</Label>
+              <Input id="phone" placeholder="e.g. 0300-1234567" {...register("phone")} />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" {...register("email")} />
+              <Label htmlFor="email">Email Address (optional)</Label>
+              <Input id="email" type="email" placeholder="name@business.com" {...register("email")} />
               {errors.email ? <p className="text-sm text-destructive">{errors.email.message}</p> : null}
             </div>
 
             {type === PartyType.CUSTOMER ? (
               <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="creditLimit">Credit limit</Label>
-                <Input id="creditLimit" type="number" step="0.01" {...register("creditLimit", { valueAsNumber: true })} />
+                <Label htmlFor="creditLimit">Credit Limit in PKR (optional)</Label>
+                <Input id="creditLimit" type="number" step="0.01" placeholder="e.g. 500000 (leave empty for unlimited)" {...register("creditLimit", { valueAsNumber: true })} />
                 {errors.creditLimit ? <p className="text-sm text-destructive">{errors.creditLimit.message}</p> : null}
               </div>
             ) : null}
 
             <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="address">Address</Label>
-              <Textarea id="address" {...register("address")} />
+              <Label htmlFor="address">Address & City (optional)</Label>
+              <Textarea id="address" placeholder="e.g. Shop # 14, Circular Road, Lahore" {...register("address")} />
             </div>
           </div>
 

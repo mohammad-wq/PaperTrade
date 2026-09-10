@@ -89,6 +89,7 @@ model User {
   passwordHash String
   role         Role     @default(STAFF)
   isActive     Boolean  @default(true)
+  permissions  Json?    @default("{}")
   createdAt    DateTime @default(now())
 
   stockMovements         StockMovement[]
@@ -101,6 +102,7 @@ model User {
   purchaseReturns        PurchaseReturn[]
   ledgerEntries          LedgerEntry[]
   payments               Payment[]
+  expenses               Expense[]
 }
 
 model Location {
@@ -112,7 +114,8 @@ model Location {
   stockMovements          StockMovement[]
   purchaseOrders          PurchaseOrder[]
   purchaseInvoices        PurchaseInvoice[]
-  deliveryOrders          DeliveryOrder[]
+  deliveryOrders          DeliveryOrder[]          @relation("SourceLocation")
+  deliveryOrdersIn        DeliveryOrder[]          @relation("DestinationLocation")
   saleInvoices            SaleInvoice[]
   saleReturns             SaleReturn[]
   purchaseReturns         PurchaseReturn[]
@@ -208,7 +211,7 @@ model StockMovement {
   location  Location @relation(fields: [locationId], references: [id])
   createdBy User     @relation(fields: [createdById], references: [id])
 
-  @@index([productId, locationId])
+  @@index([productId, locationId, type])
   @@index([referenceType, referenceId])
   @@index([createdAt])
   @@index([type])
@@ -235,9 +238,9 @@ model Party {
   ledgerEntries     LedgerEntry[]
   payments          Payment[]
 
-  @@unique([email, type])
   @@index([type, isActive])
   @@index([name])
+  @@index([createdAt])
 }
 
 model PurchaseOrder {
@@ -323,30 +326,33 @@ model PurchaseInvoiceItem {
 }
 
 model DeliveryOrder {
-  id            String               @id @default(cuid())
-  doNo          String               @unique
-  customerId    String
-  locationId    String
-  saleInvoiceId String?              @unique
-  date          DateTime
-  status        DeliveryOrderStatus  @default(DRAFT)
-  vehicleNo     String?
-  driverName    String?
-  deliveredTo   String?
-  notes         String?
-  createdById   String
-  createdAt     DateTime             @default(now())
-  updatedAt     DateTime             @updatedAt
+  id                    String               @id @default(cuid())
+  doNo                  String               @unique
+  customerId            String?
+  locationId            String
+  destinationLocationId String?
+  saleInvoiceId         String?              @unique
+  date                  DateTime
+  status                DeliveryOrderStatus  @default(DRAFT)
+  vehicleNo             String?
+  driverName            String?
+  deliveredTo           String?
+  notes                 String?
+  createdById           String
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
 
-  customer           Party               @relation(fields: [customerId], references: [id])
-  location           Location            @relation(fields: [locationId], references: [id])
-  linkedSaleInvoice  SaleInvoice?        @relation("DeliveryOrderToSaleInvoice", fields: [saleInvoiceId], references: [id])
-  saleInvoiceFromDo  SaleInvoice?        @relation("SaleInvoiceToDeliveryOrder")
-  createdBy          User                @relation(fields: [createdById], references: [id])
-  items              DeliveryOrderItem[]
+  customer            Party?              @relation(fields: [customerId], references: [id])
+  location            Location            @relation("SourceLocation", fields: [locationId], references: [id])
+  destinationLocation Location?           @relation("DestinationLocation", fields: [destinationLocationId], references: [id])
+  linkedSaleInvoice   SaleInvoice?        @relation("DeliveryOrderToSaleInvoice", fields: [saleInvoiceId], references: [id])
+  saleInvoiceFromDo   SaleInvoice?        @relation("SaleInvoiceToDeliveryOrder")
+  createdBy           User                @relation(fields: [createdById], references: [id])
+  items               DeliveryOrderItem[]
 
   @@index([customerId])
   @@index([locationId])
+  @@index([destinationLocationId])
   @@index([date])
   @@index([status])
 }
@@ -550,4 +556,35 @@ model AppSetting {
   id    String @id @default(cuid())
   key   String @unique
   value String
+}
+
+enum ExpenseCategory {
+  OFFICE_SUPPLIES
+  UTILITIES
+  RENT
+  SALARIES
+  TRANSPORT_FUEL
+  MAINTENANCE
+  TEA_REFRESHMENTS
+  TAXES_FEES
+  OTHER
+}
+
+model Expense {
+  id          String          @id @default(cuid())
+  expenseNo   String          @unique
+  category    ExpenseCategory @default(OTHER)
+  amount      Decimal         @db.Decimal(14, 4)
+  method      PaymentMethod   @default(CASH)
+  date        DateTime
+  description String
+  notes       String?
+  createdById String
+  createdAt   DateTime        @default(now())
+
+  createdBy   User            @relation(fields: [createdById], references: [id])
+
+  @@index([date])
+  @@index([category])
+  @@index([createdById])
 }

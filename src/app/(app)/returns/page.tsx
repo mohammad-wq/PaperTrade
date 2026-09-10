@@ -189,6 +189,8 @@ export default function ReturnsPage() {
       return;
     }
 
+    if (!window.confirm(`Confirm: create this ${tab === "SALES" ? "customer return" : "supplier return"}?`)) return;
+
     setSubmitting(true);
     try {
       if (tab === "SALES") {

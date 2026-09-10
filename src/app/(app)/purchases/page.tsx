@@ -43,6 +43,7 @@ type PartyOption = {
   id: string;
   name: string;
   type: string;
+  balance?: number;
 };
 
 type ProductOption = {
@@ -149,6 +150,11 @@ export default function PurchasesPage() {
     [items],
   );
 
+  const selectedSupplier = useMemo(
+    () => suppliers.find((s) => s.id === supplierId),
+    [suppliers, supplierId],
+  );
+
   function handleProductChange(index: number, pId: string) {
     const product = products.find((p) => p.id === pId);
     const updated = [...items];
@@ -197,6 +203,8 @@ export default function PurchasesPage() {
       return;
     }
 
+    if (!window.confirm("Confirm: record this purchase invoice?")) return;
+
     setSubmitting(true);
     try {
       const res = await createPurchaseInvoiceAction({
@@ -216,9 +224,12 @@ export default function PurchasesPage() {
         setFormError(res.error || "Failed to record purchase invoice.");
       } else {
         setIsDialogOpen(false);
+        setSupplierId("");
+        setLocationId("");
+        setPurchaseOrderId("");
+        setInvoiceDate(new Date().toISOString().slice(0, 10));
         setItems([{ productId: "", quantity: 1, unitCost: 0 }]);
         setNotes("");
-        setPurchaseOrderId("");
         await loadData();
       }
     } finally {
@@ -378,7 +389,14 @@ export default function PurchasesPage() {
             <form onSubmit={handleSubmit} className="mt-4 space-y-4">
               <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
                 <div className="space-y-1">
-                  <Label htmlFor="supplier" className="text-xs font-semibold">Supplier *</Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="supplier" className="text-xs font-semibold">Supplier *</Label>
+                    {selectedSupplier && (
+                      <span className="text-[11px] text-slate-500">
+                        Payable: <strong className="text-amber-800">PKR {Number(selectedSupplier.balance || 0).toLocaleString()}</strong>
+                      </span>
+                    )}
+                  </div>
                   <select
                     id="supplier"
                     value={supplierId}

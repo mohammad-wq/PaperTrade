@@ -10,6 +10,7 @@ import { partySchema } from "@/schemas/party";
 import { stockAdjustmentSchema, stockTransferSchema } from "@/schemas/inventory";
 import { getStockOnHand } from "@/lib/stock";
 import { userError } from "@/lib/errors";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 const deletePartySchema = z.object({ id: z.string().min(1, "Party is required") });
 
@@ -69,41 +70,46 @@ export async function listInventoryAction() {
 
 export async function upsertPartyAction(raw: unknown) {
   return runAction("parties.upsert", async () => {
-    await requireSession();
+    const session = await requireSession();
     const input = parseInput(partySchema, raw);
-    const normalized = {
-      ...input,
-      email: input.email?.trim() || null,
-      phone: input.phone?.trim() || null,
-      address: input.address?.trim() || null,
-      creditLimit: input.type === PartyType.CUSTOMER ? input.creditLimit ?? null : null,
-      isActive: Boolean(input.isActive),
-    };
 
-    if (normalized.id) {
+    const actionType = input.id ? "update" : "create";
+    if (!canPerformAction(session.user.role, "parties", actionType, (session.user as any).permissions)) {
+      throw userError(`You do not have permission to ${actionType} parties.`);
+    }
+
+    const email = input.email?.trim() ? input.email.trim() : null;
+    const phone = input.phone?.trim() ? input.phone.trim() : null;
+    const address = input.address?.trim() ? input.address.trim() : null;
+    const creditLimit =
+      input.type === PartyType.CUSTOMER && input.creditLimit != null
+        ? Number(input.creditLimit)
+        : null;
+
+    if (input.id) {
       return prisma.party.update({
-        where: { id: normalized.id },
+        where: { id: input.id },
         data: {
-          name: normalized.name.trim(),
-          type: normalized.type,
-          phone: normalized.phone,
-          email: normalized.email,
-          address: normalized.address,
-          creditLimit: normalized.creditLimit,
-          isActive: normalized.isActive,
+          name: input.name.trim(),
+          type: input.type,
+          phone,
+          email,
+          address,
+          creditLimit,
+          isActive: Boolean(input.isActive),
         },
       });
     }
 
     return prisma.party.create({
       data: {
-        name: normalized.name.trim(),
-        type: normalized.type,
-        phone: normalized.phone,
-        email: normalized.email,
-        address: normalized.address,
-        creditLimit: normalized.creditLimit,
-        isActive: normalized.isActive,
+        name: input.name.trim(),
+        type: input.type,
+        phone,
+        email,
+        address,
+        creditLimit,
+        isActive: Boolean(input.isActive),
       },
     });
   });
@@ -111,7 +117,10 @@ export async function upsertPartyAction(raw: unknown) {
 
 export async function softDeletePartyAction(raw: unknown) {
   return runAction("parties.delete", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "parties", "delete", (session.user as any).permissions)) {
+      throw userError("You do not have permission to delete parties.");
+    }
     const input = parseInput(deletePartySchema, raw);
 
     return prisma.$transaction(async (tx) => {

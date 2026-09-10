@@ -6,6 +6,7 @@ declare module "next-auth" {
     user: {
       id: string;
       role: Role;
+      permissions?: Record<string, { view: boolean; create: boolean; update: boolean; delete: boolean }>;
       loginAt?: number;
       lastActive?: number;
     } & DefaultSession["user"];
@@ -13,6 +14,7 @@ declare module "next-auth" {
 
   interface User {
     role: Role;
+    permissions?: Record<string, { view: boolean; create: boolean; update: boolean; delete: boolean }>;
     loginAt?: number;
     lastActive?: number;
   }
@@ -22,6 +24,7 @@ declare module "next-auth/jwt" {
   interface JWT {
     id: string;
     role: Role;
+    permissions?: Record<string, { view: boolean; create: boolean; update: boolean; delete: boolean }>;
     loginAt?: number;
     lastActive?: number;
   }

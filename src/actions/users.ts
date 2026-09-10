@@ -3,6 +3,7 @@
 import { parseInput, runAction } from "@/actions/_helpers";
 import { requireRole } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
+import { normalizeUserPermissions } from "@/lib/auth/permissions";
 import { createUserSchema, updateUserSchema } from "@/schemas/user";
 import { Role } from "@prisma/client";
 import { hash } from "bcryptjs";
@@ -19,10 +20,15 @@ export async function listUsersAction() {
         email: true,
         role: true,
         isActive: true,
+        permissions: true,
         createdAt: true,
       },
     });
-    return users;
+
+    return users.map((user) => ({
+      ...user,
+      permissions: normalizeUserPermissions(user.permissions as Record<string, unknown> | null),
+    }));
   });
 }
 
@@ -40,6 +46,7 @@ export async function createUserAction(raw: unknown) {
         passwordHash,
         role: input.role,
         isActive: input.isActive,
+        permissions: normalizeUserPermissions(input.permissions ?? {}),
       },
       select: {
         id: true,
@@ -47,10 +54,14 @@ export async function createUserAction(raw: unknown) {
         email: true,
         role: true,
         isActive: true,
+        permissions: true,
       },
     });
 
-    return user;
+    return {
+      ...user,
+      permissions: normalizeUserPermissions(user.permissions as Record<string, unknown> | null),
+    };
   });
 }
 
@@ -71,5 +82,36 @@ export async function toggleUserActiveAction(raw: unknown) {
     });
 
     return { id: updated.id, isActive: updated.isActive };
+  });
+}
+
+export async function updateUserPermissionsAction(raw: unknown) {
+  return runAction("users.permissions.update", async () => {
+    await requireRole([Role.OWNER]);
+    const schema = z.object({
+      id: z.string().min(1, "User ID is required"),
+      permissions: z.record(z.string(), z.object({
+        view: z.boolean(),
+        create: z.boolean(),
+        update: z.boolean(),
+        delete: z.boolean(),
+      })),
+    });
+
+    const { id, permissions } = parseInput(schema, raw);
+
+    const user = await prisma.user.update({
+      where: { id },
+      data: { permissions: normalizeUserPermissions(permissions) },
+      select: {
+        id: true,
+        permissions: true,
+      },
+    });
+
+    return {
+      id: user.id,
+      permissions: normalizeUserPermissions(user.permissions as Record<string, unknown> | null),
+    };
   });
 }

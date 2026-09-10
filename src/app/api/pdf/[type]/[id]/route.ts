@@ -137,6 +137,7 @@ export async function GET(
         include: {
           customer: true,
           location: true,
+          destinationLocation: true,
           linkedSaleInvoice: true,
           items: { include: { product: true } },
         },
@@ -148,13 +149,13 @@ export async function GET(
 
       filename = `DO-${doRecord.doNo}.pdf`;
       docElement = React.createElement(DocumentPdfView, {
-        docType: "Delivery Order",
+        docType: doRecord.customer ? "Delivery Order" : "Internal Stock Transfer Order",
         docNumber: doRecord.doNo,
         date: format(doRecord.date, "dd MMM yyyy"),
-        partyLabel: "Deliver To (Customer)",
-        partyName: doRecord.customer.name,
-        partyAddress: doRecord.customer.address,
-        partyPhone: doRecord.customer.phone,
+        partyLabel: doRecord.customer ? "Deliver To (Customer)" : "Destination Location",
+        partyName: doRecord.customer?.name || (doRecord.destinationLocation ? `Internal Transfer: ${doRecord.destinationLocation.name}` : "Internal Stock Transfer"),
+        partyAddress: doRecord.customer?.address || doRecord.destinationLocation?.address || null,
+        partyPhone: doRecord.customer?.phone || null,
         locationName: doRecord.location.name,
         referenceNo: doRecord.linkedSaleInvoice ? `Invoice: ${doRecord.linkedSaleInvoice.invoiceNo}` : null,
         deliveryDetails: {

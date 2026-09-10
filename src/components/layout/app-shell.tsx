@@ -24,6 +24,7 @@ import {
   Settings,
   LogOut,
   Layers,
+  Banknote,
 } from "lucide-react";
 import { Role } from "@prisma/client";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ type NavItem = {
   icon: React.ComponentType<{ className?: string }>;
   roles: Role[];
   badge?: string;
+  moduleKey?: string;
 };
 
 type NavGroup = {
@@ -47,59 +49,65 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "Overview",
     items: [
-      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
-      { href: "/calculator", label: "Paper Calculator", icon: Calculator, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
+      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "dashboard" },
+      { href: "/calculator", label: "Paper Calculator", icon: Calculator, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "calculator" },
     ],
   },
   {
     title: "Catalog & Parties",
     items: [
-      { href: "/products", label: "Products", icon: Boxes, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
-      { href: "/parties", label: "Parties", icon: Users, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
+      { href: "/products", label: "Products", icon: Boxes, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "products" },
+      { href: "/parties", label: "Parties", icon: Users, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "parties" },
     ],
   },
   {
     title: "Operations",
     items: [
-      { href: "/sales", label: "Sales Invoices", icon: Receipt, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
-      { href: "/delivery-orders", label: "Delivery Orders", icon: Truck, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
-      { href: "/purchases", label: "Purchase Invoices", icon: ShoppingCart, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
-      { href: "/purchase-orders", label: "Purchase Orders", icon: Layers, roles: [Role.OWNER, Role.MANAGER] },
-      { href: "/returns", label: "Returns & Notes", icon: RotateCcw, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
+      { href: "/sales", label: "Sales Invoices", icon: Receipt, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "sales" },
+      { href: "/delivery-orders", label: "Delivery Orders", icon: Truck, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "delivery-orders" },
+      { href: "/purchases", label: "Purchase Invoices", icon: ShoppingCart, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "purchases" },
+      { href: "/purchase-orders", label: "Purchase Orders", icon: Layers, roles: [Role.OWNER, Role.MANAGER], moduleKey: "purchase-orders" },
+      { href: "/returns", label: "Returns & Notes", icon: RotateCcw, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "returns" },
     ],
   },
   {
     title: "Inventory & Warehousing",
     items: [
-      { href: "/inventory", label: "Inventory Stock", icon: PackageSearch, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
-      { href: "/stock-movements", label: "Stock Movements", icon: ArrowRightLeft, roles: [Role.OWNER, Role.MANAGER] },
-      { href: "/storage-charges", label: "Storage Charges", icon: Warehouse, roles: [Role.OWNER, Role.MANAGER] },
+      { href: "/inventory", label: "Inventory Stock", icon: PackageSearch, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "inventory" },
+      { href: "/stock-movements", label: "Stock Movements", icon: ArrowRightLeft, roles: [Role.OWNER, Role.MANAGER], moduleKey: "stock-movements" },
+      { href: "/storage-charges", label: "Storage Charges", icon: Warehouse, roles: [Role.OWNER, Role.MANAGER], moduleKey: "storage-charges" },
     ],
   },
   {
     title: "Finance & Accounts",
     items: [
-      { href: "/payments", label: "Payments", icon: CreditCard, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
-      { href: "/ledger", label: "General Ledger", icon: BookOpen, roles: [Role.OWNER, Role.MANAGER] },
-      { href: "/reports", label: "Financial Reports", icon: BarChart3, roles: [Role.OWNER, Role.MANAGER, Role.STAFF] },
+      { href: "/payments", label: "Payments", icon: CreditCard, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "payments" },
+      { href: "/expenses", label: "Expenses", icon: Banknote, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "expenses" },
+      { href: "/ledger", label: "General Ledger", icon: BookOpen, roles: [Role.OWNER, Role.MANAGER], moduleKey: "ledger" },
+      { href: "/reports", label: "Financial Reports", icon: BarChart3, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "reports" },
     ],
   },
   {
     title: "System Admin",
     items: [
-      { href: "/users", label: "Staff & Users", icon: ShieldAlert, roles: [Role.OWNER] },
-      { href: "/settings", label: "Settings", icon: Settings, roles: [Role.OWNER] },
+      { href: "/users", label: "Staff & Users", icon: ShieldAlert, roles: [Role.OWNER], moduleKey: "users" },
+      { href: "/settings", label: "Settings", icon: Settings, roles: [Role.OWNER], moduleKey: "settings" },
     ],
   },
 ];
 
-function NavLinks({ role, onNavigate }: { role: Role; onNavigate?: () => void }) {
+function NavLinks({ role, onNavigate, permissions }: { role: Role; onNavigate?: () => void; permissions?: Record<string, { view: boolean; create: boolean; update: boolean; delete: boolean }> }) {
   const pathname = usePathname();
 
   return (
     <nav className="flex flex-col gap-5">
       {NAV_GROUPS.map((group) => {
-        const visibleItems = group.items.filter((item) => item.roles.includes(role));
+        const visibleItems = group.items.filter((item) => {
+          if (!item.roles.includes(role)) return false;
+          if (role === Role.OWNER) return true;
+          if (!item.moduleKey) return true;
+          return permissions?.[item.moduleKey]?.view ?? true;
+        });
         if (visibleItems.length === 0) return null;
 
         return (
@@ -149,7 +157,7 @@ export function AppShell({
   user,
 }: {
   children: ReactNode;
-  user: { name?: string | null; email?: string | null; role: Role };
+  user: { name?: string | null; email?: string | null; role: Role; permissions?: Record<string, { view: boolean; create: boolean; update: boolean; delete: boolean }> };
 }) {
   const roleBadgeStyle =
     user.role === Role.OWNER
@@ -197,7 +205,7 @@ export function AppShell({
                 </div>
               </SheetHeader>
               <div className="flex-1 overflow-y-auto px-3 py-4">
-                <NavLinks role={user.role} />
+                <NavLinks role={user.role} permissions={user.permissions} />
               </div>
               <div className="border-t border-amber-950/10 p-4">
                 <Button
@@ -249,7 +257,7 @@ export function AppShell({
             </div>
 
             {/* Categorized Nav links */}
-            <NavLinks role={user.role} />
+            <NavLinks role={user.role} permissions={user.permissions} />
           </div>
 
           {/* User Signout */}

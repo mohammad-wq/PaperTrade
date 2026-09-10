@@ -4,7 +4,7 @@ import { parseInput, runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
-import { paymentSchema } from "@/schemas/payment";
+import { miscExpenseSchema, paymentSchema } from "@/schemas/payment";
 import { AccountType, PartyType } from "@prisma/client";
 
 export async function listPaymentsAction() {
@@ -23,6 +23,50 @@ export async function listPaymentsAction() {
       ...p,
       amount: Number(p.amount),
     }));
+  });
+}
+
+export async function createMiscExpenseAction(raw: unknown) {
+  return runAction("payments.miscExpense.create", async () => {
+    const session = await requireSession();
+    const input = parseInput(miscExpenseSchema, raw);
+
+    const expenseId = `MISC-${Date.now().toString().slice(-6)}`;
+
+    return prisma.$transaction(async (tx) => {
+      await tx.ledgerEntry.create({
+        data: {
+          partyId: null,
+          accountType: AccountType.EXPENSE,
+          debit: input.amount,
+          credit: 0,
+          referenceType: "MISC_EXPENSE",
+          referenceId: expenseId,
+          date: input.date,
+          description: input.description,
+          createdById: session.user.id,
+        },
+      });
+
+      await tx.ledgerEntry.create({
+        data: {
+          partyId: null,
+          accountType: AccountType.CASH,
+          debit: 0,
+          credit: input.amount,
+          referenceType: "MISC_EXPENSE",
+          referenceId: expenseId,
+          date: input.date,
+          description: `Miscellaneous expense paid (${input.method})`,
+          createdById: session.user.id,
+        },
+      });
+
+      return {
+        id: expenseId,
+        amount: input.amount,
+      };
+    });
   });
 }
 

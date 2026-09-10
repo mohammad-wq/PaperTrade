@@ -25,18 +25,46 @@ export const deliveryOrderItemSchema = z.object({
   unit: z.nativeEnum(Unit).default(Unit.PACKET),
 });
 
-export const deliveryOrderSchema = z.object({
-  id: z.string().optional(),
-  customerId: z.string().min(1, "Customer is required"),
-  locationId: z.string().min(1, "Location is required"),
-  saleInvoiceId: z.string().optional().nullable(),
-  date: z.coerce.date(),
-  status: z.nativeEnum(DeliveryOrderStatus).default(DeliveryOrderStatus.DRAFT),
-  vehicleNo: z.string().trim().max(100).optional().or(z.literal("")),
-  driverName: z.string().trim().max(100).optional().or(z.literal("")),
-  deliveredTo: z.string().trim().max(255).optional().or(z.literal("")),
-  notes: z.string().trim().max(1000).optional().or(z.literal("")),
-  items: z.array(deliveryOrderItemSchema).min(1, "At least one item is required"),
-});
+export const deliveryOrderSchema = z
+  .object({
+    id: z.string().optional(),
+    orderType: z.enum(["CUSTOMER", "INTERNAL_TRANSFER"]).default("CUSTOMER"),
+    customerId: z.string().optional().nullable().or(z.literal("")),
+    locationId: z.string().min(1, "Source / Dispatch Location is required"),
+    destinationLocationId: z.string().optional().nullable().or(z.literal("")),
+    saleInvoiceId: z.string().optional().nullable(),
+    date: z.coerce.date(),
+    status: z.nativeEnum(DeliveryOrderStatus).default(DeliveryOrderStatus.DISPATCHED),
+    vehicleNo: z.string().trim().max(100).optional().nullable().or(z.literal("")),
+    driverName: z.string().trim().max(100).optional().nullable().or(z.literal("")),
+    deliveredTo: z.string().trim().max(255).optional().nullable().or(z.literal("")),
+    notes: z.string().trim().max(1000).optional().nullable().or(z.literal("")),
+    items: z.array(deliveryOrderItemSchema).min(1, "At least one item is required"),
+  })
+  .superRefine((data, ctx) => {
+    if (data.orderType === "CUSTOMER" && (!data.customerId || !data.customerId.trim())) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["customerId"],
+        message: "Customer is required for customer deliveries",
+      });
+    }
+    if (data.orderType === "INTERNAL_TRANSFER") {
+      if (!data.destinationLocationId || !data.destinationLocationId.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["destinationLocationId"],
+          message: "Destination location is required for internal transfer",
+        });
+      }
+      if (data.destinationLocationId === data.locationId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["destinationLocationId"],
+          message: "Source and destination locations cannot be the same",
+        });
+      }
+    }
+  });
 
 export type DeliveryOrderInput = z.infer<typeof deliveryOrderSchema>;

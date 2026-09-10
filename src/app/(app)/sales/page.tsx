@@ -256,6 +256,8 @@ export default function SalesPage() {
       return;
     }
 
+    if (!window.confirm("Confirm: create this sales invoice?")) return;
+
     // Check stock
     for (const item of items) {
       const available = getAvailableStock(item.productId, locationId);
@@ -296,14 +298,19 @@ export default function SalesPage() {
         setFormError(res.error || "Failed to create invoice.");
       } else {
         setIsDialogOpen(false);
-        setItems([{ productId: "", quantity: 1, unitPrice: 0 }]);
-        setNotes("");
+        setCustomerType("REGISTERED");
         setCustomerId("");
         setWalkInName("Walk-in Customer");
         setWalkInPhone("");
         setWalkInAddress("");
+        setSaveCustomer(false);
         setPaidImmediately(false);
+        setPaymentMethod("CASH");
         setCustomAmountPaid("");
+        setLocationId("");
+        setInvoiceDate(new Date().toISOString().slice(0, 10));
+        setItems([{ productId: "", quantity: 1, unitPrice: 0 }]);
+        setNotes("");
         await loadData();
       }
     } finally {
@@ -579,13 +586,24 @@ export default function SalesPage() {
 
               {/* Dynamic Customer Input Based on Type */}
               {customerType === "REGISTERED" ? (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-1">
                     <Label htmlFor="customer" className="text-xs font-semibold">Select Registered Customer *</Label>
                     {selectedCustomer && (
-                      <span className="text-[11px] text-slate-500">
-                        Current Ledger Balance: <strong className={selectedCustomer.balance > 0 ? "text-amber-800" : "text-slate-700"}>PKR {selectedCustomer.balance.toLocaleString()}</strong>
-                      </span>
+                      <div className="flex items-center gap-2 text-[11px]">
+                        <span className="text-slate-500">
+                          Balance: <strong className={selectedCustomer.balance > 0 ? "text-amber-800" : "text-slate-700"}>PKR {selectedCustomer.balance.toLocaleString()}</strong>
+                        </span>
+                        {selectedCustomer.creditLimit !== null && (
+                          <span className="text-slate-500 border-l border-slate-200 pl-2">
+                            Limit: <strong className="text-slate-700">PKR {selectedCustomer.creditLimit.toLocaleString()}</strong>
+                            {" | "}
+                            Remaining: <strong className={selectedCustomer.creditLimit - selectedCustomer.balance <= 0 ? "text-rose-600" : "text-emerald-700"}>
+                              PKR {(selectedCustomer.creditLimit - selectedCustomer.balance).toLocaleString()}
+                            </strong>
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                   <select

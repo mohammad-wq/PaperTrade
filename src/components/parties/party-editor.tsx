@@ -38,7 +38,7 @@ export function PartyEditor({ partyId }: { partyId?: string }) {
     try {
       const result = await upsertPartyAction({ ...values, id: partyId });
       if (!result.success) throw new Error(result.error);
-      router.push(`/parties/${result.data.id}/edit`);
+      router.push("/parties");
       router.refresh();
     } finally {
       setSaving(false);
@@ -66,6 +66,31 @@ export function PartyEditor({ partyId }: { partyId?: string }) {
         <p className="text-xs font-medium uppercase tracking-[0.2em] text-emerald-600">Contacts</p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-800">{partyId ? "Edit party" : "Create party"}</h1>
       </div>
+
+      {party && (
+        <div className="grid gap-4 sm:grid-cols-2 rounded-xl border border-emerald-100 bg-emerald-50/50 p-4 shadow-xs">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Current Ledger Balance</p>
+            <p className={`mt-1 text-xl font-bold ${party.balance > 0 ? "text-amber-800" : party.balance < 0 ? "text-rose-700" : "text-slate-800"}`}>
+              PKR {Math.abs(party.balance).toLocaleString()} {party.balance > 0 ? "Dr (Receivable)" : party.balance < 0 ? "Cr (Payable)" : "(Settled)"}
+            </p>
+          </div>
+          {party.type === "CUSTOMER" && (
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Credit Limit & Exposure</p>
+              <p className="mt-1 text-base font-semibold text-slate-800">
+                {party.creditLimit ? `PKR ${party.creditLimit.toLocaleString()}` : "No Limit Enforced"}
+              </p>
+              {party.creditLimit ? (
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Remaining Credit: PKR {Math.max(0, party.creditLimit - party.balance).toLocaleString()}
+                </p>
+              ) : null}
+            </div>
+          )}
+        </div>
+      )}
+
       <PartyForm
         initialValues={party ?? EMPTY_FORM}
         onSubmit={handleSubmit}

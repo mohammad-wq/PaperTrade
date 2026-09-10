@@ -75,6 +75,7 @@ export const authOptions: NextAuthOptions = {
             name: user.name,
             email: user.email,
             role: user.role,
+            permissions: (user.permissions ?? undefined) as any,
           };
         } catch (error) {
           logServerError({ scope: "auth.authorize", error });
@@ -89,6 +90,7 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.id = user.id;
         token.role = user.role;
+        token.permissions = user.permissions;
         token.loginAt = now;
         token.lastActive = now;
       }
@@ -101,6 +103,7 @@ export const authOptions: NextAuthOptions = {
       if (session.user) {
         session.user.id = token.id as string;
         session.user.role = token.role;
+        session.user.permissions = token.permissions as any;
         session.user.loginAt = token.loginAt;
         session.user.lastActive = token.lastActive;
       }

@@ -103,6 +103,8 @@ export default function StorageChargesPage() {
       return;
     }
 
+    if (!window.confirm("Confirm: post this storage charge?")) return;
+
     setSubmitting(true);
     try {
       const res = await createStorageChargeAction({
@@ -116,8 +118,11 @@ export default function StorageChargesPage() {
       if (!res.success) {
         setFormError(res.error || "Failed to post storage charge.");
       } else {
+        setLocationId("");
         setWeightInTonnes("");
         setRatePerTonne("");
+        setPeriodStart(new Date().toISOString().slice(0, 10));
+        setPeriodEnd(new Date().toISOString().slice(0, 10));
         await loadData();
       }
     } finally {

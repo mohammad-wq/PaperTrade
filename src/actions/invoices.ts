@@ -9,6 +9,7 @@ import { getPartyBalance } from "@/lib/ledger";
 import { saleInvoiceSchema } from "@/schemas/sale-invoice";
 import { purchaseInvoiceSchema } from "@/schemas/purchase-invoice";
 import { AccountType, InvoiceStatus, PartyType, PaymentMethod, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 export async function listSaleInvoicesAction() {
   return runAction("sales.list", async () => {
@@ -45,6 +46,9 @@ export async function listSaleInvoicesAction() {
 export async function createSaleInvoiceAction(raw: unknown) {
   return runAction("sales.create", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "sales", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to create sales invoices.");
+    }
     const input = parseInput(saleInvoiceSchema, raw);
 
     // 1. Resolve Customer (Walk-in vs Registered Party)
@@ -190,20 +194,34 @@ export async function createSaleInvoiceAction(raw: unknown) {
         },
       });
 
-      // Create stock movements (SALE_OUT)
-      for (const item of input.items) {
-        await tx.stockMovement.create({
-          data: {
-            productId: item.productId,
-            locationId: input.locationId,
-            type: StockMovementType.SALE_OUT,
-            quantity: item.quantity,
-            referenceType: "SALE_INVOICE",
-            referenceId: invoice.id,
-            createdById: session.user.id,
-            notes: `Sale Invoice ${invoice.invoiceNo} (${customerName})`,
-          },
+      // Check if linked DO already deducted stock
+      let alreadyDeductedByDO = false;
+      if (input.deliveryOrderId) {
+        const linkedDO = await tx.deliveryOrder.findUnique({
+          where: { id: input.deliveryOrderId },
+          select: { status: true },
         });
+        if (linkedDO && (linkedDO.status === "DISPATCHED" || linkedDO.status === "DELIVERED")) {
+          alreadyDeductedByDO = true;
+        }
+      }
+
+      // Create stock movements (SALE_OUT) at dispatch location only if not already deducted
+      if (!alreadyDeductedByDO) {
+        for (const item of input.items) {
+          await tx.stockMovement.create({
+            data: {
+              productId: item.productId,
+              locationId: input.locationId,
+              type: StockMovementType.SALE_OUT,
+              quantity: item.quantity,
+              referenceType: "SALE_INVOICE",
+              referenceId: invoice.id,
+              createdById: session.user.id,
+              notes: `Sale Invoice ${invoice.invoiceNo} (${customerName})`,
+            },
+          });
+        }
       }
 
       // Create ledger entries
@@ -329,6 +347,9 @@ export async function listPurchaseInvoicesAction() {
 export async function createPurchaseInvoiceAction(raw: unknown) {
   return runAction("purchases.create", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "purchases", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to create purchase invoices.");
+    }
     const input = parseInput(purchaseInvoiceSchema, raw);
 
     const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
@@ -357,28 +378,39 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         },
       });
 
-      // Update PO status if linked
+      // Update PO status if linked and check if stock was already fulfilled
+      let alreadyFulfilledByPO = false;
       if (input.purchaseOrderId) {
-        await tx.purchaseOrder.update({
+        const linkedPO = await tx.purchaseOrder.findUnique({
           where: { id: input.purchaseOrderId },
-          data: { status: PurchaseOrderStatus.FULFILLED },
+          select: { status: true },
         });
+        if (linkedPO?.status === PurchaseOrderStatus.FULFILLED) {
+          alreadyFulfilledByPO = true;
+        } else {
+          await tx.purchaseOrder.update({
+            where: { id: input.purchaseOrderId },
+            data: { status: PurchaseOrderStatus.FULFILLED },
+          });
+        }
       }
 
-      // Create stock movements (PURCHASE_IN)
-      for (const item of input.items) {
-        await tx.stockMovement.create({
-          data: {
-            productId: item.productId,
-            locationId: input.locationId,
-            type: StockMovementType.PURCHASE_IN,
-            quantity: item.quantity,
-            referenceType: "PURCHASE_INVOICE",
-            referenceId: invoice.id,
-            createdById: session.user.id,
-            notes: `Purchase Invoice ${invoice.invoiceNo}`,
-          },
-        });
+      // Create stock movements (PURCHASE_IN) at receiving location only if not already fulfilled
+      if (!alreadyFulfilledByPO) {
+        for (const item of input.items) {
+          await tx.stockMovement.create({
+            data: {
+              productId: item.productId,
+              locationId: input.locationId,
+              type: StockMovementType.PURCHASE_IN,
+              quantity: item.quantity,
+              referenceType: "PURCHASE_INVOICE",
+              referenceId: invoice.id,
+              createdById: session.user.id,
+              notes: `Purchase Invoice ${invoice.invoiceNo}`,
+            },
+          });
+        }
       }
 
       // Create ledger entries

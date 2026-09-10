@@ -75,7 +75,7 @@ export function ProductEditor({ productId }: { productId?: string }) {
     try {
       const result = await upsertProductAction({ ...values, id: productId });
       if (!result.success) throw new Error(result.error);
-      router.push(`/products/${result.data.id}/edit`);
+      router.push("/products");
       router.refresh();
     } finally {
       setSaving(false);

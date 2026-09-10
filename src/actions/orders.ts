@@ -8,7 +8,108 @@ import { getStockOnHand } from "@/lib/stock";
 import { purchaseOrderSchema } from "@/schemas/order";
 import { deliveryOrderSchema } from "@/schemas/order";
 import { DeliveryOrderStatus, PurchaseOrderStatus, StockMovementType, Unit } from "@prisma/client";
+import { canPerformAction } from "@/lib/auth/permissions";
 import { z } from "zod";
+
+async function resolveInternalTransferLocationId(
+  tx: any,
+  sourceLocationId: string,
+  deliveredTo?: string | null,
+  destinationLocationId?: string | null,
+) {
+  if (destinationLocationId && destinationLocationId !== sourceLocationId) {
+    return destinationLocationId;
+  }
+
+  const trimmedDestination = deliveredTo?.trim();
+  if (!trimmedDestination) {
+    return null;
+  }
+
+  const locations = await tx.location.findMany({
+    select: { id: true, name: true },
+  });
+
+  const normalizedDestination = trimmedDestination.toLowerCase();
+  const match = locations.find(
+    (location: { id: string; name: string }) =>
+      location.id.toLowerCase() === normalizedDestination ||
+      location.name.toLowerCase() === normalizedDestination,
+  );
+
+  if (!match || match.id === sourceLocationId) {
+    return null;
+  }
+
+  return match.id;
+}
+
+async function createDeliveryOrderStockMovements(
+  tx: any,
+  sessionUserId: string,
+  order: {
+    id: string;
+    doNo: string;
+    locationId: string;
+    destinationLocationId?: string | null;
+    deliveredTo?: string | null;
+    items: Array<{ productId: string; quantity: number }>;
+  },
+) {
+  const destinationLocationId = await resolveInternalTransferLocationId(
+    tx,
+    order.locationId,
+    order.deliveredTo,
+    order.destinationLocationId,
+  );
+
+  if (destinationLocationId) {
+    for (const item of order.items) {
+      await tx.stockMovement.create({
+        data: {
+          productId: item.productId,
+          locationId: order.locationId,
+          type: StockMovementType.TRANSFER_OUT,
+          quantity: item.quantity,
+          referenceType: "DELIVERY_ORDER",
+          referenceId: order.id,
+          createdById: sessionUserId,
+          notes: `Transfer via DO ${order.doNo}`,
+        },
+      });
+
+      await tx.stockMovement.create({
+        data: {
+          productId: item.productId,
+          locationId: destinationLocationId,
+          type: StockMovementType.TRANSFER_IN,
+          quantity: item.quantity,
+          referenceType: "DELIVERY_ORDER",
+          referenceId: order.id,
+          createdById: sessionUserId,
+          notes: `Transfer via DO ${order.doNo}`,
+        },
+      });
+    }
+
+    return;
+  }
+
+  for (const item of order.items) {
+    await tx.stockMovement.create({
+      data: {
+        productId: item.productId,
+        locationId: order.locationId,
+        type: StockMovementType.DELIVERY_OUT,
+        quantity: item.quantity,
+        referenceType: "DELIVERY_ORDER",
+        referenceId: order.id,
+        createdById: sessionUserId,
+        notes: `Dispatched via DO ${order.doNo}`,
+      },
+    });
+  }
+}
 
 export async function listPurchaseOrdersAction() {
   return runAction("orders.po.list", async () => {
@@ -41,49 +142,102 @@ export async function listPurchaseOrdersAction() {
 export async function createPurchaseOrderAction(raw: unknown) {
   return runAction("orders.po.create", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "purchase-orders", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to create purchase orders.");
+    }
     const input = parseInput(purchaseOrderSchema, raw);
-
     const orderNo = `PO-${Date.now().toString().slice(-6)}`;
 
-    const order = await prisma.purchaseOrder.create({
-      data: {
-        orderNo,
-        supplierId: input.supplierId,
-        locationId: input.locationId,
-        date: input.date,
-        status: input.status,
-        notes: input.notes || null,
-        createdById: session.user.id,
-        items: {
-          create: input.items.map((item) => ({
-            productId: item.productId,
-            quantity: item.quantity,
-            unitCost: item.unitCost,
-            lineTotal: item.quantity * item.unitCost,
-          })),
+    return prisma.$transaction(async (tx) => {
+      const order = await tx.purchaseOrder.create({
+        data: {
+          orderNo,
+          supplierId: input.supplierId,
+          locationId: input.locationId,
+          date: input.date,
+          status: input.status,
+          notes: input.notes || null,
+          createdById: session.user.id,
+          items: {
+            create: input.items.map((item) => ({
+              productId: item.productId,
+              quantity: item.quantity,
+              unitCost: item.unitCost,
+              lineTotal: item.quantity * item.unitCost,
+            })),
+          },
         },
-      },
-    });
+      });
 
-    return { id: order.id, orderNo: order.orderNo };
+      // If created directly with FULFILLED status, update inventory immediately
+      if (input.status === PurchaseOrderStatus.FULFILLED) {
+        for (const item of input.items) {
+          await tx.stockMovement.create({
+            data: {
+              productId: item.productId,
+              locationId: input.locationId,
+              type: StockMovementType.PURCHASE_IN,
+              quantity: item.quantity,
+              referenceType: "PURCHASE_ORDER",
+              referenceId: order.id,
+              createdById: session.user.id,
+              notes: `Purchase Order fulfilled via ${order.orderNo}`,
+            },
+          });
+        }
+      }
+
+      return { id: order.id, orderNo: order.orderNo };
+    });
   });
 }
 
 export async function updatePurchaseOrderStatusAction(raw: unknown) {
   return runAction("orders.po.updateStatus", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "purchase-orders", "update", (session.user as any).permissions)) {
+      throw userError("You do not have permission to update purchase orders.");
+    }
     const schema = z.object({
       id: z.string().min(1),
       status: z.nativeEnum(PurchaseOrderStatus),
     });
     const { id, status } = parseInput(schema, raw);
 
-    const updated = await prisma.purchaseOrder.update({
-      where: { id },
-      data: { status },
-    });
+    return prisma.$transaction(async (tx) => {
+      const order = await tx.purchaseOrder.findUnique({
+        where: { id },
+        include: { items: true },
+      });
 
-    return { id: updated.id, status: updated.status };
+      if (!order) {
+        throw userError("Purchase order not found.");
+      }
+
+      if (status === PurchaseOrderStatus.FULFILLED && order.status !== PurchaseOrderStatus.FULFILLED) {
+        for (const item of order.items) {
+          await tx.stockMovement.create({
+            data: {
+              productId: item.productId,
+              locationId: order.locationId,
+              type: StockMovementType.PURCHASE_IN,
+              quantity: item.quantity,
+              referenceType: "PURCHASE_ORDER",
+              referenceId: order.id,
+              createdById: session.user.id,
+              notes: `Purchase Order fulfilled via ${order.orderNo}`,
+            },
+          });
+        }
+      }
+
+      const updated = await tx.purchaseOrder.update({
+        where: { id },
+        data: { status },
+      });
+
+      return { id: updated.id, status: updated.status };
+    });
   });
 }
 
@@ -95,6 +249,7 @@ export async function listDeliveryOrdersAction() {
       include: {
         customer: { select: { id: true, name: true, phone: true } },
         location: { select: { id: true, name: true } },
+        destinationLocation: { select: { id: true, name: true } },
         linkedSaleInvoice: { select: { id: true, invoiceNo: true } },
         items: {
           include: {
@@ -117,6 +272,9 @@ export async function listDeliveryOrdersAction() {
 export async function createDeliveryOrderAction(raw: unknown) {
   return runAction("orders.do.create", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "delivery-orders", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to create delivery orders.");
+    }
     const input = parseInput(deliveryOrderSchema, raw);
 
     const doNo = `DO-${Date.now().toString().slice(-6)}`;
@@ -141,8 +299,9 @@ export async function createDeliveryOrderAction(raw: unknown) {
       const order = await tx.deliveryOrder.create({
         data: {
           doNo,
-          customerId: input.customerId,
+          customerId: input.customerId || null,
           locationId: input.locationId,
+          destinationLocationId: input.destinationLocationId || null,
           saleInvoiceId: input.saleInvoiceId || null,
           date: input.date,
           status: input.status,
@@ -161,22 +320,19 @@ export async function createDeliveryOrderAction(raw: unknown) {
         },
       });
 
-      // If DISPATCHED, create DELIVERY_OUT stock movements
+      // If DISPATCHED, create dispatch or internal transfer stock movements
       if (input.status === DeliveryOrderStatus.DISPATCHED) {
-        for (const item of input.items) {
-          await tx.stockMovement.create({
-            data: {
-              productId: item.productId,
-              locationId: input.locationId,
-              type: StockMovementType.DELIVERY_OUT,
-              quantity: item.quantity,
-              referenceType: "DELIVERY_ORDER",
-              referenceId: order.id,
-              createdById: session.user.id,
-              notes: `Dispatched on creation via DO ${order.doNo}`,
-            },
-          });
-        }
+        await createDeliveryOrderStockMovements(tx, session.user.id, {
+          id: order.id,
+          doNo: order.doNo,
+          locationId: order.locationId,
+          destinationLocationId: order.destinationLocationId,
+          deliveredTo: order.deliveredTo,
+          items: input.items.map((item) => ({
+            productId: item.productId,
+            quantity: Number(item.quantity),
+          })),
+        });
       }
 
       return { id: order.id, doNo: order.doNo };
@@ -187,6 +343,9 @@ export async function createDeliveryOrderAction(raw: unknown) {
 export async function updateDeliveryOrderStatusAction(raw: unknown) {
   return runAction("orders.do.updateStatus", async () => {
     const session = await requireSession();
+    if (!canPerformAction(session.user.role, "delivery-orders", "update", (session.user as any).permissions)) {
+      throw userError("You do not have permission to update delivery orders.");
+    }
     const schema = z.object({
       id: z.string().min(1),
       status: z.nativeEnum(DeliveryOrderStatus),
@@ -213,7 +372,7 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
       }
 
       // If status is transitioning to DISPATCHED and wasn't previously DISPATCHED/DELIVERED:
-      // Check stock and create DELIVERY_OUT movements
+      // Check stock and create dispatch or internal transfer movements
       if (
         status === DeliveryOrderStatus.DISPATCHED &&
         order.status !== DeliveryOrderStatus.DISPATCHED &&
@@ -226,20 +385,19 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
               `Insufficient stock for "${item.product.productNo} - ${item.product.name}" to dispatch. Available: ${available} ${item.unit}, Required: ${item.quantity}.`,
             );
           }
-
-          await tx.stockMovement.create({
-            data: {
-              productId: item.productId,
-              locationId: order.locationId,
-              type: StockMovementType.DELIVERY_OUT,
-              quantity: item.quantity,
-              referenceType: "DELIVERY_ORDER",
-              referenceId: order.id,
-              createdById: session.user.id,
-              notes: `Dispatched via DO ${order.doNo}`,
-            },
-          });
         }
+
+        await createDeliveryOrderStockMovements(tx, session.user.id, {
+          id: order.id,
+          doNo: order.doNo,
+          locationId: order.locationId,
+          destinationLocationId: order.destinationLocationId,
+          deliveredTo: order.deliveredTo,
+          items: order.items.map((item) => ({
+            productId: item.productId,
+            quantity: Number(item.quantity),
+          })),
+        });
       }
 
       const updated = await tx.deliveryOrder.update({
@@ -251,3 +409,14 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
     });
   });
 }
+
+export async function listLocationsAction() {
+  return runAction("locations.list", async () => {
+    await requireSession();
+    return prisma.location.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, address: true },
+    });
+  });
+}
+
