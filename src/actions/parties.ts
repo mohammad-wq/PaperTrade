@@ -11,6 +11,8 @@ import { stockAdjustmentSchema, stockTransferSchema } from "@/schemas/inventory"
 import { getStockOnHand } from "@/lib/stock";
 import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
+import { emitRealtimeEvent } from "@/lib/realtime";
 
 const deletePartySchema = z.object({ id: z.string().min(1, "Party is required") });
 
@@ -86,9 +88,22 @@ export async function upsertPartyAction(raw: unknown) {
         ? Number(input.creditLimit)
         : null;
 
+    let party;
     if (input.id) {
-      return prisma.party.update({
+      party = await prisma.party.update({
         where: { id: input.id },
+        data: {
+          name: input.name.trim(),
+          type: input.type,
+          phone,
+          email,
+          address,
+          creditLimit,
+          isActive: Boolean(input.isActive),
+        },
+      });
+    } else {
+      party = await prisma.party.create({
         data: {
           name: input.name.trim(),
           type: input.type,
@@ -101,17 +116,13 @@ export async function upsertPartyAction(raw: unknown) {
       });
     }
 
-    return prisma.party.create({
-      data: {
-        name: input.name.trim(),
-        type: input.type,
-        phone,
-        email,
-        address,
-        creditLimit,
-        isActive: Boolean(input.isActive),
-      },
+    emitRealtimeEvent(["parties", "sales", "purchases", "payments"], input.id ? "update" : "create", "Party", {
+      id: party.id,
+      name: party.name,
+      type: party.type,
     });
+
+    return party;
   });
 }
 
@@ -123,7 +134,7 @@ export async function softDeletePartyAction(raw: unknown) {
     }
     const input = parseInput(deletePartySchema, raw);
 
-    return prisma.$transaction(async (tx) => {
+    const res = await prisma.$transaction(async (tx) => {
       const party = await tx.party.update({
         where: { id: input.id },
         data: {
@@ -134,6 +145,12 @@ export async function softDeletePartyAction(raw: unknown) {
 
       return { id: party.id, success: true };
     });
+
+    emitRealtimeEvent(["parties", "sales", "purchases", "payments"], "delete", "Party", {
+      id: input.id,
+    });
+
+    return res;
   });
 }
 
@@ -145,15 +162,18 @@ export async function adjustStockAction(raw: unknown) {
     }
     const input = parseInput(stockAdjustmentSchema, raw);
 
-    const currentStock = await getStockOnHand(input.productId, input.locationId);
-    const desired = input.direction === "OUT" ? currentStock - input.quantity : currentStock + input.quantity;
+    const lockKeys = [`stock:${input.productId}:${input.locationId}`];
 
-    if (input.direction === "OUT" && currentStock < input.quantity) {
-      throw userError("Insufficient stock for this adjustment. Available stock is lower than the requested quantity.");
-    }
+    const res = await withResourceQueue(lockKeys, async (tx) => {
+      const currentStock = await getStockOnHand(input.productId, input.locationId, tx);
+      const desired = input.direction === "OUT" ? currentStock - input.quantity : currentStock + input.quantity;
 
-    return prisma.$transaction(async (tx) => {
+      if (input.direction === "OUT" && currentStock < input.quantity) {
+        throw userError("Insufficient stock for this adjustment. Available stock is lower than the requested quantity.");
+      }
+
       const movementType = input.direction === "IN" ? "ADJUSTMENT" : "ADJUSTMENT";
+      const referenceId = generateDocumentNumber("ADJ");
       await tx.stockMovement.create({
         data: {
           productId: input.productId,
@@ -161,7 +181,7 @@ export async function adjustStockAction(raw: unknown) {
           type: movementType,
           quantity: input.direction === "IN" ? input.quantity : -input.quantity,
           referenceType: "ADJUSTMENT",
-          referenceId: `adjustment-${Date.now()}`,
+          referenceId,
           createdById: session.user.id,
           notes: input.reason,
         },
@@ -169,6 +189,13 @@ export async function adjustStockAction(raw: unknown) {
 
       return { availableStock: desired };
     });
+
+    emitRealtimeEvent(["inventory", "stock-movements", "dashboard"], "update", "StockAdjustment", {
+      productId: input.productId,
+      locationId: input.locationId,
+    });
+
+    return res;
   });
 }
 
@@ -180,12 +207,18 @@ export async function transferStockAction(raw: unknown) {
     }
     const input = parseInput(stockTransferSchema, raw);
 
-    const fromStock = await getStockOnHand(input.productId, input.fromLocationId);
-    if (fromStock < input.quantity) {
-      throw userError("Not enough stock available to transfer from the selected source location.");
-    }
+    const lockKeys = [
+      `stock:${input.productId}:${input.fromLocationId}`,
+      `stock:${input.productId}:${input.toLocationId}`,
+    ];
 
-    return prisma.$transaction(async (tx) => {
+    const res = await withResourceQueue(lockKeys, async (tx) => {
+      const fromStock = await getStockOnHand(input.productId, input.fromLocationId, tx);
+      if (fromStock < input.quantity) {
+        throw userError("Not enough stock available to transfer from the selected source location.");
+      }
+
+      const referenceId = generateDocumentNumber("TRF");
       await tx.stockMovement.createMany({
         data: [
           {
@@ -194,7 +227,7 @@ export async function transferStockAction(raw: unknown) {
             type: "TRANSFER_OUT",
             quantity: input.quantity,
             referenceType: "TRANSFER",
-            referenceId: `transfer-${Date.now()}`,
+            referenceId,
             createdById: session.user.id,
             notes: input.notes || "Stock transfer",
           },
@@ -204,7 +237,7 @@ export async function transferStockAction(raw: unknown) {
             type: "TRANSFER_IN",
             quantity: input.quantity,
             referenceType: "TRANSFER",
-            referenceId: `transfer-${Date.now()}`,
+            referenceId,
             createdById: session.user.id,
             notes: input.notes || "Stock transfer",
           },
@@ -213,5 +246,13 @@ export async function transferStockAction(raw: unknown) {
 
       return { success: true };
     });
+
+    emitRealtimeEvent(["inventory", "stock-movements", "dashboard"], "update", "StockTransfer", {
+      productId: input.productId,
+      fromLocationId: input.fromLocationId,
+      toLocationId: input.toLocationId,
+    });
+
+    return res;
   });
 }

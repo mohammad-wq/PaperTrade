@@ -22,6 +22,7 @@ import {
 } from "@/actions/returns";
 import { listSaleInvoicesAction, listPurchaseInvoicesAction } from "@/actions/invoices";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type SaleReturnRow = {
   id: string;
@@ -93,8 +94,8 @@ export default function ReturnsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const [retRes, sInvRes, pInvRes] = await Promise.all([
         listReturnsAction(),
@@ -113,13 +114,17 @@ export default function ReturnsPage() {
         setPurchaseInvoices(pInvRes.data as unknown as InvoiceOption[]);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
   useEffect(() => {
     void loadData();
   }, []);
+
+  useRealtimeListener(["returns", "sales", "purchases"], () => {
+    void loadData(true);
+  });
 
   function handleInvoiceSelect(invId: string) {
     setSelectedInvoiceId(invId);

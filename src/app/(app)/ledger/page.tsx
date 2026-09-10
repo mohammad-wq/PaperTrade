@@ -13,6 +13,7 @@ import { listLedgerEntriesAction } from "@/actions/ledger";
 import { listPartiesAction } from "@/actions/parties";
 import { AccountType } from "@prisma/client";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type LedgerRow = {
   id: string;
@@ -41,8 +42,8 @@ export default function LedgerPage() {
   const [endDate, setEndDate] = useState("");
   const [query, setQuery] = useState("");
 
-  async function loadLedger() {
-    setLoading(true);
+  async function loadLedger(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const res = await listLedgerEntriesAction({
         partyId: partyId === "ALL" ? undefined : partyId,
@@ -57,9 +58,13 @@ export default function LedgerPage() {
         setTotalCredit(res.data.totalCredit);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
+
+  useRealtimeListener(["ledger", "sales", "purchases", "payments", "expenses", "returns"], () => {
+    void loadLedger(true);
+  });
 
   useEffect(() => {
     async function loadParties() {

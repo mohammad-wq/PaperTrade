@@ -1,7 +1,12 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 
-export async function getPartyBalance(partyId: string): Promise<number> {
-  const entries = await prisma.ledgerEntry.groupBy({
+export async function getPartyBalance(
+  partyId: string,
+  tx?: Prisma.TransactionClient,
+): Promise<number> {
+  const db = tx ?? prisma;
+  const entries = await db.ledgerEntry.groupBy({
     by: ["accountType"],
     where: { partyId },
     _sum: { debit: true, credit: true },

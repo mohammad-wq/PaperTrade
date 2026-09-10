@@ -20,6 +20,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { getDashboardMetricsAction } from "@/actions/dashboard";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type DashboardData = {
   todaySalesTotal: number;
@@ -62,19 +63,25 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const res = await getDashboardMetricsAction();
-        if (res.success && res.data) {
-          setData(res.data);
-        }
-      } finally {
-        setLoading(false);
+  async function load(isBackground = false) {
+    if (!isBackground) setLoading(true);
+    try {
+      const res = await getDashboardMetricsAction();
+      if (res.success && res.data) {
+        setData(res.data);
       }
+    } finally {
+      if (!isBackground) setLoading(false);
     }
+  }
+
+  useEffect(() => {
     void load();
   }, []);
+
+  useRealtimeListener(["dashboard", "sales", "purchases", "inventory", "payments", "expenses"], () => {
+    void load(true);
+  });
 
   return (
     <div className="space-y-8">

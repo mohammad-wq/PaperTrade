@@ -16,6 +16,7 @@ import { listProductsAction } from "@/actions/products";
 import { listInventoryAction } from "@/actions/parties";
 import { StockMovementType } from "@prisma/client";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type MovementRow = {
   id: string;
@@ -44,8 +45,8 @@ export default function StockMovementsPage() {
   const [endDate, setEndDate] = useState("");
   const [query, setQuery] = useState("");
 
-  async function loadMovements() {
-    setLoading(true);
+  async function loadMovements(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const res = await listStockMovementsAction({
         productId: productId === "ALL" ? undefined : productId,
@@ -59,9 +60,13 @@ export default function StockMovementsPage() {
         setMovements(res.data as MovementRow[]);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
+
+  useRealtimeListener(["stock-movements", "inventory", "sales", "purchases", "delivery-orders"], () => {
+    void loadMovements(true);
+  });
 
   useEffect(() => {
     async function loadLookups() {

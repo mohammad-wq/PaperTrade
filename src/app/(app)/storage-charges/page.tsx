@@ -18,6 +18,7 @@ import {
 } from "@/actions/storage-charges";
 import { listInventoryAction } from "@/actions/parties";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type StorageChargeRow = {
   id: string;
@@ -44,8 +45,8 @@ export default function StorageChargesPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const [chargeRes, invRes] = await Promise.all([
         listStorageChargesAction(),
@@ -67,7 +68,7 @@ export default function StorageChargesPage() {
         }
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
@@ -75,6 +76,10 @@ export default function StorageChargesPage() {
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useRealtimeListener(["storage-charges", "expenses"], () => {
+    void loadData(true);
+  });
 
   const calculatedTotal = useMemo(() => {
     const w = Number(weightInTonnes) || 0;

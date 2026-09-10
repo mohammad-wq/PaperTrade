@@ -6,6 +6,8 @@ import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
 import { getStockOnHand } from "@/lib/stock";
 import { getPartyBalance } from "@/lib/ledger";
+import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
+import { emitRealtimeEvent } from "@/lib/realtime";
 import { saleInvoiceSchema } from "@/schemas/sale-invoice";
 import { purchaseInvoiceSchema } from "@/schemas/purchase-invoice";
 import { AccountType, InvoiceStatus, PartyType, PaymentMethod, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
@@ -54,126 +56,132 @@ export async function createSaleInvoiceAction(raw: unknown) {
     }
     const input = parseInput(saleInvoiceSchema, raw);
 
-    // 1. Resolve Customer (Walk-in vs Registered Party)
-    let targetCustomerId: string;
-    let customerName = "";
-    let customerCreditLimit: number | null = null;
-    let customerBalance = 0;
+    const stockKeys = input.items.map((i) => `stock:${i.productId}:${input.locationId}`);
+    const partyKey = input.customerId ? `party:${input.customerId}` : "party:walkin";
+    const docKey = "doc:sale_invoice";
+    const doKey = input.deliveryOrderId ? `order:do:${input.deliveryOrderId}` : null;
+    const lockKeys = [...stockKeys, partyKey, docKey, ...(doKey ? [doKey] : [])];
 
-    if (input.customerType === "WALK_IN") {
-      const rawName = input.walkInName?.trim();
-      const isGeneric =
-        !rawName ||
-        rawName.toLowerCase() === "walk-in customer" ||
-        rawName.toLowerCase() === "walk in" ||
-        rawName.toLowerCase() === "cash customer";
-      const finalName = isGeneric ? "Walk-in Customer" : rawName;
+    const res = await withResourceQueue(lockKeys, async (tx) => {
+      // 1. Resolve Customer (Walk-in vs Registered Party)
+      let targetCustomerId: string;
+      let customerName = "";
+      let customerCreditLimit: number | null = null;
+      let customerBalance = 0;
 
-      if (isGeneric) {
-        let walkInParty = await prisma.party.findFirst({
-          where: { name: "Walk-in Customer", type: PartyType.CUSTOMER },
-        });
-        if (!walkInParty) {
-          walkInParty = await prisma.party.create({
-            data: {
-              name: "Walk-in Customer",
-              type: PartyType.CUSTOMER,
-              email: "walkin@internal.local",
-              phone: input.walkInPhone?.trim() || null,
-              address: input.walkInAddress?.trim() || null,
-              isActive: true,
-            },
+      if (input.customerType === "WALK_IN") {
+        const rawName = input.walkInName?.trim();
+        const isGeneric =
+          !rawName ||
+          rawName.toLowerCase() === "walk-in customer" ||
+          rawName.toLowerCase() === "walk in" ||
+          rawName.toLowerCase() === "cash customer";
+        const finalName = isGeneric ? "Walk-in Customer" : rawName;
+
+        if (isGeneric) {
+          let walkInParty = await tx.party.findFirst({
+            where: { name: "Walk-in Customer", type: PartyType.CUSTOMER },
           });
-        }
-        targetCustomerId = walkInParty.id;
-        customerName = walkInParty.name;
-      } else {
-        // Named Walk-in / New Customer (e.g. "Bilal Printers")
-        let existingParty = await prisma.party.findFirst({
-          where: {
-            name: { equals: finalName, mode: "insensitive" },
-            type: PartyType.CUSTOMER,
-          },
-        });
-
-        if (existingParty) {
-          targetCustomerId = existingParty.id;
-          customerName = existingParty.name;
-          customerCreditLimit = existingParty.creditLimit ? Number(existingParty.creditLimit) : null;
-          customerBalance = await getPartyBalance(existingParty.id);
+          if (!walkInParty) {
+            walkInParty = await tx.party.create({
+              data: {
+                name: "Walk-in Customer",
+                type: PartyType.CUSTOMER,
+                email: "walkin@internal.local",
+                phone: input.walkInPhone?.trim() || null,
+                address: input.walkInAddress?.trim() || null,
+                isActive: true,
+              },
+            });
+          }
+          targetCustomerId = walkInParty.id;
+          customerName = walkInParty.name;
         } else {
-          const newParty = await prisma.party.create({
-            data: {
-              name: finalName,
+          // Named Walk-in / New Customer (e.g. "Bilal Printers")
+          let existingParty = await tx.party.findFirst({
+            where: {
+              name: { equals: finalName, mode: "insensitive" },
               type: PartyType.CUSTOMER,
-              phone: input.walkInPhone?.trim() || null,
-              address: input.walkInAddress?.trim() || null,
-              isActive: true,
             },
           });
-          targetCustomerId = newParty.id;
-          customerName = newParty.name;
+
+          if (existingParty) {
+            targetCustomerId = existingParty.id;
+            customerName = existingParty.name;
+            customerCreditLimit = existingParty.creditLimit ? Number(existingParty.creditLimit) : null;
+            customerBalance = await getPartyBalance(existingParty.id, tx);
+          } else {
+            const newParty = await tx.party.create({
+              data: {
+                name: finalName,
+                type: PartyType.CUSTOMER,
+                phone: input.walkInPhone?.trim() || null,
+                address: input.walkInAddress?.trim() || null,
+                isActive: true,
+              },
+            });
+            targetCustomerId = newParty.id;
+            customerName = newParty.name;
+          }
+        }
+      } else {
+        // Long-term registered party
+        if (!input.customerId) {
+          throw userError("Please select a registered customer.");
+        }
+        const customer = await tx.party.findUnique({
+          where: { id: input.customerId },
+          select: { id: true, name: true, creditLimit: true, email: true },
+        });
+        if (!customer) {
+          throw userError("Customer not found.");
+        }
+        targetCustomerId = customer.id;
+        customerName = customer.name;
+        customerCreditLimit = customer.creditLimit !== null ? Number(customer.creditLimit) : null;
+        customerBalance = await getPartyBalance(customer.id, tx);
+      }
+
+      // Calculate total amount
+      const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+
+      // Check customer balance and credit limit warning
+      let creditWarning: string | null = null;
+      if (customerCreditLimit !== null) {
+        const projectedBalance = customerBalance + totalAmount;
+        if (projectedBalance > customerCreditLimit) {
+          creditWarning = `Warning: This invoice exceeds the customer's credit limit of PKR ${customerCreditLimit.toLocaleString()} (projected balance: PKR ${projectedBalance.toLocaleString()}).`;
         }
       }
-    } else {
-      // Long-term registered party
-      if (!input.customerId) {
-        throw userError("Please select a registered customer.");
+
+      // 2. Verify stock availability for each product at location inside locked transaction
+      for (const item of input.items) {
+        const available = await getStockOnHand(item.productId, input.locationId, tx);
+        if (available < item.quantity) {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+            select: { name: true, productNo: true, unit: true },
+          });
+          throw userError(
+            `Insufficient stock for "${product?.productNo} - ${product?.name}". Available: ${available} ${product?.unit || "Packets"}, Requested: ${item.quantity}.`,
+          );
+        }
       }
-      const customer = await prisma.party.findUnique({
-        where: { id: input.customerId },
-        select: { id: true, name: true, creditLimit: true, email: true },
-      });
-      if (!customer) {
-        throw userError("Customer not found.");
-      }
-      targetCustomerId = customer.id;
-      customerName = customer.name;
-      customerCreditLimit = customer.creditLimit !== null ? Number(customer.creditLimit) : null;
-      customerBalance = await getPartyBalance(customer.id);
-    }
 
-    // Calculate total amount
-    const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+      // Resolve payment amount (for walk-in or immediate cash settlement)
+      const rawPaid = typeof input.amountPaid === "number" ? input.amountPaid : 0;
+      const paidAmount = input.paidImmediately
+        ? Math.min(totalAmount, rawPaid > 0 ? rawPaid : totalAmount)
+        : Math.min(totalAmount, Math.max(0, rawPaid));
 
-    // Check customer balance and credit limit warning
-    let creditWarning: string | null = null;
-    if (customerCreditLimit !== null) {
-      const projectedBalance = customerBalance + totalAmount;
-      if (projectedBalance > customerCreditLimit) {
-        creditWarning = `Warning: This invoice exceeds the customer's credit limit of PKR ${customerCreditLimit.toLocaleString()} (projected balance: PKR ${projectedBalance.toLocaleString()}).`;
-      }
-    }
+      // 3. Multi-table transaction with collision-proof invoice number
+      const invoiceNumber = generateDocumentNumber("INV");
+      const walkInContactDetails =
+        input.customerType === "WALK_IN" && (input.walkInPhone || input.walkInAddress)
+          ? `Walk-in: ${[input.walkInName || "Walk-in Customer", input.walkInPhone, input.walkInAddress].filter(Boolean).join(" | ")}`
+          : null;
+      const finalNotes = [input.notes?.trim(), walkInContactDetails].filter(Boolean).join(" — ");
 
-    // 2. Verify stock availability for each product at location
-    for (const item of input.items) {
-      const available = await getStockOnHand(item.productId, input.locationId);
-      if (available < item.quantity) {
-        const product = await prisma.product.findUnique({
-          where: { id: item.productId },
-          select: { name: true, productNo: true, unit: true },
-        });
-        throw userError(
-          `Insufficient stock for "${product?.productNo} - ${product?.name}". Available: ${available} ${product?.unit || "Packets"}, Requested: ${item.quantity}.`,
-        );
-      }
-    }
-
-    // Resolve payment amount (for walk-in or immediate cash settlement)
-    const rawPaid = typeof input.amountPaid === "number" ? input.amountPaid : 0;
-    const paidAmount = input.paidImmediately
-      ? Math.min(totalAmount, rawPaid > 0 ? rawPaid : totalAmount)
-      : Math.min(totalAmount, Math.max(0, rawPaid));
-
-    // 3. Multi-table transaction
-    const invoiceNumber = `INV-${Date.now().toString().slice(-6)}`;
-    const walkInContactDetails =
-      input.customerType === "WALK_IN" && (input.walkInPhone || input.walkInAddress)
-        ? `Walk-in: ${[input.walkInName || "Walk-in Customer", input.walkInPhone, input.walkInAddress].filter(Boolean).join(" | ")}`
-        : null;
-    const finalNotes = [input.notes?.trim(), walkInContactDetails].filter(Boolean).join(" — ");
-
-    const result = await prisma.$transaction(async (tx) => {
       const invoice = await tx.saleInvoice.create({
         data: {
           invoiceNo: invoiceNumber,
@@ -303,17 +311,22 @@ export async function createSaleInvoiceAction(raw: unknown) {
         });
       }
 
-      return invoice;
+      return {
+        invoiceId: invoice.id,
+        invoiceNo: invoice.invoiceNo,
+        totalAmount,
+        amountPaid: paidAmount,
+        balanceDue: totalAmount - paidAmount,
+        creditWarning,
+      };
     });
 
-    return {
-      invoiceId: result.id,
-      invoiceNo: result.invoiceNo,
-      totalAmount,
-      amountPaid: paidAmount,
-      balanceDue: totalAmount - paidAmount,
-      creditWarning,
-    };
+    emitRealtimeEvent(["sales", "inventory", "parties", "ledger", "dashboard"], "create", "SaleInvoice", {
+      invoiceId: res.invoiceId,
+      invoiceNo: res.invoiceNo,
+    });
+
+    return res;
   });
 }
 
@@ -358,10 +371,16 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
     }
     const input = parseInput(purchaseInvoiceSchema, raw);
 
-    const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
-    const invoiceNumber = `PINV-${Date.now().toString().slice(-6)}`;
+    const stockKeys = input.items.map((i) => `stock:${i.productId}:${input.locationId}`);
+    const partyKey = `party:${input.supplierId}`;
+    const docKey = "doc:purchase_invoice";
+    const poKey = input.purchaseOrderId ? `order:po:${input.purchaseOrderId}` : null;
+    const lockKeys = [...stockKeys, partyKey, docKey, ...(poKey ? [poKey] : [])];
 
-    const result = await prisma.$transaction(async (tx) => {
+    const res = await withResourceQueue(lockKeys, async (tx) => {
+      const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
+      const invoiceNumber = generateDocumentNumber("PINV");
+
       const invoice = await tx.purchaseInvoice.create({
         data: {
           invoiceNo: invoiceNumber,
@@ -450,13 +469,18 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         },
       });
 
-      return invoice;
+      return {
+        invoiceId: invoice.id,
+        invoiceNo: invoice.invoiceNo,
+        totalAmount,
+      };
     });
 
-    return {
-      invoiceId: result.id,
-      invoiceNo: result.invoiceNo,
-      totalAmount,
-    };
+    emitRealtimeEvent(["purchases", "inventory", "parties", "ledger", "dashboard"], "create", "PurchaseInvoice", {
+      invoiceId: res.invoiceId,
+      invoiceNo: res.invoiceNo,
+    });
+
+    return res;
   });
 }

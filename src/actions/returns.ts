@@ -5,6 +5,8 @@ import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
+import { emitRealtimeEvent } from "@/lib/realtime";
 import { saleReturnSchema, purchaseReturnSchema } from "@/schemas/return";
 import { AccountType, StockMovementType } from "@prisma/client";
 
@@ -76,43 +78,46 @@ export async function createSaleReturnAction(raw: unknown) {
     }
     const input = parseInput(saleReturnSchema, raw);
 
-    const invoice = await prisma.saleInvoice.findUnique({
-      where: { id: input.saleInvoiceId },
-      include: {
-        items: true,
-        returns: { include: { items: true } },
-      },
-    });
+    const stockKeys = input.items.map((item) => `stock:${item.productId}`);
+    const lockKeys = [`invoice:sale:${input.saleInvoiceId}`, ...stockKeys, "doc:sale_return"];
 
-    if (!invoice) {
-      throw userError("Sale invoice not found.");
-    }
+    const res = await withResourceQueue(lockKeys, async (tx) => {
+      const invoice = await tx.saleInvoice.findUnique({
+        where: { id: input.saleInvoiceId },
+        include: {
+          items: true,
+          returns: { include: { items: true } },
+        },
+      });
 
-    // Validate quantities against original invoice
-    for (const returnItem of input.items) {
-      const origItem = invoice.items.find((i) => i.productId === returnItem.productId);
-      if (!origItem) {
-        throw userError(`Product does not exist on invoice ${invoice.invoiceNo}.`);
+      if (!invoice) {
+        throw userError("Sale invoice not found.");
       }
 
-      // Sum previously returned for this product
-      const previouslyReturned = invoice.returns.reduce((sum, ret) => {
-        const item = ret.items.find((i) => i.productId === returnItem.productId);
-        return sum + (item ? Number(item.quantity) : 0);
-      }, 0);
+      // Validate quantities against original invoice
+      for (const returnItem of input.items) {
+        const origItem = invoice.items.find((i) => i.productId === returnItem.productId);
+        if (!origItem) {
+          throw userError(`Product does not exist on invoice ${invoice.invoiceNo}.`);
+        }
 
-      const maxReturnable = Number(origItem.quantity) - previouslyReturned;
-      if (returnItem.quantity > maxReturnable) {
-        throw userError(
-          `Return quantity (${returnItem.quantity}) exceeds maximum returnable quantity (${maxReturnable}) for this item.`,
-        );
+        // Sum previously returned for this product
+        const previouslyReturned = invoice.returns.reduce((sum, ret) => {
+          const item = ret.items.find((i) => i.productId === returnItem.productId);
+          return sum + (item ? Number(item.quantity) : 0);
+        }, 0);
+
+        const maxReturnable = Number(origItem.quantity) - previouslyReturned;
+        if (returnItem.quantity > maxReturnable) {
+          throw userError(
+            `Return quantity (${returnItem.quantity}) exceeds maximum returnable quantity (${maxReturnable}) for this item.`,
+          );
+        }
       }
-    }
 
-    const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
-    const returnNo = `SRET-${Date.now().toString().slice(-6)}`;
+      const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+      const returnNo = generateDocumentNumber("SRET");
 
-    const result = await prisma.$transaction(async (tx) => {
       const saleReturn = await tx.saleReturn.create({
         data: {
           returnNo,
@@ -181,10 +186,16 @@ export async function createSaleReturnAction(raw: unknown) {
         },
       });
 
-      return saleReturn;
+      return { id: saleReturn.id, returnNo: saleReturn.returnNo, totalAmount };
     });
 
-    return { id: result.id, returnNo: result.returnNo, totalAmount };
+    emitRealtimeEvent(["returns", "sales", "inventory", "parties", "ledger", "dashboard"], "create", "SaleReturn", {
+      id: res.id,
+      returnNo: res.returnNo,
+      totalAmount: res.totalAmount,
+    });
+
+    return res;
   });
 }
 
@@ -196,42 +207,45 @@ export async function createPurchaseReturnAction(raw: unknown) {
     }
     const input = parseInput(purchaseReturnSchema, raw);
 
-    const invoice = await prisma.purchaseInvoice.findUnique({
-      where: { id: input.purchaseInvoiceId },
-      include: {
-        items: true,
-        returns: { include: { items: true } },
-      },
-    });
+    const stockKeys = input.items.map((item) => `stock:${item.productId}`);
+    const lockKeys = [`invoice:purchase:${input.purchaseInvoiceId}`, ...stockKeys, "doc:purchase_return"];
 
-    if (!invoice) {
-      throw userError("Purchase invoice not found.");
-    }
+    const res = await withResourceQueue(lockKeys, async (tx) => {
+      const invoice = await tx.purchaseInvoice.findUnique({
+        where: { id: input.purchaseInvoiceId },
+        include: {
+          items: true,
+          returns: { include: { items: true } },
+        },
+      });
 
-    // Validate quantities against original invoice
-    for (const returnItem of input.items) {
-      const origItem = invoice.items.find((i) => i.productId === returnItem.productId);
-      if (!origItem) {
-        throw userError(`Product does not exist on purchase invoice ${invoice.invoiceNo}.`);
+      if (!invoice) {
+        throw userError("Purchase invoice not found.");
       }
 
-      const previouslyReturned = invoice.returns.reduce((sum, ret) => {
-        const item = ret.items.find((i) => i.productId === returnItem.productId);
-        return sum + (item ? Number(item.quantity) : 0);
-      }, 0);
+      // Validate quantities against original invoice
+      for (const returnItem of input.items) {
+        const origItem = invoice.items.find((i) => i.productId === returnItem.productId);
+        if (!origItem) {
+          throw userError(`Product does not exist on purchase invoice ${invoice.invoiceNo}.`);
+        }
 
-      const maxReturnable = Number(origItem.quantity) - previouslyReturned;
-      if (returnItem.quantity > maxReturnable) {
-        throw userError(
-          `Return quantity (${returnItem.quantity}) exceeds maximum returnable quantity (${maxReturnable}) for this purchase item.`,
-        );
+        const previouslyReturned = invoice.returns.reduce((sum, ret) => {
+          const item = ret.items.find((i) => i.productId === returnItem.productId);
+          return sum + (item ? Number(item.quantity) : 0);
+        }, 0);
+
+        const maxReturnable = Number(origItem.quantity) - previouslyReturned;
+        if (returnItem.quantity > maxReturnable) {
+          throw userError(
+            `Return quantity (${returnItem.quantity}) exceeds maximum returnable quantity (${maxReturnable}) for this purchase item.`,
+          );
+        }
       }
-    }
 
-    const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
-    const returnNo = `PRET-${Date.now().toString().slice(-6)}`;
+      const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
+      const returnNo = generateDocumentNumber("PRET");
 
-    const result = await prisma.$transaction(async (tx) => {
       const purchaseReturn = await tx.purchaseReturn.create({
         data: {
           returnNo,
@@ -300,9 +314,15 @@ export async function createPurchaseReturnAction(raw: unknown) {
         },
       });
 
-      return purchaseReturn;
+      return { id: purchaseReturn.id, returnNo: purchaseReturn.returnNo, totalAmount };
     });
 
-    return { id: result.id, returnNo: result.returnNo, totalAmount };
+    emitRealtimeEvent(["returns", "purchases", "inventory", "parties", "ledger", "dashboard"], "create", "PurchaseReturn", {
+      id: res.id,
+      returnNo: res.returnNo,
+      totalAmount: res.totalAmount,
+    });
+
+    return res;
   });
 }

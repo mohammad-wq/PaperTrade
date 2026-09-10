@@ -26,6 +26,7 @@ import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { PurchaseOrderStatus } from "@prisma/client";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type PORow = {
   id: string;
@@ -83,8 +84,8 @@ export default function PurchaseOrdersPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const [poRes, partyRes, prodRes] = await Promise.all([
         listPurchaseOrdersAction(),
@@ -103,13 +104,17 @@ export default function PurchaseOrdersPage() {
         setProducts(prodRes.data as ProductOption[]);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
   useEffect(() => {
     void loadData();
   }, []);
+
+  useRealtimeListener(["purchase-orders", "purchases", "inventory"], () => {
+    void loadData(true);
+  });
 
   const locations = useMemo(() => {
     const map = new Map<string, string>();

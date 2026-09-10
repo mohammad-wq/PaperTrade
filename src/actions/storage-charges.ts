@@ -7,6 +7,7 @@ import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { storageChargeSchema } from "@/schemas/inventory";
 import { AccountType } from "@prisma/client";
+import { emitRealtimeEvent } from "@/lib/realtime";
 
 export async function listStorageChargesAction() {
   return runAction("storageCharges.list", async () => {
@@ -40,7 +41,7 @@ export async function createStorageChargeAction(raw: unknown) {
 
     const totalCharge = input.weightInTonnes * input.ratePerTonne;
 
-    return prisma.$transaction(async (tx) => {
+    const res = await prisma.$transaction(async (tx) => {
       const charge = await tx.warehouseStorageCharge.create({
         data: {
           locationId: input.locationId,
@@ -87,5 +88,12 @@ export async function createStorageChargeAction(raw: unknown) {
         totalCharge,
       };
     });
+
+    emitRealtimeEvent(["storage-charges", "expenses", "ledger", "dashboard"], "create", "StorageCharge", {
+      id: res.id,
+      totalCharge: res.totalCharge,
+    });
+
+    return res;
   });
 }

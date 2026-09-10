@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type InventoryRow = {
   productId: string;
@@ -59,8 +60,8 @@ export default function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  const fetchRows = useCallback(async () => {
-    setLoading(true);
+  const fetchRows = useCallback(async (isBackground = false) => {
+    if (!isBackground) setLoading(true);
     try {
       const result = await listInventoryAction();
       if (result.success) {
@@ -75,13 +76,17 @@ export default function InventoryPage() {
         }
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }, [locationId, fromLocationId, toLocationId]);
 
   useEffect(() => {
     void fetchRows();
   }, [fetchRows]);
+
+  useRealtimeListener(["inventory", "sales", "purchases", "delivery-orders", "purchase-orders", "returns"], () => {
+    void fetchRows(true);
+  });
 
   const locations = useMemo(
     () => Array.from(new Map(rows.map((row) => [row.locationId, row.locationName])).entries()).map(([id, name]) => ({ id, name })),

@@ -7,6 +7,8 @@ import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { miscExpenseSchema, paymentSchema } from "@/schemas/payment";
 import { AccountType, PartyType } from "@prisma/client";
+import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
+import { emitRealtimeEvent } from "@/lib/realtime";
 
 export async function listPaymentsAction() {
   return runAction("payments.list", async () => {
@@ -41,9 +43,9 @@ export async function createMiscExpenseAction(raw: unknown) {
     }
     const input = parseInput(miscExpenseSchema, raw);
 
-    const expenseId = `MISC-${Date.now().toString().slice(-6)}`;
+    const expenseId = generateDocumentNumber("MISC");
 
-    return prisma.$transaction(async (tx) => {
+    const res = await withResourceQueue(["ledger:expense", "doc:misc-expense"], async (tx) => {
       await tx.ledgerEntry.create({
         data: {
           partyId: null,
@@ -77,6 +79,13 @@ export async function createMiscExpenseAction(raw: unknown) {
         amount: input.amount,
       };
     });
+
+    emitRealtimeEvent(["payments", "expenses", "ledger", "dashboard"], "create", "MiscExpense", {
+      id: res.id,
+      amount: res.amount,
+    });
+
+    return res;
   });
 }
 
@@ -88,15 +97,19 @@ export async function createPaymentAction(raw: unknown) {
     }
     const input = parseInput(paymentSchema, raw);
 
-    const party = await prisma.party.findUnique({
-      where: { id: input.partyId },
-    });
+    const lockKeys = [`party:${input.partyId}`, "doc:payment"];
+    if (input.saleInvoiceId) lockKeys.push(`invoice:${input.saleInvoiceId}`);
+    if (input.purchaseInvoiceId) lockKeys.push(`invoice:${input.purchaseInvoiceId}`);
 
-    if (!party) {
-      throw userError("Party not found.");
-    }
+    const result = await withResourceQueue(lockKeys, async (tx) => {
+      const party = await tx.party.findUnique({
+        where: { id: input.partyId },
+      });
 
-    const result = await prisma.$transaction(async (tx) => {
+      if (!party) {
+        throw userError("Party not found.");
+      }
+
       const payment = await tx.payment.create({
         data: {
           partyId: input.partyId,
@@ -181,6 +194,12 @@ export async function createPaymentAction(raw: unknown) {
       }
 
       return payment;
+    });
+
+    emitRealtimeEvent(["payments", "parties", "sales", "purchases", "ledger", "dashboard"], "create", "Payment", {
+      id: result.id,
+      amount: Number(result.amount),
+      partyId: input.partyId,
     });
 
     return { id: result.id, amount: Number(result.amount) };

@@ -30,6 +30,7 @@ import { Role } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { RealtimeStatusBadge } from "@/components/providers/realtime-provider";
 
 type NavItem = {
   href: string;
@@ -229,6 +230,7 @@ export function AppShell({
           </div>
 
           <div className="flex items-center gap-2">
+            <RealtimeStatusBadge />
             <span className={cn("rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider", roleBadgeStyle)}>
               {user.role}
             </span>
@@ -251,9 +253,12 @@ export function AppShell({
                   <p className="text-[11px] text-slate-600 truncate">{user.name || "Paper Merchant"}</p>
                 </div>
               </div>
-              <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", roleBadgeStyle)}>
-                {user.role}
-              </span>
+              <div className="flex flex-col items-end gap-1.5">
+                <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", roleBadgeStyle)}>
+                  {user.role}
+                </span>
+                <RealtimeStatusBadge />
+              </div>
             </div>
 
             {/* Categorized Nav links */}

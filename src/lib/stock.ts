@@ -1,4 +1,4 @@
-import { StockMovementType } from "@prisma/client";
+import { Prisma, StockMovementType } from "@prisma/client";
 import { prisma } from "@/lib/db";
 
 const INBOUND: StockMovementType[] = [
@@ -14,8 +14,13 @@ const OUTBOUND: StockMovementType[] = [
   StockMovementType.PURCHASE_RETURN,
 ];
 
-export async function getStockOnHand(productId: string, locationId: string): Promise<number> {
-  const movements = await prisma.stockMovement.groupBy({
+export async function getStockOnHand(
+  productId: string,
+  locationId: string,
+  tx?: Prisma.TransactionClient,
+): Promise<number> {
+  const db = tx ?? prisma;
+  const movements = await db.stockMovement.groupBy({
     by: ["type"],
     where: { productId, locationId },
     _sum: { quantity: true },

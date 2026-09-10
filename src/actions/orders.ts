@@ -5,6 +5,8 @@ import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
 import { getStockOnHand } from "@/lib/stock";
+import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
+import { emitRealtimeEvent } from "@/lib/realtime";
 import { purchaseOrderSchema } from "@/schemas/order";
 import { deliveryOrderSchema } from "@/schemas/order";
 import { DeliveryOrderStatus, PurchaseOrderStatus, StockMovementType, Unit } from "@prisma/client";
@@ -181,9 +183,16 @@ export async function createPurchaseOrderAction(raw: unknown) {
       throw userError("You do not have permission to create purchase orders.");
     }
     const input = parseInput(purchaseOrderSchema, raw);
-    const orderNo = `PO-${Date.now().toString().slice(-6)}`;
 
-    return prisma.$transaction(async (tx) => {
+    const stockKeys = input.status === PurchaseOrderStatus.FULFILLED
+      ? input.items.map((item) => `stock:${item.productId}:${input.locationId}`)
+      : [];
+    const partyKey = `party:${input.supplierId}`;
+    const docKey = "doc:purchase_order";
+    const lockKeys = [...stockKeys, partyKey, docKey];
+
+    const res = await withResourceQueue(lockKeys, async (tx) => {
+      const orderNo = generateDocumentNumber("PO");
       const order = await tx.purchaseOrder.create({
         data: {
           orderNo,
@@ -224,6 +233,13 @@ export async function createPurchaseOrderAction(raw: unknown) {
 
       return { id: order.id, orderNo: order.orderNo };
     });
+
+    emitRealtimeEvent(["purchase-orders", "inventory", "stock-movements", "dashboard"], "create", "PurchaseOrder", {
+      id: res.id,
+      orderNo: res.orderNo,
+    });
+
+    return res;
   });
 }
 
@@ -239,7 +255,9 @@ export async function updatePurchaseOrderStatusAction(raw: unknown) {
     });
     const { id, status } = parseInput(schema, raw);
 
-    return prisma.$transaction(async (tx) => {
+    const lockKeys = [`order:po:${id}`, "doc:purchase_order"];
+
+    const res = await withResourceQueue(lockKeys, async (tx) => {
       const order = await tx.purchaseOrder.findUnique({
         where: { id },
         include: { items: true, invoices: true },
@@ -287,6 +305,13 @@ export async function updatePurchaseOrderStatusAction(raw: unknown) {
 
       return { id: updated.id, status: updated.status };
     });
+
+    emitRealtimeEvent(["purchase-orders", "inventory", "stock-movements", "dashboard"], "status", "PurchaseOrder", {
+      id: res.id,
+      status: res.status,
+    });
+
+    return res;
   });
 }
 
@@ -329,9 +354,14 @@ export async function createDeliveryOrderAction(raw: unknown) {
     }
     const input = parseInput(deliveryOrderSchema, raw);
 
-    const doNo = `DO-${Date.now().toString().slice(-6)}`;
+    const stockKeys = input.items.map((i) => `stock:${i.productId}:${input.locationId}`);
+    const partyKey = input.customerId ? `party:${input.customerId}` : null;
+    const docKey = "doc:delivery_order";
+    const lockKeys = [...stockKeys, ...(partyKey ? [partyKey] : []), docKey];
 
-    return prisma.$transaction(async (tx) => {
+    const res = await withResourceQueue(lockKeys, async (tx) => {
+      const doNo = generateDocumentNumber("DO");
+
       // If creating directly with DISPATCHED status, verify stock first
       if (input.status === DeliveryOrderStatus.DISPATCHED) {
         let alreadyDeducted = false;
@@ -349,7 +379,7 @@ export async function createDeliveryOrderAction(raw: unknown) {
 
         if (!alreadyDeducted) {
           for (const item of input.items) {
-            const available = await getStockOnHand(item.productId, input.locationId);
+            const available = await getStockOnHand(item.productId, input.locationId, tx);
             if (available < Number(item.quantity)) {
               const product = await tx.product.findUnique({
                 where: { id: item.productId },
@@ -405,6 +435,13 @@ export async function createDeliveryOrderAction(raw: unknown) {
 
       return { id: order.id, doNo: order.doNo };
     });
+
+    emitRealtimeEvent(["delivery-orders", "inventory", "stock-movements", "dashboard"], "create", "DeliveryOrder", {
+      id: res.id,
+      doNo: res.doNo,
+    });
+
+    return res;
   });
 }
 
@@ -420,7 +457,9 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
     });
     const { id, status } = parseInput(schema, raw);
 
-    return prisma.$transaction(async (tx) => {
+    const lockKeys = [`order:do:${id}`, "doc:delivery_order"];
+
+    const res = await withResourceQueue(lockKeys, async (tx) => {
       const order = await tx.deliveryOrder.findUnique({
         where: { id },
         include: { items: { include: { product: true } } },
@@ -478,7 +517,7 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
 
         if (!alreadyDeducted) {
           for (const item of order.items) {
-            const available = await getStockOnHand(item.productId, order.locationId);
+            const available = await getStockOnHand(item.productId, order.locationId, tx);
             if (available < Number(item.quantity)) {
               throw userError(
                 `Insufficient stock for "${item.product.productNo} - ${item.product.name}" to dispatch. Available: ${available} ${item.unit}, Required: ${item.quantity}.`,
@@ -508,6 +547,13 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
 
       return { id: updated.id, status: updated.status };
     });
+
+    emitRealtimeEvent(["delivery-orders", "inventory", "stock-movements", "dashboard"], "status", "DeliveryOrder", {
+      id: res.id,
+      status: res.status,
+    });
+
+    return res;
   });
 }
 

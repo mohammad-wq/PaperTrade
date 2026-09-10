@@ -20,6 +20,7 @@ import { listPartiesAction } from "@/actions/parties";
 import { listSaleInvoicesAction, listPurchaseInvoicesAction } from "@/actions/invoices";
 import { PaymentMethod, PartyType } from "@prisma/client";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type PaymentRow = {
   id: string;
@@ -75,8 +76,8 @@ export default function PaymentsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [expenseSubmitting, setExpenseSubmitting] = useState(false);
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const [payRes, partyRes, sInvRes, pInvRes] = await Promise.all([
         listPaymentsAction(),
@@ -98,13 +99,17 @@ export default function PaymentsPage() {
         setPurchaseInvoices(pInvRes.data as InvoiceOption[]);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
   useEffect(() => {
     void loadData();
   }, []);
+
+  useRealtimeListener(["payments", "parties", "sales", "purchases", "expenses"], () => {
+    void loadData(true);
+  });
 
   const selectedParty = useMemo(() => parties.find((p) => p.id === partyId), [parties, partyId]);
 

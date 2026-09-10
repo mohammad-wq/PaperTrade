@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { listProductsAction } from "@/actions/products";
 import { type ProductInput } from "@/schemas/product";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type ProductRecord = {
   id: string;
@@ -41,21 +42,25 @@ export default function ProductsPage() {
   const activeProducts = products.filter((product) => product.isActive).length;
   const inactiveProducts = products.filter((product) => !product.isActive).length;
 
-  useEffect(() => {
-    void fetchProducts();
-  }, []);
-
-  async function fetchProducts() {
-    setLoading(true);
+  async function fetchProducts(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const result = await listProductsAction();
       if (result.success) {
         setProducts(result.data as ProductRecord[]);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
+
+  useEffect(() => {
+    void fetchProducts();
+  }, []);
+
+  useRealtimeListener(["products"], () => {
+    void fetchProducts(true);
+  });
 
   const filteredProducts = useMemo(() => {
     const search = query.trim().toLowerCase();

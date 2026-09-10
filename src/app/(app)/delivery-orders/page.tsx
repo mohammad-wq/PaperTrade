@@ -29,6 +29,7 @@ import { listProductsAction } from "@/actions/products";
 import { DeliveryOrderStatus, Unit } from "@prisma/client";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type DORow = {
   id: string;
@@ -101,8 +102,8 @@ export default function DeliveryOrdersPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const [doRes, partyRes, prodRes, locRes] = await Promise.all([
         listDeliveryOrdersAction(),
@@ -125,13 +126,17 @@ export default function DeliveryOrdersPage() {
         setDbLocations(locRes.data as LocationOption[]);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
   useEffect(() => {
     void loadData();
   }, []);
+
+  useRealtimeListener(["delivery-orders", "sales", "inventory"], () => {
+    void loadData(true);
+  });
 
   const locations = useMemo(() => {
     if (dbLocations.length > 0) return dbLocations;

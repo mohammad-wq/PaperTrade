@@ -8,6 +8,7 @@ import { prisma } from "@/lib/db";
 import { requireSession } from "@/lib/auth/session";
 import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { emitRealtimeEvent } from "@/lib/realtime";
 
 const deleteProductSchema = z.object({ id: z.string().min(1, "Product is required") });
 
@@ -53,7 +54,7 @@ export async function upsertProductAction(raw: unknown) {
     };
     const weights = calculateWeights(normalizedInput.length, normalizedInput.breadth, normalizedInput.gsm);
 
-    return prisma.$transaction(async (tx) => {
+    const res = await prisma.$transaction(async (tx) => {
       const existing = await tx.product.findFirst({
         where: {
           productNo: normalizedInput.productNo,
@@ -115,6 +116,14 @@ export async function upsertProductAction(raw: unknown) {
 
       return { ...product, packetWeight: Number(product.packetWeight), reamWeight: Number(product.reamWeight) };
     });
+
+    emitRealtimeEvent(["products", "inventory", "sales", "purchases"], normalizedInput.id ? "update" : "create", "Product", {
+      id: res.id,
+      productNo: res.productNo,
+      name: res.name,
+    });
+
+    return res;
   });
 }
 
@@ -126,7 +135,7 @@ export async function softDeleteProductAction(raw: unknown) {
     }
     const input = parseInput(deleteProductSchema, raw);
 
-    return prisma.$transaction(async (tx) => {
+    const res = await prisma.$transaction(async (tx) => {
       const product = await tx.product.update({
         where: { id: input.id },
         data: {
@@ -137,5 +146,11 @@ export async function softDeleteProductAction(raw: unknown) {
 
       return { id: product.id, success: true };
     });
+
+    emitRealtimeEvent(["products", "inventory", "sales", "purchases"], "delete", "Product", {
+      id: input.id,
+    });
+
+    return res;
   });
 }

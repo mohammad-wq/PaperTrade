@@ -25,6 +25,7 @@ import { listSaleInvoicesAction, createSaleInvoiceAction } from "@/actions/invoi
 import { listPartiesAction, listInventoryAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type SaleInvoiceRow = {
   id: string;
@@ -105,8 +106,8 @@ export default function SalesPage() {
   const [formWarning, setFormWarning] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const [invRes, partyRes, prodRes, stockRes] = await Promise.all([
         listSaleInvoicesAction(),
@@ -133,7 +134,7 @@ export default function SalesPage() {
         }
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
@@ -141,6 +142,10 @@ export default function SalesPage() {
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useRealtimeListener(["sales", "inventory", "parties", "delivery-orders", "payments"], () => {
+    void loadData(true);
+  });
 
   const locations = useMemo(() => {
     const map = new Map<string, string>();

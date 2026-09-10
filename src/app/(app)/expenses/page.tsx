@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { listExpensesAction, createExpenseAction } from "@/actions/expenses";
 import { ExpenseCategory, PaymentMethod } from "@prisma/client";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type ExpenseRow = {
   id: string;
@@ -63,21 +64,25 @@ export default function ExpensesPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const res = await listExpensesAction();
       if (res.success && res.data) {
         setExpenses(res.data as ExpenseRow[]);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
   useEffect(() => {
     void loadData();
   }, []);
+
+  useRealtimeListener(["expenses", "payments"], () => {
+    void loadData(true);
+  });
 
   const totalExpenses = useMemo(
     () => expenses.reduce((sum, e) => sum + e.amount, 0),

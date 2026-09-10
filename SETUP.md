@@ -328,22 +328,225 @@ On any other PC, tablet, or phone on the same office network:
 
 ---
 
-## 7. Automated Database Backups
+## 7. Production Backup & Disaster Recovery System
 
-### Method 1: In-App Instant Backup & Restore
-1. Log in as an **OWNER**.
-2. Go to **Settings** -> **Database Backup & Restore**.
-3. Click **"Backup Database Now (.sql)"** to instantly download a timestamped SQL snapshot. Save this file to a USB flash drive.
+Paper Trade includes an automated, multi-tiered backup and disaster recovery architecture designed for 100% native Windows deployment:
+1. **Daily Automated Local Backups**: Runs `pg_dump` in compressed custom format (`-F c`), stores dumps at `C:\PaperTradeBackups\local\`, enforces 30-day automatic retention, and logs each run to `C:\PaperTradeBackups\backup-log.txt`.
+2. **Weekly Automated Cloud Sync (Google Drive)**: Uses `rclone` to copy backups to `gdrive:PaperTradeBackup/`, maintaining `paperbiz_latest.dump` and a rolling 3-week archive (`paperbiz_weekly_1.dump`, `paperbiz_weekly_2.dump`, `paperbiz_weekly_3.dump`).
+3. **In-App Manual "Backup Now" Admin Button**: Accessible to the `OWNER` on the Settings page to trigger an immediate local dump and cloud upload with real-time UI status and logs.
+4. **Disaster Recovery (`pg_restore`)**: Standard custom-format restoration procedures with throwaway verification testing.
 
-### Method 2: Scheduled Nightly Backups (Task Scheduler)
-1. Press `Win + R`, type `taskschd.msc`, press **Enter**.
-2. Click **Create Basic Task...**:
-   - **Name**: `Paper Trade Nightly Backup`
-   - **Trigger**: Daily at `20:00` (8:00 PM)
-   - **Action**: Start a program
-   - **Program/script**: `C:\PaperTrade\scripts\backup.bat`
-   - **Start in**: `C:\PaperTrade`
-3. Click **Finish**. Timestamped snapshots will be saved automatically to `C:\PaperTrade\backups\`.
+---
+
+### 7.1 Component 1: Daily Local Backups (`backup-local.bat`)
+
+- **Script Location**: `C:\PaperTrade\scripts\backup-local.bat`
+- **Output Directory**: `C:\PaperTradeBackups\local\`
+- **File Naming Pattern**: `paperbiz_YYYY-MM-DD_HHMM.dump` (e.g. `paperbiz_2026-09-10_2100.dump`)
+- **Format**: PostgreSQL Custom Format (`-F c` with `-b` large objects and gzip compression).
+- **Credentials**: Dynamically parsed from `DATABASE_URL` in `.env` and injected into the child process environment via `PGPASSWORD`. Database passwords are never hardcoded or exposed in command arguments.
+- **Retention**: After each run, files older than **30 days** in `C:\PaperTradeBackups\local\` are automatically deleted to prevent disk overflow.
+- **Logging**: Each run appends a structured entry to `C:\PaperTradeBackups\backup-log.txt`:
+  ```text
+  [2026-09-10 21:00:00] [LOCAL] SUCCESS: paperbiz_2026-09-10_2100.dump (2.45 MB) created - Retention: no old files to purge
+  ```
+
+---
+
+### 7.2 Component 2: Google Drive Cloud Sync Setup (via Rclone)
+
+Rclone is a fast, secure command-line tool that syncs files to Google Drive without requiring the heavy Google Drive desktop sync app.
+
+#### Step 1: Download & Install Rclone on Windows
+1. Download the official 64-bit Windows ZIP from: [https://rclone.org/downloads/](https://rclone.org/downloads/)
+2. Extract the archive (e.g., to `C:\rclone\`).
+3. Add `C:\rclone` to your Windows System `PATH`:
+   - Open Start -> Search **"Environment Variables"** -> Click **Edit the system environment variables**.
+   - Click **Environment Variables...** -> Under **System variables**, select **Path** -> Click **Edit...**.
+   - Click **New** -> Enter `C:\rclone` -> Click **OK** on all dialogs.
+4. Verify in a new Command Prompt:
+   ```cmd
+   rclone version
+   ```
+
+#### Step 2: Configure the Google Drive Remote (`rclone config`)
+
+> [!CAUTION]
+> **CRITICAL DATA OWNERSHIP REQUIREMENT**:
+> When running `rclone config` to link Google Drive, the interactive OAuth browser authentication **must be completed using the business owner's Google account**, NOT the developer's personal account.
+> This guarantees that:
+> 1. All database archives are stored in the client's own cloud quota.
+> 2. The client has direct, independent access to their backups in Google Drive.
+> 3. Backups do not consume developer storage or breach client confidentiality.
+
+1. Open Command Prompt and run:
+   ```cmd
+   rclone config
+   ```
+2. Follow these exact interactive prompts:
+   - `n/s/q> ` Enter **`n`** (New remote)
+   - `name> ` Enter **`gdrive`** *(Crucial: must be exactly `gdrive`)*
+   - `Type of storage to configure> ` Enter **`drive`** (Google Drive)
+   - `client_id> ` Press **Enter** (leave blank to use default)
+   - `client_secret> ` Press **Enter** (leave blank to use default)
+   - `scope> ` Enter **`1`** (Full access to files)
+   - `service_account_file> ` Press **Enter** (leave blank)
+   - `Edit advanced config?` Enter **`n`**
+   - `Use web browser to automatically authenticate?` Enter **`y`**
+3. A web browser will automatically open. **Log in with the Business Owner's Google Account** and click **Allow**.
+4. Return to Command Prompt:
+   - `Configure this as a Shared Drive (Team Drive)?` Enter **`n`**
+   - `Keep this "gdrive" remote?` Enter **`y`**
+   - `e/n/d/r/c/s/q> ` Enter **`q`** (Quit config)
+5. **Verify the connection**:
+   ```cmd
+   rclone lsd gdrive:
+   ```
+   *(Should list your existing Google Drive folders without errors).*
+
+#### Step 3: Rolling 3-Week Cloud Archive Mechanism
+The cloud backup script (`scripts\backup-cloud.bat`) automatically maintains the following structure inside Google Drive folder `gdrive:PaperTradeBackup/`:
+- **`paperbiz_latest.dump`**: Overwritten each week with the newest snapshot.
+- **`paperbiz_weekly_1.dump`**: 1 week old backup.
+- **`paperbiz_weekly_2.dump`**: 2 weeks old backup.
+- **`paperbiz_weekly_3.dump`**: 3 weeks old backup (oldest retained archive).
+- When a new weekly backup runs:
+  - Week 2 moves to Week 3 (replacing old Week 3).
+  - Week 1 moves to Week 2.
+  - Latest moves to Week 1.
+  - New dump is uploaded as `paperbiz_latest.dump`.
+- Reuses the existing local dump from today (if under 24 hours old) to avoid unnecessary duplicate database dumping.
+- Logs outcome with `[CLOUD]` tag to `C:\PaperTradeBackups\backup-log.txt`.
+
+---
+
+### 7.3 Component 3: Windows Task Scheduler Setup
+
+Set up two non-interactive background tasks using **Task Scheduler**:
+
+#### Task A: Daily Local Backup (Every Night at 9:00 PM)
+1. Press `Win + R`, type `taskschd.msc`, and press **Enter**.
+2. In the right panel, click **Create Task...** (do NOT choose *Create Basic Task*).
+3. **General Tab**:
+   - **Name**: `PaperTrade_Daily_Local_Backup`
+   - **Description**: `Creates nightly compressed PostgreSQL dump with 30-day retention`
+   - Select **Run whether user is logged on or not**
+   - Check **Run with highest privileges**
+   - Configure for: **Windows 10 / Windows 11 / Windows Server**
+4. **Triggers Tab**:
+   - Click **New...**
+   - **Begin the task**: `On a schedule`
+   - Select **Daily**, recur every `1` days
+   - **Start time**: `21:00:00` (9:00 PM)
+   - Click **OK**
+5. **Actions Tab**:
+   - Click **New...**
+   - **Action**: `Start a program`
+   - **Program/script**: `C:\PaperTrade\scripts\backup-local.bat`
+   - **Start in (optional)**: `C:\PaperTrade` *(CRITICAL: Must point to project root)*
+   - Click **OK**
+6. **Conditions Tab**:
+   - Uncheck **Start the task only if the computer is on AC power**
+7. **Settings Tab**:
+   - Check **Allow task to be run on demand**
+   - Check **Run task as soon as possible after a scheduled start is missed**
+   - Check **If the running task does not end when requested, force it to stop**
+8. Click **OK**. Enter the Windows administrator password when prompted.
+
+#### Task B: Weekly Cloud Backup to Google Drive (Every Sunday at 10:00 PM)
+1. In Task Scheduler, click **Create Task...**.
+2. **General Tab**:
+   - **Name**: `PaperTrade_Weekly_Cloud_Backup`
+   - **Description**: `Uploads weekly database archive to Google Drive via Rclone`
+   - Select **Run whether user is logged on or not**
+   - Check **Run with highest privileges**
+3. **Triggers Tab**:
+   - Click **New...**
+   - Select **Weekly**
+   - Check **Sunday**
+   - **Start time**: `22:00:00` (10:00 PM)
+   - Click **OK**
+4. **Actions Tab**:
+   - Click **New...**
+   - **Action**: `Start a program`
+   - **Program/script**: `C:\PaperTrade\scripts\backup-cloud.bat`
+   - **Start in (optional)**: `C:\PaperTrade`
+   - Click **OK**
+5. **Conditions Tab**:
+   - Uncheck **Start the task only if the computer is on AC power**
+6. **Settings Tab**:
+   - Check **Allow task to be run on demand**
+   - Check **Run task as soon as possible after a scheduled start is missed**
+7. Click **OK** and enter your Windows administrator credentials.
+
+---
+
+### 7.4 Component 4: In-App Manual "Backup Now" Trigger
+
+1. Log into Paper Trade as an **Owner** (`Role.OWNER`).
+2. Navigate to **Settings** (`/settings`).
+3. In the **Automated & Manual Backup Control Center**, click **"Backup Now"**.
+4. The system executes the shared runner:
+   - Takes a fresh local `.dump` snapshot.
+   - Syncs the dump to Google Drive.
+   - Updates the last backup timestamp in the database.
+   - Appends a `[MANUAL]` entry to `backup-log.txt`.
+   - Displays real-time file size, filename, and Google Drive confirmation in the UI.
+   - If cloud sync fails (e.g. Rclone unconfigured), displays a helpful warning while confirming the local backup succeeded.
+
+---
+
+### 7.5 Component 5: Database Restoration Guide (`pg_restore`)
+
+If you ever need to restore your database after hardware failure, data corruption, or server migration:
+
+#### Safe Best Practice: Test in a Throwaway Database First
+Before restoring over your live production database, verify the `.dump` file in a temporary test database:
+
+```cmd
+# 1. Create a temporary throwaway database
+"C:\Program Files\PostgreSQL\16\bin\createdb.exe" -U postgres paperbiz_test
+
+# 2. Restore into the test database (custom format -F c)
+"C:\Program Files\PostgreSQL\16\bin\pg_restore.exe" -U postgres -d paperbiz_test -v --clean --if-exists -F c "C:\PaperTradeBackups\local\paperbiz_YYYY-MM-DD_HHMM.dump"
+
+# 3. Check tables and counts via psql
+"C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d paperbiz_test -c "SELECT count(*) FROM \"SaleInvoice\";"
+
+# 4. Once verified, drop the temporary database
+"C:\Program Files\PostgreSQL\16\bin\dropdb.exe" -U postgres paperbiz_test
+```
+
+#### Full Production Database Restore
+To restore directly into the production `paperbiz` database:
+
+1. **Stop the Paper Trade Application Service**:
+   ```cmd
+   nssm stop PaperTrade
+   ```
+   *(Or close the running server process to disconnect all client database sessions).*
+
+2. **Run `pg_restore`**:
+   Open Command Prompt as Administrator:
+   ```cmd
+   set PGPASSWORD=your_database_password
+   "C:\Program Files\PostgreSQL\16\bin\pg_restore.exe" -U postgres -d paperbiz --clean --if-exists -v -F c "C:\PaperTradeBackups\local\paperbiz_YYYY-MM-DD_HHMM.dump"
+   ```
+
+   **Explanation of Flags**:
+   - `-U postgres`: PostgreSQL user.
+   - `-d paperbiz`: Target database name.
+   - `--clean`: Drops database objects (tables, sequences) prior to recreating them.
+   - `--if-exists`: Adds `IF EXISTS` to drop commands to suppress errors for new objects.
+   - `-F c`: Specifies Custom format (matching `pg_dump -F c`).
+   - `-v`: Verbose progress reporting.
+
+3. **Restart the Paper Trade Service**:
+   ```cmd
+   nssm start PaperTrade
+   ```
+4. Log into the system and verify data integrity on the Dashboard and Ledger.
+
 
 ---
 

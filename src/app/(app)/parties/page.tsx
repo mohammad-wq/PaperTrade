@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PartyType } from "@prisma/client";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type PartyRecord = {
   id: string;
@@ -28,21 +29,25 @@ export default function PartiesPage() {
   const [selectedType, setSelectedType] = useState<"ALL" | PartyType>("ALL");
   const [showActiveOnly, setShowActiveOnly] = useState(true);
 
-  useEffect(() => {
-    void fetchParties();
-  }, []);
-
-  async function fetchParties() {
-    setLoading(true);
+  async function fetchParties(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const result = await listPartiesAction();
       if (result.success) {
         setParties(result.data as PartyRecord[]);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
+
+  useEffect(() => {
+    void fetchParties();
+  }, []);
+
+  useRealtimeListener(["parties", "sales", "purchases", "payments"], () => {
+    void fetchParties(true);
+  });
 
   const customerCount = useMemo(() => parties.filter((p) => p.type === PartyType.CUSTOMER).length, [parties]);
   const supplierCount = useMemo(() => parties.filter((p) => p.type === PartyType.SUPPLIER).length, [parties]);

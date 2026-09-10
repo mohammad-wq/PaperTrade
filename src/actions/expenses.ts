@@ -7,6 +7,8 @@ import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { userError } from "@/lib/errors";
+import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
+import { emitRealtimeEvent } from "@/lib/realtime";
 
 export const expenseSchema = z.object({
   category: z.nativeEnum(ExpenseCategory).default(ExpenseCategory.OTHER),
@@ -67,14 +69,13 @@ export async function createExpenseAction(raw: unknown) {
     }
 
     const input = parseInput(expenseSchema, raw);
-    const expenseNo = `EXP-${Date.now().toString().slice(-6)}`;
+    const expenseNo = generateDocumentNumber("EXP");
 
-    return prisma.$transaction(async (tx) => {
-      const category = input.category || ExpenseCategory.OTHER;
+    const res = await withResourceQueue(["ledger:expense", "doc:expense"], async (tx) => {
       const expense = await tx.expense.create({
         data: {
           expenseNo,
-          category,
+          category: input.category,
           amount: input.amount,
           method: input.method,
           date: input.date,
@@ -94,7 +95,7 @@ export async function createExpenseAction(raw: unknown) {
           referenceType: "MISC_EXPENSE",
           referenceId: expense.id,
           date: input.date,
-          description: `${category.replace(/_/g, " ")}: ${input.description}`,
+          description: `${(input.category || ExpenseCategory.OTHER).replace(/_/g, " ")}: ${input.description}`,
           createdById: session.user.id,
         },
       });
@@ -121,5 +122,14 @@ export async function createExpenseAction(raw: unknown) {
         amount: Number(expense.amount),
       };
     });
+
+    emitRealtimeEvent(["expenses", "payments", "ledger", "dashboard"], "create", "Expense", {
+      id: res.id,
+      expenseNo: res.expenseNo,
+      amount: res.amount,
+    });
+
+    return res;
   });
 }
+

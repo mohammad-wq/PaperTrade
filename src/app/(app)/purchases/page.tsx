@@ -20,6 +20,7 @@ import { listPurchaseOrdersAction } from "@/actions/orders";
 import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { format } from "date-fns";
+import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type PurchaseInvoiceRow = {
   id: string;
@@ -87,8 +88,8 @@ export default function PurchasesPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const [invRes, partyRes, prodRes, poRes] = await Promise.all([
         listPurchaseInvoicesAction(),
@@ -111,13 +112,17 @@ export default function PurchasesPage() {
         setPos(poRes.data as POOption[]);
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
   useEffect(() => {
     void loadData();
   }, []);
+
+  useRealtimeListener(["purchases", "inventory", "parties", "purchase-orders", "payments"], () => {
+    void loadData(true);
+  });
 
   const locations = useMemo(() => {
     const map = new Map<string, string>();
