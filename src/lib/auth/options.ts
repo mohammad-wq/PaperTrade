@@ -20,6 +20,9 @@ export const authOptions: NextAuthOptions = {
     strategy: "jwt",
     maxAge: 2 * 60 * 60, // 2 hours maximum session lifetime
   },
+  jwt: {
+    maxAge: 2 * 60 * 60, // Keep JWT lifetime aligned with the session cookie
+  },
   pages: {
     signIn: "/login",
   },

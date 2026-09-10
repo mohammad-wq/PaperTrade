@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useSession, signOut } from "next-auth/react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 
 // 15 minutes inactivity limit
 const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
@@ -14,7 +14,6 @@ const BROADCAST_CHANNEL_NAME = "paper_trade_session";
 export function SessionSecurityGuard() {
   const { data: session, status } = useSession();
   const pathname = usePathname();
-  const router = useRouter();
 
   const isLoggingOutRef = useRef(false);
   const lastHeartbeatRef = useRef(Date.now());
@@ -58,7 +57,7 @@ export function SessionSecurityGuard() {
       });
     }
 
-    // 1. Cross-tab communication & browser-close detection
+    // 1. Cross-tab communication for coordinated logout handling
     if (typeof window !== "undefined" && "BroadcastChannel" in window) {
       try {
         channel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
@@ -66,18 +65,7 @@ export function SessionSecurityGuard() {
           const data = event.data;
           if (!data || typeof data !== "object") return;
 
-          if (data.type === "CHECK_BROWSER_SESSION") {
-            // An incoming new tab is asking if an active browser session exists
-            if (sessionStorage.getItem(SESSION_STORAGE_KEY) === "active") {
-              channel?.postMessage({ type: "BROWSER_SESSION_ACTIVE" });
-            }
-          } else if (data.type === "BROWSER_SESSION_ACTIVE") {
-            try {
-              sessionStorage.setItem(SESSION_STORAGE_KEY, "active");
-            } catch {
-              // Storage restricted
-            }
-          } else if (data.type === "FORCE_LOGOUT") {
+          if (data.type === "FORCE_LOGOUT") {
             if (!isLoggingOutRef.current) {
               isLoggingOutRef.current = true;
               try {
@@ -94,30 +82,14 @@ export function SessionSecurityGuard() {
       }
     }
 
-    // Check if current browser window has the session marker.
-    // If empty, ask other tabs before concluding browser was freshly opened.
+    // Ensure the current browser tab owns a local marker so duplicate tabs can share
+    // the same session state without triggering erroneous expiry on refresh.
     const hasLocalMarker = typeof window !== "undefined" && sessionStorage.getItem(SESSION_STORAGE_KEY) === "active";
 
     if (!hasLocalMarker) {
-      if (channel) {
-        channel.postMessage({ type: "CHECK_BROWSER_SESSION" });
-        // Give open tabs 120ms to respond
-        const timer = setTimeout(() => {
-          if (!isSubscribed) return;
-          const markerFound = sessionStorage.getItem(SESSION_STORAGE_KEY) === "active";
-          if (!markerFound) {
-            // No other tab was open; browser was closed and reopened
-            handleExpire("browser_closed");
-          }
-        }, 120);
-
-        return () => clearTimeout(timer);
-      } else {
-        // BroadcastChannel unavailable: default to active to prevent false lockouts
-        try {
-          sessionStorage.setItem(SESSION_STORAGE_KEY, "active");
-        } catch {}
-      }
+      try {
+        sessionStorage.setItem(SESSION_STORAGE_KEY, "active");
+      } catch {}
     }
 
     // 2. Sleep / Lid-Close Detection via Web Worker Heartbeat
@@ -226,7 +198,7 @@ export function SessionSecurityGuard() {
         window.removeEventListener(evt, handleUserActivity);
       });
     };
-  }, [status, session, pathname, router]);
+  }, [status, session, pathname]);
 
   return null;
 }
