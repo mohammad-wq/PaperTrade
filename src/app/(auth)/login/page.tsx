@@ -3,10 +3,21 @@ import { redirect } from "next/navigation";
 import { LoginForm } from "@/components/auth/login-form";
 import { getSession } from "@/lib/auth/session";
 
-export default async function LoginPage() {
-  const session = await getSession();
-  if (session?.user) {
-    redirect("/dashboard");
+interface LoginPageProps {
+  searchParams?: {
+    reason?: string;
+    callbackUrl?: string;
+  };
+}
+
+export default async function LoginPage({ searchParams }: LoginPageProps) {
+  // If no reason is present, check existing session.
+  // If a reason is provided (sleep, browser_closed, inactive, expired), force credentials entry.
+  if (!searchParams?.reason) {
+    const session = await getSession();
+    if (session?.user) {
+      redirect("/dashboard");
+    }
   }
 
   return (

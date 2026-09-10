@@ -16,6 +16,19 @@ export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [formError, setFormError] = useState<string | null>(null);
+
+  const reason = searchParams.get("reason");
+  const reasonMessage =
+    reason === "sleep"
+      ? "Your computer was closed or went to sleep. For security, please sign in again."
+      : reason === "browser_closed"
+      ? "Your browser session ended. Please sign in again."
+      : reason === "inactive" || reason === "timeout"
+      ? "Your session timed out due to inactivity. Please sign in again."
+      : reason === "expired"
+      ? "Your session has expired. Please sign in again."
+      : null;
+
   const {
     register,
     handleSubmit,
@@ -36,6 +49,20 @@ export function LoginForm() {
     if (!result || result.error) {
       setFormError("Invalid email or password, or your account has been deactivated.");
       return;
+    }
+
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.setItem("pt_browser_session", "active");
+        sessionStorage.setItem("pt_session_login_time", Date.now().toString());
+        if ("BroadcastChannel" in window) {
+          const channel = new BroadcastChannel("paper_trade_session");
+          channel.postMessage({ type: "LOGIN_SUCCESS" });
+          channel.close();
+        }
+      } catch {
+        // Ignore storage exceptions
+      }
     }
 
     const targetUrl = searchParams.get("callbackUrl") || "/dashboard";
@@ -63,6 +90,13 @@ export function LoginForm() {
       </CardHeader>
       <CardContent className="pt-0 pb-6">
         <form className="flex flex-col gap-4" onSubmit={handleSubmit(onSubmit)} noValidate>
+          {reasonMessage && !formError && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/90 p-3 text-xs text-amber-900 flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
+              <span>{reasonMessage}</span>
+            </div>
+          )}
+
           {formError && (
             <div className="rounded-lg border border-rose-200 bg-rose-50/80 p-3 text-xs text-rose-800 flex items-center gap-2">
               <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />

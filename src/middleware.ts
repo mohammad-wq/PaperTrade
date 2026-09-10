@@ -21,7 +21,14 @@ export default withAuth(
   },
   {
     callbacks: {
-      authorized: ({ token }) => Boolean(token),
+      authorized: ({ token }) => {
+        if (!token) return false;
+        const now = Math.floor(Date.now() / 1000);
+        if (typeof token.exp === "number" && token.exp < now) {
+          return false;
+        }
+        return true;
+      },
     },
     pages: {
       signIn: "/login",

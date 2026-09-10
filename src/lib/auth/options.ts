@@ -18,7 +18,7 @@ const DUMMY_HASH = "$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4h/4J6YV4y
 export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
-    maxAge: 30 * 24 * 60 * 60, // 30 days
+    maxAge: 2 * 60 * 60, // 2 hours maximum session lifetime
   },
   pages: {
     signIn: "/login",
@@ -81,10 +81,16 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger }) {
+      const now = Math.floor(Date.now() / 1000);
       if (user) {
         token.id = user.id;
         token.role = user.role;
+        token.loginAt = now;
+        token.lastActive = now;
+      }
+      if (trigger === "update") {
+        token.lastActive = now;
       }
       return token;
     },
@@ -92,6 +98,8 @@ export const authOptions: NextAuthOptions = {
       if (session.user) {
         session.user.id = token.id as string;
         session.user.role = token.role;
+        session.user.loginAt = token.loginAt;
+        session.user.lastActive = token.lastActive;
       }
       return session;
     },

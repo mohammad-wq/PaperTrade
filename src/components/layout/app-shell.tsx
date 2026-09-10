@@ -158,6 +158,21 @@ export function AppShell({
         ? "bg-sky-100 text-sky-900 border-sky-300"
         : "bg-slate-100 text-slate-800 border-slate-300";
 
+  const handleSignOut = () => {
+    try {
+      sessionStorage.removeItem("pt_browser_session");
+      sessionStorage.removeItem("pt_session_login_time");
+      if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+        const channel = new BroadcastChannel("paper_trade_session");
+        channel.postMessage({ type: "FORCE_LOGOUT", reason: "manual" });
+        channel.close();
+      }
+    } catch {
+      // Ignore cleanup exceptions
+    }
+    signOut({ callbackUrl: "/login" });
+  };
+
   return (
     <div className="min-h-screen bg-[#faf8f5]">
       {/* Mobile Top Header */}
@@ -189,7 +204,7 @@ export function AppShell({
                   variant="outline"
                   size="sm"
                   className="w-full justify-start text-xs border-amber-950/15 text-slate-700"
-                  onClick={() => signOut({ callbackUrl: "/login" })}
+                  onClick={handleSignOut}
                 >
                   <LogOut className="mr-2 h-4 w-4" />
                   Sign out
@@ -242,7 +257,7 @@ export function AppShell({
             <Button
               className="w-full justify-start text-xs text-slate-600 hover:text-red-700 hover:bg-red-50/70 border-amber-950/10"
               variant="outline"
-              onClick={() => signOut({ callbackUrl: "/login" })}
+              onClick={handleSignOut}
             >
               <LogOut className="mr-2 h-4 w-4" />
               Sign out ({user.name?.split(" ")[0] || "User"})
