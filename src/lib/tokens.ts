@@ -25,3 +25,4 @@ export function verifyDocShareToken(type: string, id: string, token: string | nu
   if (tokenBuf.length !== expectedBuf.length) return false;
   return crypto.timingSafeEqual(tokenBuf, expectedBuf);
 }
+

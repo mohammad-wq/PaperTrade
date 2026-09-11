@@ -201,6 +201,8 @@ export default function UsersPage() {
     e.preventDefault();
     setFormError(null);
 
+    if (!name.trim() || !email.trim() || !password) {
+      setFormError("All fields are required.");
     if (!name.trim() || !email.trim()) {
       setFormError("Name and email are required.");
       return;
@@ -210,6 +212,7 @@ export default function UsersPage() {
       return;
     }
 
+    if (!window.confirm("Confirm: create this user account?")) return;
     const actionPrompt = editingUser
       ? `Confirm: update user account for ${name}?`
       : "Confirm: create this user account?";
@@ -217,6 +220,14 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
+      const res = await createUserAction({
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        password,
+        role,
+        isActive: true,
+        permissions: permissionDraft,
+      });
       const res = editingUser
         ? await updateUserAction({
             id: editingUser.id,
@@ -237,6 +248,7 @@ export default function UsersPage() {
           });
 
       if (!res.success) {
+        setFormError(res.error || "Failed to create user.");
         setFormError(res.error || (editingUser ? "Failed to update user." : "Failed to create user."));
       } else {
         setIsDialogOpen(false);
@@ -298,6 +310,7 @@ export default function UsersPage() {
         </div>
 
         <Button
+          onClick={() => setIsDialogOpen(true)}
           onClick={openCreateDialog}
           className="bg-amber-800 text-white hover:bg-amber-700 shadow-sm"
         >
@@ -369,6 +382,7 @@ export default function UsersPage() {
                 </div>
               </CardContent>
 
+              <div className="p-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end rounded-b-xl">
               <div className="p-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-2 rounded-b-xl">
                 <Button
                   size="sm"
@@ -408,6 +422,8 @@ export default function UsersPage() {
           <div className="w-full max-w-4xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div>
+                <h2 className="text-lg font-bold text-slate-900">Add User Account</h2>
+                <p className="text-xs text-slate-500">Create staff or manager login credentials</p>
                 <h2 className="text-lg font-bold text-slate-900">
                   {editingUser ? "Edit User Account" : "Add User Account"}
                 </h2>
@@ -483,6 +499,7 @@ export default function UsersPage() {
 
                 <div className="space-y-1">
                   <Label htmlFor="upass" className="text-xs font-semibold">
+                    Password <span className="text-rose-500">*</span>
                     Password{" "}
                     {editingUser ? (
                       <span className="font-normal text-slate-500">(leave blank to keep current)</span>
@@ -495,8 +512,10 @@ export default function UsersPage() {
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Minimum 6 characters"
                     placeholder={editingUser ? "Leave blank to keep current password" : "Minimum 6 characters"}
                     className="h-8 text-xs"
+                    required
                     required={!editingUser}
                   />
                 </div>
@@ -523,6 +542,7 @@ export default function UsersPage() {
                   Cancel
                 </Button>
                 <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs">
+                  {submitting ? "Creating..." : "Create Account"}
                   {editingUser
                     ? submitting
                       ? "Saving..."

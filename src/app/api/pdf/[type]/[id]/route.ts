@@ -24,6 +24,12 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { type: string; id: string } },
 ) {
+  // 1. Enforce authentication
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
+    return new NextResponse("Unauthorized", { status: 401 });
+  }
+
   const { type, id } = params;
 
   if (!ALLOWED_DOC_TYPES.has(type)) {
