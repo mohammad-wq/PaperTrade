@@ -33,6 +33,7 @@ import {
   getBackupLogsAction,
 } from "@/actions/backup";
 import type { BackupLogEntry, BackupExecutionResult } from "@/lib/backup-runner";
+import { formatDateTime } from "@/lib/utils";
 
 type DatabaseStats = {
   productsCount: number;
@@ -493,7 +494,14 @@ export default function SettingsPage() {
                     <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
                   )}
                   <div className="space-y-1">
-                    <p className="font-semibold">{manualBackupResult.message || "Backup completed."}</p>
+                    <p className="font-semibold">
+                      {manualBackupResult.message || manualBackupResult.error || (manualBackupResult.success ? "Backup completed successfully." : "Backup failed.")}
+                    </p>
+                    {manualBackupResult.error && !manualBackupResult.success && (
+                      <p className="text-[11px] text-rose-700 bg-rose-100/60 p-2 rounded mt-1 font-mono break-all">
+                        {manualBackupResult.error}
+                      </p>
+                    )}
                     {manualBackupResult.local && (
                       <p className="text-[11px] opacity-90">
                         <strong>Local Dump:</strong> {manualBackupResult.local.filename} ({manualBackupResult.local.fileSizeFormatted})
@@ -529,7 +537,7 @@ export default function SettingsPage() {
                 <Clock className="h-3.5 w-3.5 text-slate-400" />
                 Last Recorded Backup:{" "}
                 <strong>
-                  {dbStats?.lastBackupAt ? new Date(dbStats.lastBackupAt).toLocaleString() : "None"}
+                  {dbStats?.lastBackupAt ? formatDateTime(dbStats.lastBackupAt) : "None"}
                 </strong>
               </span>
               <span className="flex items-center gap-1">

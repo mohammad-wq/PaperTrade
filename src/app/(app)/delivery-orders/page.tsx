@@ -411,7 +411,7 @@ export default function DeliveryOrdersPage() {
                 )}
                 <div className="flex justify-between text-slate-600">
                   <span>Date:</span>
-                  <span>{format(new Date(order.date), "dd MMM yyyy")}</span>
+                  <span>{format(new Date(order.date), "dd/MM/yyyy")}</span>
                 </div>
                 {order.vehicleNo && (
                   <div className="flex justify-between text-slate-600">

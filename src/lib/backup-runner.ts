@@ -28,7 +28,31 @@ export type BackupLogEntry = {
 };
 
 const PROJECT_ROOT = process.cwd();
-const RUNNER_SCRIPT = path.join(PROJECT_ROOT, "scripts", "backup-runner.js");
+
+function resolveRunnerScript(): { scriptPath: string; workingDir: string } {
+  const cwd = process.cwd();
+  const candidates = [
+    path.join(cwd, "scripts", "backup-runner.js"),
+    path.join(cwd, ".next", "standalone", "scripts", "backup-runner.js"),
+    path.join(__dirname, "..", "..", "..", "scripts", "backup-runner.js"),
+    path.join(__dirname, "..", "scripts", "backup-runner.js"),
+    path.join(__dirname, "scripts", "backup-runner.js"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return {
+        scriptPath: candidate,
+        workingDir: path.dirname(path.dirname(candidate)),
+      };
+    }
+  }
+
+  return {
+    scriptPath: path.join(cwd, "scripts", "backup-runner.js"),
+    workingDir: cwd,
+  };
+}
 
 /**
  * Execute local, cloud, or manual backup via the shared runner
@@ -36,13 +60,14 @@ const RUNNER_SCRIPT = path.join(PROJECT_ROOT, "scripts", "backup-runner.js");
 export async function executeBackup(type: "local" | "cloud" | "manual"): Promise<BackupExecutionResult> {
   return new Promise((resolve) => {
     const nodeBin = process.execPath || "node";
-    const args = [RUNNER_SCRIPT, `--type=${type}`, "--json"];
+    const { scriptPath, workingDir } = resolveRunnerScript();
+    const args = [scriptPath, `--type=${type}`, "--json"];
 
     execFile(
       nodeBin,
       args,
       {
-        cwd: PROJECT_ROOT,
+        cwd: workingDir,
         timeout: 180000, // 3 minutes timeout
         maxBuffer: 10 * 1024 * 1024,
       },

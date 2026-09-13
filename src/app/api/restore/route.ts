@@ -62,7 +62,6 @@ export async function POST(request: NextRequest) {
       const tempPath = path.join(os.tmpdir(), `restore_${Date.now()}.sql`);
       try {
         await fs.writeFile(tempPath, sqlContent, "utf8");
-        await execAsync(`psql "${dbUrl}" -f "${tempPath}"`, { timeout: 60000 });
         const psqlBin = findPsqlPath();
         await execAsync(`"${psqlBin}" "${dbUrl}" -f "${tempPath}"`, { timeout: 60000 });
         restoredViaPsql = true;
@@ -73,11 +72,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 3. Fallback to executing via Prisma raw query execution
     // 3. Fallback to executing statement-by-statement inside a Prisma transaction
     if (!restoredViaPsql) {
-      // Execute the entire script in a raw transaction
-      await prisma.$executeRawUnsafe(sqlContent);
       const cleanSql = sqlContent
         .replace(/--.*$/gm, "")
         .replace(/\/\*[\s\S]*?\*\//g, "");

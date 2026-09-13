@@ -23,10 +23,6 @@ export async function listLedgerEntriesAction(filters?: {
       where.accountType = filters.accountType;
     }
     if (filters?.startDate || filters?.endDate) {
-      where.date = {
-        ...(filters.startDate ? { gte: new Date(filters.startDate) } : {}),
-        ...(filters.endDate ? { lte: new Date(filters.endDate) } : {}),
-      };
       const dateFilter: Record<string, Date> = {};
       if (filters.startDate) {
         const start = new Date(filters.startDate);

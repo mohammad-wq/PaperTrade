@@ -77,7 +77,18 @@ if not exist "%SERVER_JS%" (
     )
 )
 
-REM 5. Start server.js in background window
+REM 5. Ensure static and public assets exist in standalone directory
+if exist ".next\static" if exist ".next\standalone" (
+    if not exist ".next\standalone\.next\static" (
+        echo [!] Syncing static assets to standalone directory...
+        xcopy /E /I /Y /Q ".next\static" ".next\standalone\.next\static" >nul 2>&1
+    )
+    if exist "public" if not exist ".next\standalone\public" (
+        xcopy /E /I /Y /Q "public" ".next\standalone\public" >nul 2>&1
+    )
+)
+
+REM 6. Start server.js in background window
 echo [2/3] Launching Node.js standalone server...
 start "Paper Trade Server" /min cmd /c "node %SERVER_JS%"
 

@@ -89,7 +89,13 @@ export function LoginForm() {
         </div>
       </CardHeader>
       <CardContent className="pt-0 pb-6">
-        <form className="flex flex-col gap-4" onSubmit={handleSubmit(onSubmit)} noValidate>
+        <form
+          method="post"
+          action="#"
+          className="flex flex-col gap-4"
+          onSubmit={handleSubmit(onSubmit)}
+          noValidate
+        >
           {reasonMessage && !formError && (
             <div className="rounded-lg border border-amber-200 bg-amber-50/90 p-3 text-xs text-amber-900 flex items-center gap-2">
               <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />

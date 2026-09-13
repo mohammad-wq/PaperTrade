@@ -460,7 +460,7 @@ export default function SalesPage() {
                   </div>
                   <div className="flex justify-between text-slate-600">
                     <span>Date:</span>
-                    <span>{format(new Date(invoice.date), "dd MMM yyyy")}</span>
+                    <span>{format(new Date(invoice.date), "dd/MM/yyyy")}</span>
                   </div>
                   <div className="flex justify-between text-slate-600">
                     <span>Items:</span>

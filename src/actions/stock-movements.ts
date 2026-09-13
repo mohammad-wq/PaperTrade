@@ -27,10 +27,6 @@ export async function listStockMovementsAction(filters?: {
       where.type = filters.type;
     }
     if (filters?.startDate || filters?.endDate) {
-      where.createdAt = {
-        ...(filters.startDate ? { gte: new Date(filters.startDate) } : {}),
-        ...(filters.endDate ? { lte: new Date(filters.endDate) } : {}),
-      };
       const dateFilter: Record<string, Date> = {};
       if (filters.startDate) {
         const start = new Date(filters.startDate);

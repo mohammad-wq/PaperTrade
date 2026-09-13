@@ -329,7 +329,7 @@ export default function ReturnsPage() {
                   </div>
                   <div className="flex justify-between text-slate-600">
                     <span>Date:</span>
-                    <span>{format(new Date(ret.date), "dd MMM yyyy")}</span>
+                    <span>{format(new Date(ret.date), "dd/MM/yyyy")}</span>
                   </div>
                   <div className="flex justify-between text-slate-600">
                     <span>Reason:</span>
@@ -380,7 +380,7 @@ export default function ReturnsPage() {
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Date:</span>
-                  <span>{format(new Date(ret.date), "dd MMM yyyy")}</span>
+                  <span>{format(new Date(ret.date), "dd/MM/yyyy")}</span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Reason:</span>

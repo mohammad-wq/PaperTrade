@@ -257,7 +257,7 @@ export default function ExpensesPage() {
                     <tr key={exp.id} className="hover:bg-slate-50/60 transition-colors">
                       <td className="px-4 py-3 font-semibold text-slate-900">{exp.expenseNo}</td>
                       <td className="px-4 py-3 text-slate-500 whitespace-nowrap">
-                        {format(new Date(exp.date), "dd MMM yyyy")}
+                        {format(new Date(exp.date), "dd/MM/yyyy")}
                       </td>
                       <td className="px-4 py-3">
                         <span className="inline-flex rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 border border-emerald-200/60">

@@ -317,9 +317,18 @@ export default function ReportsPage() {
                   />
                 </div>
               </div>
-              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
                 <Button onClick={fetchPL} size="sm" variant="outline" className="text-xs">
                   Recalculate
+                </Button>
+                <Button asChild size="sm" variant="outline" className="text-xs border-emerald-300 text-emerald-800 hover:bg-emerald-50">
+                  <a
+                    href={`/api/excel/reports/profit-loss?${plStart ? `startDate=${plStart}&` : ""}${plEnd ? `endDate=${plEnd}` : ""}`}
+                    download
+                  >
+                    <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-emerald-700" />
+                    Download Excel
+                  </a>
                 </Button>
                 <Button asChild size="sm" className="bg-emerald-800 text-white hover:bg-emerald-700 text-xs shadow-xs">
                   <a
@@ -378,16 +387,27 @@ export default function ReportsPage() {
                     <CardTitle className="text-base font-bold">Income Statement (Profit & Loss)</CardTitle>
                     <CardDescription className="text-xs">Formal accrual basis summary of revenue and costs</CardDescription>
                   </div>
-                  <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200">
-                    <a
-                      href={`/api/pdf/reports/profit-loss?${plStart ? `startDate=${plStart}&` : ""}${plEnd ? `endDate=${plEnd}` : ""}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <Printer className="mr-1.5 h-3.5 w-3.5 text-slate-600" />
-                      View Print Preview
-                    </a>
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200">
+                      <a
+                        href={`/api/excel/reports/profit-loss?${plStart ? `startDate=${plStart}&` : ""}${plEnd ? `endDate=${plEnd}` : ""}`}
+                        download
+                      >
+                        <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-emerald-700" />
+                        Excel
+                      </a>
+                    </Button>
+                    <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200">
+                      <a
+                        href={`/api/pdf/reports/profit-loss?${plStart ? `startDate=${plStart}&` : ""}${plEnd ? `endDate=${plEnd}` : ""}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <Printer className="mr-1.5 h-3.5 w-3.5 text-slate-600" />
+                        View Print Preview
+                      </a>
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-0">
                   <div className="divide-y divide-slate-100 text-sm">
@@ -502,9 +522,18 @@ export default function ReportsPage() {
                   />
                 </div>
               </div>
-              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
                 <Button onClick={fetchCashFlow} size="sm" variant="outline" className="text-xs">
                   Recalculate
+                </Button>
+                <Button asChild size="sm" variant="outline" className="text-xs border-teal-300 text-teal-800 hover:bg-teal-50">
+                  <a
+                    href={`/api/excel/reports/cash-flow?${cfStart ? `startDate=${cfStart}&` : ""}${cfEnd ? `endDate=${cfEnd}` : ""}`}
+                    download
+                  >
+                    <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-teal-700" />
+                    Download Excel
+                  </a>
                 </Button>
                 <Button asChild size="sm" className="bg-teal-800 text-white hover:bg-teal-700 text-xs shadow-xs">
                   <a
@@ -567,16 +596,27 @@ export default function ReportsPage() {
                     <CardTitle className="text-base font-bold">Cash Flow Audit Trail</CardTitle>
                     <CardDescription className="text-xs">Detailed chronological cash ledger entries</CardDescription>
                   </div>
-                  <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200">
-                    <a
-                      href={`/api/pdf/reports/cash-flow?${cfStart ? `startDate=${cfStart}&` : ""}${cfEnd ? `endDate=${cfEnd}` : ""}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <Printer className="mr-1.5 h-3.5 w-3.5 text-slate-600" />
-                      View Print Preview
-                    </a>
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200">
+                      <a
+                        href={`/api/excel/reports/cash-flow?${cfStart ? `startDate=${cfStart}&` : ""}${cfEnd ? `endDate=${cfEnd}` : ""}`}
+                        download
+                      >
+                        <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-teal-700" />
+                        Excel
+                      </a>
+                    </Button>
+                    <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200">
+                      <a
+                        href={`/api/pdf/reports/cash-flow?${cfStart ? `startDate=${cfStart}&` : ""}${cfEnd ? `endDate=${cfEnd}` : ""}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <Printer className="mr-1.5 h-3.5 w-3.5 text-slate-600" />
+                        View Print Preview
+                      </a>
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-0">
                   {cfData.beginningBalance !== undefined && cfData.beginningBalance !== 0 && (
@@ -598,7 +638,7 @@ export default function ReportsPage() {
                           <div className="space-y-0.5">
                             <div className="flex items-center gap-2">
                               <span className="font-semibold text-slate-800">
-                                {format(new Date(tx.date), "dd MMM yyyy")}
+                                {format(new Date(tx.date), "dd/MM/yyyy")}
                               </span>
                               <span className="text-[10px] font-bold rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">
                                 {tx.referenceType}
@@ -655,9 +695,18 @@ export default function ReportsPage() {
                   className="h-8 text-xs"
                 />
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button onClick={fetchBS} size="sm" variant="outline" className="text-xs">
                   Recalculate
+                </Button>
+                <Button asChild size="sm" variant="outline" className="text-xs border-amber-300 text-amber-900 hover:bg-amber-50">
+                  <a
+                    href={`/api/excel/reports/balance-sheet?${bsDate ? `asOfDate=${bsDate}` : ""}`}
+                    download
+                  >
+                    <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-amber-700" />
+                    Download Excel
+                  </a>
                 </Button>
                 <Button asChild size="sm" className="bg-amber-800 text-white hover:bg-amber-700 text-xs shadow-xs">
                   <a
@@ -852,6 +901,15 @@ export default function ReportsPage() {
                     </p>
                   </div>
 
+                  <Button asChild size="sm" variant="outline" className="text-xs border-sky-300 text-sky-900 hover:bg-sky-50">
+                    <a
+                      href={`/api/excel/reports/party-statement?partyId=${partyData.party.id}${partyStart ? `&startDate=${partyStart}` : ""}${partyEnd ? `&endDate=${partyEnd}` : ""}${selectedProductId !== "ALL" ? `&productId=${selectedProductId}` : ""}`}
+                      download
+                    >
+                      <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-sky-700" />
+                      Download Excel
+                    </a>
+                  </Button>
                   <Button asChild size="sm" className="bg-sky-800 text-white hover:bg-sky-700 text-xs shadow-xs">
                     <a
                       href={`/api/pdf/reports/party-statement?download=true&partyId=${partyData.party.id}${partyStart ? `&startDate=${partyStart}` : ""}${partyEnd ? `&endDate=${partyEnd}` : ""}${selectedProductId !== "ALL" ? `&productId=${selectedProductId}` : ""}`}
@@ -878,7 +936,7 @@ export default function ReportsPage() {
                           <div>
                             <span className="font-semibold text-slate-900">{tx.docNo}</span>
                             <span className="ml-2 text-slate-500">({tx.docType})</span>
-                            <p className="text-[11px] text-slate-400">{format(new Date(tx.date), "dd MMM yyyy")}</p>
+                            <p className="text-[11px] text-slate-400">{format(new Date(tx.date), "dd/MM/yyyy")}</p>
                           </div>
                           <div className="text-right">
                             <span className="font-bold text-slate-900">
@@ -908,6 +966,15 @@ export default function ReportsPage() {
                     >
                       <Printer className="mr-1.5 h-3.5 w-3.5" />
                       Print
+                    </Button>
+                    <Button asChild size="sm" variant="outline" className="h-8 text-xs border-slate-200">
+                      <a
+                        href={`/api/excel/reports/party-statement?partyId=${partyData.party.id}${partyStart ? `&startDate=${partyStart}` : ""}${partyEnd ? `&endDate=${partyEnd}` : ""}${selectedProductId !== "ALL" ? `&productId=${selectedProductId}` : ""}`}
+                        download
+                      >
+                        <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-emerald-700" />
+                        Excel
+                      </a>
                     </Button>
                     <Button asChild size="sm" variant="outline" className="h-8 text-xs border-slate-200">
                       <a
@@ -947,7 +1014,7 @@ export default function ReportsPage() {
                           <div className="space-y-0.5">
                             <div className="flex items-center gap-2">
                               <span className="font-semibold text-slate-800">
-                                {format(new Date(row.date), "dd MMM yyyy")}
+                                {format(new Date(row.date), "dd/MM/yyyy")}
                               </span>
                               <span className="text-[10px] font-bold rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">
                                 {row.referenceType}

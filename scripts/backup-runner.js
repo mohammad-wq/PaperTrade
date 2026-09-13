@@ -512,8 +512,8 @@ function runCloudBackup(tag = 'CLOUD', specificLocalFile = null) {
   // Format: gdrive:PaperTradeBackup/
   const normalizedRemote = remoteTarget.endsWith('/') ? remoteTarget : `${remoteTarget}/`;
 
-  const runRcloneCmd = (customArgs, timeoutMs = 25000) => {
-    const baseFlags = ['--non-interactive', '--contimeout=8s', '--timeout=20s'];
+  const runRcloneCmd = (customArgs, timeoutMs = 60000) => {
+    const baseFlags = ['--contimeout=20s', '--timeout=60s'];
     return spawnSync(rcloneBin, [...baseFlags, ...customArgs], {
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
@@ -521,14 +521,19 @@ function runCloudBackup(tag = 'CLOUD', specificLocalFile = null) {
     });
   };
 
+  // Explicitly create the target folder in Google Drive if it doesn't exist
+  try {
+    runRcloneCmd(['mkdir', normalizedRemote], 45000);
+  } catch {}
+
   let existingRemoteFiles = [];
   try {
-    const listResult = runRcloneCmd(['lsf', normalizedRemote], 15000);
+    const listResult = runRcloneCmd(['lsf', normalizedRemote], 30000);
     if (listResult.status === 0 && listResult.stdout) {
       existingRemoteFiles = listResult.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     }
   } catch (err) {
-    // If remote directory does not exist yet, rclone copyto will create it
+    // If remote directory does not exist or empty, proceed with upload
   }
 
   // Rolling Archive Rotation:
@@ -542,7 +547,7 @@ function runCloudBackup(tag = 'CLOUD', specificLocalFile = null) {
         'moveto',
         `${normalizedRemote}paperbiz_weekly_2.dump`,
         `${normalizedRemote}paperbiz_weekly_3.dump`,
-      ]);
+      ], 45000);
     }
 
     if (existingRemoteFiles.includes('paperbiz_weekly_1.dump')) {
@@ -550,7 +555,7 @@ function runCloudBackup(tag = 'CLOUD', specificLocalFile = null) {
         'moveto',
         `${normalizedRemote}paperbiz_weekly_1.dump`,
         `${normalizedRemote}paperbiz_weekly_2.dump`,
-      ]);
+      ], 45000);
     }
 
     if (existingRemoteFiles.includes('paperbiz_latest.dump')) {
@@ -558,20 +563,29 @@ function runCloudBackup(tag = 'CLOUD', specificLocalFile = null) {
         'moveto',
         `${normalizedRemote}paperbiz_latest.dump`,
         `${normalizedRemote}paperbiz_weekly_1.dump`,
-      ]);
+      ], 45000);
     }
 
     // Copy new dump to paperbiz_latest.dump
-    const uploadRes = runRcloneCmd([
+    let uploadRes = runRcloneCmd([
       'copyto',
       localFileToUpload,
       `${normalizedRemote}paperbiz_latest.dump`,
-    ], 60000);
+    ], 120000);
+
+    // Fallback: If copyto failed, attempt copy
+    if (uploadRes.error || uploadRes.status !== 0) {
+      uploadRes = runRcloneCmd([
+        'copy',
+        localFileToUpload,
+        normalizedRemote,
+      ], 120000);
+    }
 
     if (uploadRes.error || uploadRes.status !== 0) {
       const errMsg = uploadRes.error
         ? uploadRes.error.message
-        : uploadRes.stderr || uploadRes.stdout || `rclone exited with code ${uploadRes.status}`;
+        : (uploadRes.stderr || uploadRes.stdout || `rclone exited with code ${uploadRes.status}`);
       appendLog(logFile, tag, 'FAILURE', `rclone upload failed: ${errMsg.trim()}`);
       return {
         success: false,

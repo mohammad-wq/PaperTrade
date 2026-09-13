@@ -338,7 +338,7 @@ export default function PaymentsPage() {
                 <CardContent className="py-3 space-y-2 text-xs">
                   <div className="flex justify-between text-slate-600">
                     <span>Date:</span>
-                    <span>{format(new Date(p.date), "dd MMM yyyy")}</span>
+                    <span>{format(new Date(p.date), "dd/MM/yyyy")}</span>
                   </div>
                   {p.saleInvoice && (
                     <div className="flex justify-between text-slate-600">

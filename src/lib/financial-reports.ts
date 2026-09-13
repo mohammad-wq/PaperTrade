@@ -371,7 +371,6 @@ export async function calculatePartyStatement(params: {
       prisma.saleInvoiceItem.findMany({
         where: {
           productId: params.productId,
-          invoice: { customerId: params.partyId },
           invoice: {
             customerId: params.partyId,
             ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
@@ -382,7 +381,6 @@ export async function calculatePartyStatement(params: {
       prisma.purchaseInvoiceItem.findMany({
         where: {
           productId: params.productId,
-          invoice: { supplierId: params.partyId },
           invoice: {
             supplierId: params.partyId,
             ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),

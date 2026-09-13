@@ -345,7 +345,7 @@ export default function PurchaseOrdersPage() {
                   </div>
                   <div className="flex justify-between text-slate-600">
                     <span>Date:</span>
-                    <span>{format(new Date(order.date), "dd MMM yyyy")}</span>
+                    <span>{format(new Date(order.date), "dd/MM/yyyy")}</span>
                   </div>
                   <div className="flex justify-between text-slate-600">
                     <span>Ordered Items:</span>

@@ -89,13 +89,13 @@ export async function GET(
         endingBalance: data.endingBalance,
         flowDetails: data.flowDetails.map((f) => ({
           ...f,
-          date: format(new Date(f.date), "dd MMM yyyy"),
+          date: format(new Date(f.date), "dd/MM/yyyy"),
         })),
       });
     } else if (reportType === "balance-sheet") {
       const data = await calculateBalanceSheet({ asOfDate });
 
-      const formattedAsOf = format(new Date(data.asOf), "dd MMM yyyy");
+      const formattedAsOf = format(new Date(data.asOf), "dd/MM/yyyy");
       filename = `Balance-Sheet-${asOfDate || "latest"}.pdf`;
       docElement = React.createElement(BalanceSheetPdfView, {
         asOfDate: formattedAsOf,
@@ -117,11 +117,11 @@ export async function GET(
         party: data.party,
         currentBalance: data.currentBalance,
         openingBalance: data.openingBalance,
-        startDate: startDate ? format(new Date(startDate), "dd MMM yyyy") : undefined,
-        endDate: endDate ? format(new Date(endDate), "dd MMM yyyy") : undefined,
+        startDate: startDate ? format(new Date(startDate), "dd/MM/yyyy") : undefined,
+        endDate: endDate ? format(new Date(endDate), "dd/MM/yyyy") : undefined,
         ledgerRows: data.ledgerRows.map((r) => ({
           ...r,
-          date: format(new Date(r.date), "dd MMM yyyy"),
+          date: format(new Date(r.date), "dd/MM/yyyy"),
         })),
       });
     }

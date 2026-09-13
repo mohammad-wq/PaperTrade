@@ -3,9 +3,7 @@
 import { runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
-import { getStockOnHand } from "@/lib/stock";
 import { startOfDay, endOfDay } from "date-fns";
-import { PartyType } from "@prisma/client";
 import { StockMovementType } from "@prisma/client";
 
 export async function getDashboardMetricsAction() {
@@ -108,7 +106,6 @@ export async function getDashboardMetricsAction() {
 
     for (const product of activeProducts) {
       for (const loc of locations) {
-        const available = await getStockOnHand(product.id, loc.id);
         const available = stockMap.get(`${product.id}:${loc.id}`) ?? 0;
         const availableInPackets =
           product.unit === "REAM" ? available * 5 : product.unit === "SHEET" ? available / 100 : available;
@@ -126,12 +123,6 @@ export async function getDashboardMetricsAction() {
         }
       }
     }
-
-    // Calculate receivables and payables from LedgerEntry
-    const ledgerSums = await prisma.ledgerEntry.groupBy({
-      by: ["accountType"],
-      _sum: { debit: true, credit: true },
-    });
 
     let totalReceivables = 0;
     let totalPayables = 0;

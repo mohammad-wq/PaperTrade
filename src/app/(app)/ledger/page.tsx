@@ -239,7 +239,7 @@ export default function LedgerPage() {
                     </span>
                   )}
                   <span className="text-[11px] text-slate-400">
-                    {format(new Date(entry.date), "dd MMM yyyy")}
+                    {format(new Date(entry.date), "dd/MM/yyyy")}
                   </span>
                 </div>
                 <p className="text-xs text-slate-700">{entry.description}</p>

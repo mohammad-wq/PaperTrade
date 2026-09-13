@@ -301,7 +301,7 @@ export default function StorageChargesPage() {
                       <div>
                         <span className="font-bold text-slate-900">{charge.location.name}</span>
                         <p className="text-[11px] text-slate-500">
-                          {format(new Date(charge.periodStart), "dd MMM yyyy")} to {format(new Date(charge.periodEnd), "dd MMM yyyy")}
+                          {format(new Date(charge.periodStart), "dd/MM/yyyy")} to {format(new Date(charge.periodEnd), "dd/MM/yyyy")}
                         </p>
                       </div>
                       <div className="flex items-center gap-4 text-right">

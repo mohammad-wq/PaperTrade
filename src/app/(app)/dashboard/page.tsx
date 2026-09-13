@@ -273,7 +273,7 @@ export default function DashboardPage() {
                   </div>
                   <div className="text-right">
                     <p className="font-bold text-xs text-slate-900">PKR {sale.totalAmount.toLocaleString()}</p>
-                    <p className="text-[10px] text-slate-400">{format(new Date(sale.date), "dd MMM yyyy")}</p>
+                    <p className="text-[10px] text-slate-400">{format(new Date(sale.date), "dd/MM/yyyy")}</p>
                   </div>
                 </div>
               ))
@@ -316,7 +316,7 @@ export default function DashboardPage() {
                   </div>
                   <div className="text-right">
                     <p className="font-bold text-xs text-slate-900">PKR {purchase.totalAmount.toLocaleString()}</p>
-                    <p className="text-[10px] text-slate-400">{format(new Date(purchase.date), "dd MMM yyyy")}</p>
+                    <p className="text-[10px] text-slate-400">{format(new Date(purchase.date), "dd/MM/yyyy")}</p>
                   </div>
                 </div>
               ))

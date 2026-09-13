@@ -253,7 +253,7 @@ export default function StockMovementsPage() {
                 <span className="text-sm font-bold text-slate-900">
                   {m.quantity > 0 ? `+${m.quantity}` : m.quantity} {m.product.unit}
                 </span>
-                <span className="text-[10px] text-slate-400">{format(new Date(m.createdAt), "dd MMM yyyy, HH:mm")}</span>
+                <span className="text-[10px] text-slate-400">{format(new Date(m.createdAt), "dd/MM/yyyy, HH:mm")}</span>
               </div>
             </div>
           ))}

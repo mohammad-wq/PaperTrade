@@ -225,7 +225,6 @@ export async function createPurchaseReturnAction(raw: unknown) {
         throw userError("Purchase invoice not found.");
       }
 
-      // Validate quantities against original invoice
       // Validate quantities against original invoice and available stock on hand
       for (const returnItem of input.items) {
         const origItem = invoice.items.find((i) => i.productId === returnItem.productId);

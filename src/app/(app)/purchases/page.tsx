@@ -331,7 +331,7 @@ export default function PurchasesPage() {
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Date:</span>
-                  <span>{format(new Date(inv.date), "dd MMM yyyy")}</span>
+                  <span>{format(new Date(inv.date), "dd/MM/yyyy")}</span>
                 </div>
                 {inv.purchaseOrder && (
                   <div className="flex justify-between text-slate-600">
