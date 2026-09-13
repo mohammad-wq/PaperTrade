@@ -48,6 +48,9 @@ const nextConfig = {
     serverActions: {
       bodySizeLimit: "4mb",
     },
+    outputFileTracingIncludes: {
+      "/*": ["./node_modules/pdfkit/**/*"],
+    },
   },
   async redirects() {
     return [

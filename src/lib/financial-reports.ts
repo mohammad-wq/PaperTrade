@@ -148,7 +148,7 @@ export async function calculateBalanceSheet(params?: { asOfDate?: string }) {
   // Calculate current inventory valuation across all locations
   const [products, locations] = await Promise.all([
     prisma.product.findMany({
-      where: { isActive: true },
+      where: { isActive: true, deletedAt: null },
       select: {
         id: true,
         costPrice: true,

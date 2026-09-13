@@ -25,6 +25,7 @@ import {
   LogOut,
   Layers,
   Banknote,
+  Wallet,
 } from "lucide-react";
 import { Role } from "@prisma/client";
 import { Button } from "@/components/ui/button";
@@ -84,6 +85,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/payments", label: "Payments", icon: CreditCard, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "payments" },
       { href: "/expenses", label: "Expenses", icon: Banknote, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "expenses" },
+      { href: "/receivables-payables", label: "Receivables & Payables", icon: Wallet, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "ledger" },
       { href: "/ledger", label: "General Ledger", icon: BookOpen, roles: [Role.OWNER, Role.MANAGER], moduleKey: "ledger" },
       { href: "/reports", label: "Financial Reports", icon: BarChart3, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "reports" },
     ],

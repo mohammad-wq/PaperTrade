@@ -48,6 +48,12 @@ export async function GET(
     let docElement: React.ReactElement | null = null;
     let filename = `report-${reportType}.pdf`;
 
+    const safeFormatDate = (val?: string | null | Date) => {
+      if (!val) return undefined;
+      const d = new Date(val);
+      return isNaN(d.getTime()) ? undefined : format(d, "dd/MM/yyyy");
+    };
+
     if (reportType === "profit-loss") {
       const data = await calculateProfitLoss({ startDate, endDate });
 
@@ -89,13 +95,13 @@ export async function GET(
         endingBalance: data.endingBalance,
         flowDetails: data.flowDetails.map((f) => ({
           ...f,
-          date: format(new Date(f.date), "dd/MM/yyyy"),
+          date: safeFormatDate(f.date) || "—",
         })),
       });
     } else if (reportType === "balance-sheet") {
       const data = await calculateBalanceSheet({ asOfDate });
 
-      const formattedAsOf = format(new Date(data.asOf), "dd/MM/yyyy");
+      const formattedAsOf = safeFormatDate(data.asOf) || format(new Date(), "dd/MM/yyyy");
       filename = `Balance-Sheet-${asOfDate || "latest"}.pdf`;
       docElement = React.createElement(BalanceSheetPdfView, {
         asOfDate: formattedAsOf,
@@ -110,18 +116,21 @@ export async function GET(
 
       const data = await calculatePartyStatement({ partyId, startDate, endDate, productId });
 
-      const sanitizedName = data.party.name.replace(/[^a-zA-Z0-9_-]/g, "_");
-      filename = `Statement-${sanitizedName}.pdf`;
+      const safeName = (data.party.name || "Party")
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "") || "Account";
+      filename = `Statement-${safeName}.pdf`;
 
       docElement = React.createElement(PartyStatementPdfView, {
         party: data.party,
         currentBalance: data.currentBalance,
         openingBalance: data.openingBalance,
-        startDate: startDate ? format(new Date(startDate), "dd/MM/yyyy") : undefined,
-        endDate: endDate ? format(new Date(endDate), "dd/MM/yyyy") : undefined,
+        startDate: safeFormatDate(startDate),
+        endDate: safeFormatDate(endDate),
         ledgerRows: data.ledgerRows.map((r) => ({
           ...r,
-          date: format(new Date(r.date), "dd/MM/yyyy"),
+          date: safeFormatDate(r.date) || "—",
         })),
       });
     }
@@ -135,12 +144,15 @@ export async function GET(
     return new NextResponse(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `${isDownload ? "attachment" : "inline"}; filename="${filename}"`,
+        "Content-Disposition": `${isDownload ? "attachment" : "inline"}; filename="${encodeURIComponent(filename)}"`,
         "Cache-Control": "private, max-age=60",
       },
     });
   } catch (error) {
-    console.error("[Report PDF Error]", error);
-    return new NextResponse("Error generating report PDF", { status: 500 });
+    console.error("[Report PDF Error]", error instanceof Error ? error.stack : error);
+    return new NextResponse(
+      `Error generating report PDF: ${error instanceof Error ? error.message : "Internal server error"}`,
+      { status: 500 },
+    );
   }
 }

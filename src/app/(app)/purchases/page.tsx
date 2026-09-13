@@ -16,7 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { listPurchaseInvoicesAction, createPurchaseInvoiceAction } from "@/actions/invoices";
-import { listPurchaseOrdersAction } from "@/actions/orders";
+import { listPurchaseOrdersAction, listLocationsAction } from "@/actions/orders";
 import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { format } from "date-fns";
@@ -74,6 +74,7 @@ export default function PurchasesPage() {
   const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [pos, setPos] = useState<POOption[]>([]);
+  const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -91,11 +92,12 @@ export default function PurchasesPage() {
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const [invRes, partyRes, prodRes, poRes] = await Promise.all([
+      const [invRes, partyRes, prodRes, poRes, locRes] = await Promise.all([
         listPurchaseInvoicesAction(),
         listPartiesAction(),
         listProductsAction(),
         listPurchaseOrdersAction(),
+        listLocationsAction(),
       ]);
 
       if (invRes.success && invRes.data) {
@@ -111,6 +113,14 @@ export default function PurchasesPage() {
       if (poRes.success && poRes.data) {
         setPos(poRes.data as POOption[]);
       }
+      if (locRes.success && locRes.data) {
+        const locs = locRes.data as Array<{ id: string; name: string }>;
+        setDbLocations(locs);
+        if (locs.length > 0) {
+          const shop = locs.find((l) => l.name.toLowerCase() === "shop") ?? locs[0];
+          setLocationId((prev) => prev || shop.id);
+        }
+      }
     } finally {
       if (!isBackground) setLoading(false);
     }
@@ -125,14 +135,11 @@ export default function PurchasesPage() {
   });
 
   const locations = useMemo(() => {
+    if (dbLocations.length > 0) return dbLocations;
     const map = new Map<string, string>();
     invoices.forEach((i) => map.set(i.location.id, i.location.name));
-    if (map.size === 0) {
-      map.set("loc-shop", "Shop");
-      map.set("loc-warehouse", "Warehouse");
-    }
     return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
-  }, [invoices]);
+  }, [dbLocations, invoices]);
 
   const filteredInvoices = useMemo(() => {
     const q = query.trim().toLowerCase();

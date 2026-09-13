@@ -142,10 +142,6 @@ export default function DeliveryOrdersPage() {
     if (dbLocations.length > 0) return dbLocations;
     const map = new Map<string, string>();
     orders.forEach((o) => map.set(o.location.id, o.location.name));
-    if (map.size === 0) {
-      map.set("loc-shop", "Shop");
-      map.set("loc-warehouse", "Warehouse");
-    }
     return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
   }, [dbLocations, orders]);
 

@@ -4,7 +4,7 @@ REM Paper Trade - Automated Local Database Backup (Native Windows)
 REM 
 REM - Runs pg_dump with custom compressed format (-F c)
 REM - Credentials dynamically parsed from .env (via PGPASSWORD)
-REM - Saves timestamped dump to C:\PaperTradeBackups\local\paperbiz_YYYY-MM-DD_HHMM.dump
+REM - Saves timestamped dump to C:\PaperTradeBackups\local\papertrade_YYYY-MM-DD_HHMM.dump
 REM - Enforces 30-day automatic retention cleanup
 REM - Logs timestamp, file size, and status to C:\PaperTradeBackups\backup-log.txt
 REM ==============================================================================

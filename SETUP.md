@@ -332,7 +332,7 @@ On any other PC, tablet, or phone on the same office network:
 
 Paper Trade includes an automated, multi-tiered backup and disaster recovery architecture designed for 100% native Windows deployment:
 1. **Daily Automated Local Backups**: Runs `pg_dump` in compressed custom format (`-F c`), stores dumps at `C:\PaperTradeBackups\local\`, enforces 30-day automatic retention, and logs each run to `C:\PaperTradeBackups\backup-log.txt`.
-2. **Weekly Automated Cloud Sync (Google Drive)**: Uses `rclone` to copy backups to `gdrive:PaperTradeBackup/`, maintaining `paperbiz_latest.dump` and a rolling 3-week archive (`paperbiz_weekly_1.dump`, `paperbiz_weekly_2.dump`, `paperbiz_weekly_3.dump`).
+2. **Weekly Automated Cloud Sync (Google Drive)**: Uses `rclone` to copy backups to `gdrive:PaperTradeBackup/`, maintaining `papertrade_latest.dump` and a rolling 3-week archive (`papertrade_weekly_1.dump`, `papertrade_weekly_2.dump`, `papertrade_weekly_3.dump`).
 3. **In-App Manual "Backup Now" Admin Button**: Accessible to the `OWNER` on the Settings page to trigger an immediate local dump and cloud upload with real-time UI status and logs.
 4. **Disaster Recovery (`pg_restore`)**: Standard custom-format restoration procedures with throwaway verification testing.
 
@@ -342,13 +342,13 @@ Paper Trade includes an automated, multi-tiered backup and disaster recovery arc
 
 - **Script Location**: `C:\PaperTrade\scripts\backup-local.bat`
 - **Output Directory**: `C:\PaperTradeBackups\local\`
-- **File Naming Pattern**: `paperbiz_YYYY-MM-DD_HHMM.dump` (e.g. `paperbiz_2026-09-10_2100.dump`)
+- **File Naming Pattern**: `papertrade_YYYY-MM-DD_HHMM.dump` (e.g. `papertrade_2026-09-10_2100.dump`)
 - **Format**: PostgreSQL Custom Format (`-F c` with `-b` large objects and gzip compression).
 - **Credentials**: Dynamically parsed from `DATABASE_URL` in `.env` and injected into the child process environment via `PGPASSWORD`. Database passwords are never hardcoded or exposed in command arguments.
 - **Retention**: After each run, files older than **30 days** in `C:\PaperTradeBackups\local\` are automatically deleted to prevent disk overflow.
 - **Logging**: Each run appends a structured entry to `C:\PaperTradeBackups\backup-log.txt`:
   ```text
-  [2026-09-10 21:00:00] [LOCAL] SUCCESS: paperbiz_2026-09-10_2100.dump (2.45 MB) created - Retention: no old files to purge
+  [2026-09-10 21:00:00] [LOCAL] SUCCESS: papertrade_2026-09-10_2100.dump (2.45 MB) created - Retention: no old files to purge
   ```
 
 ---
@@ -406,15 +406,15 @@ Rclone is a fast, secure command-line tool that syncs files to Google Drive with
 
 #### Step 3: Rolling 3-Week Cloud Archive Mechanism
 The cloud backup script (`scripts\backup-cloud.bat`) automatically maintains the following structure inside Google Drive folder `gdrive:PaperTradeBackup/`:
-- **`paperbiz_latest.dump`**: Overwritten each week with the newest snapshot.
-- **`paperbiz_weekly_1.dump`**: 1 week old backup.
-- **`paperbiz_weekly_2.dump`**: 2 weeks old backup.
-- **`paperbiz_weekly_3.dump`**: 3 weeks old backup (oldest retained archive).
+- **`papertrade_latest.dump`**: Overwritten each week with the newest snapshot.
+- **`papertrade_weekly_1.dump`**: 1 week old backup.
+- **`papertrade_weekly_2.dump`**: 2 weeks old backup.
+- **`papertrade_weekly_3.dump`**: 3 weeks old backup (oldest retained archive).
 - When a new weekly backup runs:
   - Week 2 moves to Week 3 (replacing old Week 3).
   - Week 1 moves to Week 2.
   - Latest moves to Week 1.
-  - New dump is uploaded as `paperbiz_latest.dump`.
+  - New dump is uploaded as `papertrade_latest.dump`.
 - Reuses the existing local dump from today (if under 24 hours old) to avoid unnecessary duplicate database dumping.
 - Logs outcome with `[CLOUD]` tag to `C:\PaperTradeBackups\backup-log.txt`.
 
@@ -500,25 +500,64 @@ Set up two non-interactive background tasks using **Task Scheduler**:
 
 If you ever need to restore your database after hardware failure, data corruption, or server migration:
 
+#### Why Custom Format (`.dump`) Instead of Plain Text (`.sql`)?
+The Paper Trade backup architecture deliberately uses PostgreSQL Custom Format (`-F c`), outputting compressed `.dump` files instead of raw `.sql` files:
+- **Smaller File Size (Compression)**: Dumps are automatically compressed with zlib on the fly, reducing storage space by 75–85% and significantly accelerating cloud uploads to Google Drive.
+- **Faster Restores**: `pg_restore` streams binary data via high-performance COPY blocks and supports multi-threaded parallel restoration (`-j`).
+- **Selective & Out-of-Order Restores**: Custom format includes an internal table of contents allowing individual tables or schemas to be selectively restored or reordered to resolve foreign key constraints cleanly.
+- **Tooling Requirement**: Because `.dump` is a binary format, it **cannot** be parsed by plain `psql` (which would throw syntax errors). It **must** be restored using `pg_restore`.
+
+---
+
+#### The Exact Working Restoration Command
+```cmd
+pg_restore -U paperbiz_app -d paperbiz --clean --if-exists "<path-to-dump-file>"
+```
+*(Replace `paperbiz_app` and `paperbiz` with the username and database configured in your `.env` `DATABASE_URL`, e.g. `papertrade`).*
+
+---
+
+#### Restoration Scenarios: Fresh Database vs. Existing Database
+
+##### Scenario A: Restoring into a Fresh Empty Database
+When restoring to a newly created, empty database (such as setting up a new server or recovering onto a fresh database created via `createdb`):
+```cmd
+pg_restore -U paperbiz_app -d paperbiz -v -F c "C:\PaperTradeBackups\local\papertrade_YYYY-MM-DD_HHMM.dump"
+```
+- **Why no `--clean --if-exists`?** Since the database is completely empty, there are no preexisting tables, sequences, or constraints to collide with. All objects and schemas are cleanly instantiated directly from the backup archive.
+
+##### Scenario B: Restoring Over an Existing Database
+When restoring over an active database that already contains tables, views, sequences, or partial records (e.g. disaster recovery, rollback of erroneous data entry):
+```cmd
+pg_restore -U paperbiz_app -d paperbiz --clean --if-exists -v -F c "C:\PaperTradeBackups\local\papertrade_YYYY-MM-DD_HHMM.dump"
+```
+- **Why `--clean --if-exists` is mandatory?**
+  - `--clean`: Drops preexisting database objects (tables, sequences, constraints) immediately prior to recreating them. This prevents duplicate key violations, schema collision errors, and foreign key conflicts.
+  - `--if-exists`: Appends `IF EXISTS` to all drop statements, gracefully skipping drops for any table that might not exist yet without halting the restore script.
+
+---
+
 #### Safe Best Practice: Test in a Throwaway Database First
-Before restoring over your live production database, verify the `.dump` file in a temporary test database:
+Before restoring over your live production database, always verify the `.dump` file in a temporary test database:
 
 ```cmd
 # 1. Create a temporary throwaway database
-"C:\Program Files\PostgreSQL\16\bin\createdb.exe" -U postgres paperbiz_test
+"C:\Program Files\PostgreSQL\16\bin\createdb.exe" -U postgres papertrade_test_restore
 
 # 2. Restore into the test database (custom format -F c)
-"C:\Program Files\PostgreSQL\16\bin\pg_restore.exe" -U postgres -d paperbiz_test -v --clean --if-exists -F c "C:\PaperTradeBackups\local\paperbiz_YYYY-MM-DD_HHMM.dump"
+"C:\Program Files\PostgreSQL\16\bin\pg_restore.exe" -U postgres -d papertrade_test_restore -v --clean --if-exists -F c "C:\PaperTradeBackups\local\papertrade_YYYY-MM-DD_HHMM.dump"
 
 # 3. Check tables and counts via psql
-"C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d paperbiz_test -c "SELECT count(*) FROM \"SaleInvoice\";"
+"C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d papertrade_test_restore -c "SELECT count(*) FROM \"SaleInvoice\";"
 
 # 4. Once verified, drop the temporary database
-"C:\Program Files\PostgreSQL\16\bin\dropdb.exe" -U postgres paperbiz_test
+"C:\Program Files\PostgreSQL\16\bin\dropdb.exe" -U postgres papertrade_test_restore
 ```
 
-#### Full Production Database Restore
-To restore directly into the production `paperbiz` database:
+---
+
+#### Full Production Database Restore Procedure
+To restore directly into the production `paperbiz` (or `papertrade`) database:
 
 1. **Stop the Paper Trade Application Service**:
    ```cmd
@@ -530,14 +569,14 @@ To restore directly into the production `paperbiz` database:
    Open Command Prompt as Administrator:
    ```cmd
    set PGPASSWORD=your_database_password
-   "C:\Program Files\PostgreSQL\16\bin\pg_restore.exe" -U postgres -d paperbiz --clean --if-exists -v -F c "C:\PaperTradeBackups\local\paperbiz_YYYY-MM-DD_HHMM.dump"
+   "C:\Program Files\PostgreSQL\16\bin\pg_restore.exe" -U paperbiz_app -d paperbiz --clean --if-exists -v -F c "C:\PaperTradeBackups\local\papertrade_YYYY-MM-DD_HHMM.dump"
    ```
 
    **Explanation of Flags**:
-   - `-U postgres`: PostgreSQL user.
+   - `-U paperbiz_app`: PostgreSQL database user.
    - `-d paperbiz`: Target database name.
-   - `--clean`: Drops database objects (tables, sequences) prior to recreating them.
-   - `--if-exists`: Adds `IF EXISTS` to drop commands to suppress errors for new objects.
+   - `--clean`: Drops database objects prior to recreating them (avoids table collision).
+   - `--if-exists`: Adds `IF EXISTS` to suppress errors for objects that do not exist.
    - `-F c`: Specifies Custom format (matching `pg_dump -F c`).
    - `-v`: Verbose progress reporting.
 
@@ -546,7 +585,6 @@ To restore directly into the production `paperbiz` database:
    nssm start PaperTrade
    ```
 4. Log into the system and verify data integrity on the Dashboard and Ledger.
-
 
 ---
 

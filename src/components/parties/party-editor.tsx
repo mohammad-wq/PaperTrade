@@ -97,7 +97,7 @@ export function PartyEditor({ partyId }: { partyId?: string }) {
         onDelete={partyId ? handleDelete : undefined}
         submitting={saving}
         submitLabel={partyId ? "Update party" : "Create party"}
-        deleteLabel="Deactivate party"
+        deleteLabel="Delete party"
       />
     </div>
   );

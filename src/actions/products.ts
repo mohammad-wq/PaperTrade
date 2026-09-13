@@ -9,6 +9,7 @@ import { requireSession } from "@/lib/auth/session";
 import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { emitRealtimeEvent } from "@/lib/realtime";
+import { revalidatePath } from "next/cache";
 
 const deleteProductSchema = z.object({ id: z.string().min(1, "Product is required") });
 
@@ -16,6 +17,7 @@ export async function listProductsAction() {
   return runAction("products.list", async () => {
     await requireSession();
     const products = await prisma.product.findMany({
+      where: { deletedAt: null },
       orderBy: [{ isActive: "desc" }, { createdAt: "desc" }],
       include: {
         category: { select: { id: true, name: true } },
@@ -36,6 +38,98 @@ export async function listProductsAction() {
       labourCharges: Number(product.labourCharges),
       reorderLevel: product.reorderLevel ? Number(product.reorderLevel) : null,
     }));
+  });
+}
+
+export async function listCategoriesAction() {
+  return runAction("categories.list", async () => {
+    await requireSession();
+    let categories = await prisma.category.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
+
+    if (categories.length === 0) {
+      const defaults = ["Writing Paper", "Board", "Newsprint", "Copier", "Offset", "Art Paper"];
+      for (const name of defaults) {
+        await prisma.category.upsert({
+          where: { name },
+          update: { isActive: true },
+          create: { name, isActive: true },
+        });
+      }
+      categories = await prisma.category.findMany({
+        where: { isActive: true },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      });
+    }
+
+    return categories;
+  });
+}
+
+export async function listQualitiesAction() {
+  return runAction("qualities.list", async () => {
+    await requireSession();
+    let qualities = await prisma.quality.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
+
+    if (qualities.length === 0) {
+      const defaults = ["A Grade", "B Grade", "C Grade", "Standard", "Premium", "Economy"];
+      for (const name of defaults) {
+        await prisma.quality.upsert({
+          where: { name },
+          update: { isActive: true },
+          create: { name, isActive: true },
+        });
+      }
+      qualities = await prisma.quality.findMany({
+        where: { isActive: true },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      });
+    }
+
+    return qualities;
+  });
+}
+
+export async function createCategoryAction(rawName: string) {
+  return runAction("categories.create", async () => {
+    await requireSession();
+    const name = (rawName || "").trim();
+    if (!name || name.length < 2) {
+      throw userError("Category name must be at least 2 characters.");
+    }
+    const category = await prisma.category.upsert({
+      where: { name },
+      update: { isActive: true },
+      create: { name, isActive: true },
+      select: { id: true, name: true },
+    });
+    return category;
+  });
+}
+
+export async function createQualityAction(rawName: string) {
+  return runAction("qualities.create", async () => {
+    await requireSession();
+    const name = (rawName || "").trim();
+    if (!name || name.length < 2) {
+      throw userError("Quality name must be at least 2 characters.");
+    }
+    const quality = await prisma.quality.upsert({
+      where: { name },
+      update: { isActive: true },
+      create: { name, isActive: true },
+      select: { id: true, name: true },
+    });
+    return quality;
   });
 }
 
@@ -66,11 +160,29 @@ export async function upsertProductAction(raw: unknown) {
         throw userError("A product with this Product No already exists.");
       }
 
+      // Defensively resolve categoryId
+      let resolvedCategoryId = normalizedInput.categoryId;
+      const cat = await tx.category.findUnique({ where: { id: resolvedCategoryId } });
+      if (!cat) {
+        const fallbackCat = await tx.category.findFirst({ where: { isActive: true } }) ??
+          await tx.category.create({ data: { name: "Standard Paper" } });
+        resolvedCategoryId = fallbackCat.id;
+      }
+
+      // Defensively resolve qualityId
+      let resolvedQualityId = normalizedInput.qualityId;
+      const qual = await tx.quality.findUnique({ where: { id: resolvedQualityId } });
+      if (!qual) {
+        const fallbackQual = await tx.quality.findFirst({ where: { isActive: true } }) ??
+          await tx.quality.create({ data: { name: "Standard" } });
+        resolvedQualityId = fallbackQual.id;
+      }
+
       const productData = {
         productNo: normalizedInput.productNo.trim(),
         name: normalizedInput.name.trim(),
-        categoryId: normalizedInput.categoryId,
-        qualityId: normalizedInput.qualityId,
+        categoryId: resolvedCategoryId,
+        qualityId: resolvedQualityId,
         unit: normalizedInput.unit,
         length: normalizedInput.length,
         breadth: normalizedInput.breadth,
@@ -85,6 +197,7 @@ export async function upsertProductAction(raw: unknown) {
         serialNo: normalizedInput.serialNo?.trim() || null,
         remarks: normalizedInput.remarks?.trim() || null,
         isActive: Boolean(normalizedInput.isActive),
+        deletedAt: null,
       };
 
       const product = normalizedInput.id
@@ -123,6 +236,10 @@ export async function upsertProductAction(raw: unknown) {
       name: res.name,
     });
 
+    revalidatePath("/products");
+    revalidatePath("/inventory");
+    revalidatePath("/dashboard");
+
     return res;
   });
 }
@@ -150,6 +267,10 @@ export async function softDeleteProductAction(raw: unknown) {
     emitRealtimeEvent(["products", "inventory", "sales", "purchases"], "delete", "Product", {
       id: input.id,
     });
+
+    revalidatePath("/products");
+    revalidatePath("/inventory");
+    revalidatePath("/dashboard");
 
     return res;
   });

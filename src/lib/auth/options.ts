@@ -21,10 +21,10 @@ const useSecureCookies = process.env.NEXTAUTH_URL?.startsWith("https://") ?? fal
 export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
-    maxAge: 2 * 60 * 60, // 2 hours maximum session lifetime
+    maxAge: 365 * 24 * 60 * 60, // 1 year session lifetime
   },
   jwt: {
-    maxAge: 2 * 60 * 60, // Keep JWT lifetime aligned
+    maxAge: 365 * 24 * 60 * 60, // 1 year JWT lifetime
   },
   cookies: {
     sessionToken: {

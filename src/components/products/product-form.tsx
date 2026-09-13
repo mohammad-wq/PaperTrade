@@ -4,9 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Unit } from "@prisma/client";
-import { AlertCircle, Calculator, Package2, Save, Trash2 } from "lucide-react";
+import { AlertCircle, Calculator, Package2, Plus, Save, Trash2, X } from "lucide-react";
 import { productSchema, type ProductInput } from "@/schemas/product";
 import { calculateWeights } from "@/lib/weights";
+import { createCategoryAction, createQualityAction } from "@/actions/products";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,6 +23,8 @@ type ProductFormProps = {
   submitting?: boolean;
   onSubmit: (values: ProductFormValues) => Promise<void>;
   onDelete?: () => Promise<void>;
+  onCategoryCreated?: (newCategory: { id: string; name: string }) => void;
+  onQualityCreated?: (newQuality: { id: string; name: string }) => void;
   submitLabel?: string;
   deleteLabel?: string;
 };
@@ -52,6 +55,8 @@ export function ProductForm({
   submitting = false,
   onSubmit,
   onDelete,
+  onCategoryCreated,
+  onQualityCreated,
   submitLabel = "Save product",
   deleteLabel = "Delete",
 }: ProductFormProps) {
@@ -61,6 +66,60 @@ export function ProductForm({
   const [weighedReamInput, setWeighedReamInput] = useState("");
   const [showPricingHelper, setShowPricingHelper] = useState(false);
   const [ratePerKgInput, setRatePerKgInput] = useState("");
+
+  const [isAddingCategory, setIsAddingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [categorySaving, setCategorySaving] = useState(false);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+
+  const [isAddingQuality, setIsAddingQuality] = useState(false);
+  const [newQualityName, setNewQualityName] = useState("");
+  const [qualitySaving, setQualitySaving] = useState(false);
+  const [qualityError, setQualityError] = useState<string | null>(null);
+
+  async function handleCreateCategory() {
+    const trimmed = newCategoryName.trim();
+    if (!trimmed) return;
+    setCategorySaving(true);
+    setCategoryError(null);
+    try {
+      const res = await createCategoryAction(trimmed);
+      if (res.success) {
+        onCategoryCreated?.(res.data);
+        setValue("categoryId", res.data.id, { shouldValidate: true, shouldDirty: true });
+        setNewCategoryName("");
+        setIsAddingCategory(false);
+      } else {
+        setCategoryError(res.error || "Failed to create category");
+      }
+    } catch (e: any) {
+      setCategoryError(e?.message || "Failed to create category");
+    } finally {
+      setCategorySaving(false);
+    }
+  }
+
+  async function handleCreateQuality() {
+    const trimmed = newQualityName.trim();
+    if (!trimmed) return;
+    setQualitySaving(true);
+    setQualityError(null);
+    try {
+      const res = await createQualityAction(trimmed);
+      if (res.success) {
+        onQualityCreated?.(res.data);
+        setValue("qualityId", res.data.id, { shouldValidate: true, shouldDirty: true });
+        setNewQualityName("");
+        setIsAddingQuality(false);
+      } else {
+        setQualityError(res.error || "Failed to create quality");
+      }
+    } catch (e: any) {
+      setQualityError(e?.message || "Failed to create quality");
+    } finally {
+      setQualitySaving(false);
+    }
+  }
 
   const defaultValues = useMemo(() => ({
     ...EMPTY_VALUES,
@@ -85,6 +144,7 @@ export function ProductForm({
 
   useEffect(() => {
     setValue("unit", initialValues?.unit ?? Unit.PACKET, { shouldDirty: false });
+    setValue("isActive", initialValues?.isActive !== false, { shouldDirty: false });
   }, [initialValues, setValue]);
 
   const length = Number(watch("length") || 0);
@@ -138,39 +198,158 @@ export function ProductForm({
               {errors.name ? <p className="text-sm text-destructive">{errors.name.message}</p> : null}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="categoryId">
-                Category <span className="text-rose-500">*</span>
-              </Label>
-              <select
-                id="categoryId"
-                className="flex min-h-11 w-full rounded-md border border-emerald-100 bg-white/80 px-3 py-2 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                {...register("categoryId")}
-              >
-                <option value="">Select category</option>
-                {categories.map((category) => (
-                  <option key={category.id} value={category.id}>
-                    {category.name}
-                  </option>
-                ))}
-              </select>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="categoryId">
+                  Category <span className="text-rose-500">*</span>
+                </Label>
+                {!isAddingCategory && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddingCategory(true);
+                      setCategoryError(null);
+                    }}
+                    className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 hover:underline flex items-center gap-0.5"
+                  >
+                    <Plus className="h-3 w-3" /> New
+                  </button>
+                )}
+              </div>
+
+              {isAddingCategory ? (
+                <div className="rounded-md border border-emerald-300 bg-emerald-50/70 p-2 space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      autoFocus
+                      placeholder="e.g. Specialty Kraft"
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleCreateCategory();
+                        } else if (e.key === "Escape") {
+                          setIsAddingCategory(false);
+                        }
+                      }}
+                      className="h-8 text-xs bg-white border-emerald-200"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={categorySaving || !newCategoryName.trim()}
+                      onClick={() => void handleCreateCategory()}
+                      className="h-8 px-2.5 text-xs bg-emerald-700 text-white hover:bg-emerald-800 shrink-0"
+                    >
+                      {categorySaving ? "Saving..." : "Add"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setIsAddingCategory(false);
+                        setCategoryError(null);
+                      }}
+                      className="h-8 px-1.5 text-xs text-slate-500 hover:text-slate-800 shrink-0"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  {categoryError && <p className="text-[11px] text-rose-600">{categoryError}</p>}
+                </div>
+              ) : (
+                <select
+                  id="categoryId"
+                  className="flex min-h-11 w-full rounded-md border border-emerald-100 bg-white/80 px-3 py-2 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                  {...register("categoryId")}
+                >
+                  <option value="">Select category</option>
+                  {categories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+              )}
               {errors.categoryId ? <p className="text-sm text-destructive">{errors.categoryId.message}</p> : null}
             </div>
+
             <div className="space-y-2">
-              <Label htmlFor="qualityId">
-                Quality <span className="text-rose-500">*</span>
-              </Label>
-              <select
-                id="qualityId"
-                className="flex min-h-11 w-full rounded-md border border-emerald-100 bg-white/80 px-3 py-2 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                {...register("qualityId")}
-              >
-                <option value="">Select quality</option>
-                {qualities.map((quality) => (
-                  <option key={quality.id} value={quality.id}>
-                    {quality.name}
-                  </option>
-                ))}
-              </select>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="qualityId">
+                  Quality <span className="text-rose-500">*</span>
+                </Label>
+                {!isAddingQuality && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddingQuality(true);
+                      setQualityError(null);
+                    }}
+                    className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 hover:underline flex items-center gap-0.5"
+                  >
+                    <Plus className="h-3 w-3" /> New
+                  </button>
+                )}
+              </div>
+
+              {isAddingQuality ? (
+                <div className="rounded-md border border-emerald-300 bg-emerald-50/70 p-2 space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      autoFocus
+                      placeholder="e.g. Export Super Grade"
+                      value={newQualityName}
+                      onChange={(e) => setNewQualityName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleCreateQuality();
+                        } else if (e.key === "Escape") {
+                          setIsAddingQuality(false);
+                        }
+                      }}
+                      className="h-8 text-xs bg-white border-emerald-200"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={qualitySaving || !newQualityName.trim()}
+                      onClick={() => void handleCreateQuality()}
+                      className="h-8 px-2.5 text-xs bg-emerald-700 text-white hover:bg-emerald-800 shrink-0"
+                    >
+                      {qualitySaving ? "Saving..." : "Add"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setIsAddingQuality(false);
+                        setQualityError(null);
+                      }}
+                      className="h-8 px-1.5 text-xs text-slate-500 hover:text-slate-800 shrink-0"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  {qualityError && <p className="text-[11px] text-rose-600">{qualityError}</p>}
+                </div>
+              ) : (
+                <select
+                  id="qualityId"
+                  className="flex min-h-11 w-full rounded-md border border-emerald-100 bg-white/80 px-3 py-2 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                  {...register("qualityId")}
+                >
+                  <option value="">Select quality</option>
+                  {qualities.map((quality) => (
+                    <option key={quality.id} value={quality.id}>
+                      {quality.name}
+                    </option>
+                  ))}
+                </select>
+              )}
               {errors.qualityId ? <p className="text-sm text-destructive">{errors.qualityId.message}</p> : null}
             </div>
             <div className="space-y-1.5">
@@ -468,7 +647,7 @@ export function ProductForm({
               <select
                 id="isActive"
                 className="flex min-h-11 w-full rounded-md border border-emerald-100 bg-white/80 px-3 py-2 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                {...register("isActive", { setValueAs: (value) => value === "true" })}
+                {...register("isActive", { setValueAs: (value) => value === true || value === "true" })}
               >
                 <option value="true">Active</option>
                 <option value="false">Inactive</option>
@@ -487,7 +666,7 @@ export function ProductForm({
           <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:justify-end">
             {onDelete ? (
               <Button type="button" variant="destructive" onClick={() => {
-                if (window.confirm("Confirm: deactivate this product?")) void onDelete();
+                if (window.confirm("Confirm: delete this product? It will be removed from your catalog and inventory.")) void onDelete();
               }} disabled={submitting || isSubmitting} className="shadow-sm">
                 <Trash2 className="mr-2 h-4 w-4" />
                 {deleteLabel}

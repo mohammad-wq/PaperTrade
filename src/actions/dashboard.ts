@@ -33,12 +33,12 @@ export async function getDashboardMetricsAction() {
         _count: true,
       }),
       prisma.product.findMany({
-        where: { isActive: true, reorderLevel: { not: null, gt: 0 } },
+        where: { isActive: true, deletedAt: null, reorderLevel: { not: null, gt: 0 } },
         select: { id: true, productNo: true, name: true, unit: true, reorderLevel: true },
       }),
       prisma.location.findMany({ select: { id: true, name: true } }),
       prisma.party.findMany({
-        where: { isActive: true },
+        where: { isActive: true, deletedAt: null },
         select: { id: true, name: true, type: true, creditLimit: true },
       }),
       prisma.saleInvoice.findMany({
@@ -167,3 +167,136 @@ export async function getDashboardMetricsAction() {
     };
   });
 }
+
+export async function getReceivablesPayablesBreakdownAction() {
+  return runAction("dashboard.receivablesPayablesBreakdown", async () => {
+    await requireSession();
+
+    // 1. Fetch all non-deleted parties
+    const parties = await prisma.party.findMany({
+      where: { deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        phone: true,
+        email: true,
+        address: true,
+        creditLimit: true,
+        isActive: true,
+      },
+      orderBy: { name: "asc" },
+    });
+
+    // 2. Batch query ledger entries grouped by partyId
+    const ledgerByParty = await prisma.ledgerEntry.groupBy({
+      by: ["partyId"],
+      _sum: { debit: true, credit: true },
+      where: { partyId: { not: null } },
+    });
+
+    const partyBalanceMap = new Map<string, number>();
+    for (const row of ledgerByParty) {
+      if (!row.partyId) continue;
+      const debit = Number(row._sum.debit ?? 0);
+      const credit = Number(row._sum.credit ?? 0);
+      // In ledger convention: debit - credit > 0 means party owes us (Receivable)
+      // debit - credit < 0 means we owe party (Payable)
+      partyBalanceMap.set(row.partyId, debit - credit);
+    }
+
+    const receivables: Array<{
+      id: string;
+      name: string;
+      type: string;
+      phone: string | null;
+      email: string | null;
+      address: string | null;
+      creditLimit: number | null;
+      balance: number;
+      isOverCreditLimit: boolean;
+      creditLimitUsagePercent: number | null;
+      isActive: boolean;
+    }> = [];
+
+    const payables: Array<{
+      id: string;
+      name: string;
+      type: string;
+      phone: string | null;
+      email: string | null;
+      address: string | null;
+      creditLimit: number | null;
+      balanceDue: number;
+      rawBalance: number;
+      isActive: boolean;
+    }> = [];
+
+    let totalReceivables = 0;
+    let totalPayables = 0;
+    let totalOverCreditLimitCount = 0;
+
+    for (const party of parties) {
+      const balance = partyBalanceMap.get(party.id) ?? 0;
+      const creditLimit = party.creditLimit ? Number(party.creditLimit) : null;
+
+      // Positive balance: party owes client (Customer Receivable)
+      if (balance > 0.001) {
+        totalReceivables += balance;
+        const isOver = creditLimit !== null && creditLimit > 0 && balance > creditLimit;
+        if (isOver) totalOverCreditLimitCount++;
+
+        const creditLimitUsagePercent =
+          creditLimit !== null && creditLimit > 0
+            ? Math.round((balance / creditLimit) * 100)
+            : null;
+
+        receivables.push({
+          id: party.id,
+          name: party.name,
+          type: party.type,
+          phone: party.phone,
+          email: party.email,
+          address: party.address,
+          creditLimit,
+          balance,
+          isOverCreditLimit: isOver,
+          creditLimitUsagePercent,
+          isActive: party.isActive,
+        });
+      } else if (balance < -0.001) {
+        // Negative balance: client owes party (Supplier Payable)
+        const balanceDue = Math.abs(balance);
+        totalPayables += balanceDue;
+
+        payables.push({
+          id: party.id,
+          name: party.name,
+          type: party.type,
+          phone: party.phone,
+          email: party.email,
+          address: party.address,
+          creditLimit,
+          balanceDue,
+          rawBalance: balance,
+          isActive: party.isActive,
+        });
+      }
+    }
+
+    // Sort descending by highest amount
+    receivables.sort((a, b) => b.balance - a.balance);
+    payables.sort((a, b) => b.balanceDue - a.balanceDue);
+
+    return {
+      totalReceivables,
+      totalPayables,
+      receivablesCount: receivables.length,
+      payablesCount: payables.length,
+      totalOverCreditLimitCount,
+      receivables,
+      payables,
+    };
+  });
+}
+

@@ -1,6 +1,5 @@
 "use server";
 
-import { z } from "zod";
 import { AccountType, ExpenseCategory, PaymentMethod } from "@prisma/client";
 import { parseInput, runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
@@ -9,17 +8,7 @@ import { canPerformAction } from "@/lib/auth/permissions";
 import { userError } from "@/lib/errors";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
-
-export const expenseSchema = z.object({
-  category: z.nativeEnum(ExpenseCategory).default(ExpenseCategory.OTHER),
-  amount: z.coerce.number().gt(0, "Amount must be greater than 0"),
-  method: z.nativeEnum(PaymentMethod).default(PaymentMethod.CASH),
-  date: z.coerce.date(),
-  description: z.string().trim().min(1, "Description is required").max(300),
-  notes: z.string().trim().max(1000).optional().nullable(),
-});
-
-export type ExpenseInput = z.infer<typeof expenseSchema>;
+import { expenseSchema } from "@/schemas/expense";
 
 export async function listExpensesAction(filters?: {
   category?: ExpenseCategory;

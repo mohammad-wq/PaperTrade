@@ -19,6 +19,8 @@ export function useRealtimeListener(
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
+  const modulesKey = Array.isArray(modules) ? modules.slice().sort().join(",") : modules;
+
   useEffect(() => {
     const moduleList = Array.isArray(modules) ? modules : [modules];
 
@@ -33,5 +35,5 @@ export function useRealtimeListener(
       unsubscribe();
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [modules, subscribe, debounceMs]);
+  }, [modulesKey, subscribe, debounceMs]);
 }

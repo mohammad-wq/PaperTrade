@@ -16,7 +16,7 @@ import {
   listStorageChargesAction,
   createStorageChargeAction,
 } from "@/actions/storage-charges";
-import { listInventoryAction } from "@/actions/parties";
+import { listLocationsAction } from "@/actions/orders";
 import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 
@@ -48,19 +48,16 @@ export default function StorageChargesPage() {
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const [chargeRes, invRes] = await Promise.all([
+      const [chargeRes, locRes] = await Promise.all([
         listStorageChargesAction(),
-        listInventoryAction(),
+        listLocationsAction(),
       ]);
 
       if (chargeRes.success && chargeRes.data) {
         setCharges(chargeRes.data as StorageChargeRow[]);
       }
-      if (invRes.success && invRes.data) {
-        const rows = invRes.data as Array<{ locationId: string; locationName: string }>;
-        const unique = Array.from(new Map(rows.map((r) => [r.locationId, r.locationName])).entries()).map(
-          ([id, name]) => ({ id, name }),
-        );
+      if (locRes.success && locRes.data) {
+        const unique = locRes.data as Array<{ id: string; name: string }>;
         setLocations(unique);
         if (unique.length > 0 && !locationId) {
           const warehouseLoc = unique.find((l) => l.name.toLowerCase().includes("warehouse")) || unique[0];

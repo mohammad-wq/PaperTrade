@@ -24,6 +24,7 @@ import { Label } from "@/components/ui/label";
 import { listSaleInvoicesAction, createSaleInvoiceAction } from "@/actions/invoices";
 import { listPartiesAction, listInventoryAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
+import { listLocationsAction } from "@/actions/orders";
 import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 
@@ -81,6 +82,7 @@ export default function SalesPage() {
   const [parties, setParties] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [inventory, setInventory] = useState<StockInfo[]>([]);
+  const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -109,11 +111,12 @@ export default function SalesPage() {
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const [invRes, partyRes, prodRes, stockRes] = await Promise.all([
+      const [invRes, partyRes, prodRes, stockRes, locRes] = await Promise.all([
         listSaleInvoicesAction(),
         listPartiesAction(),
         listProductsAction(),
         listInventoryAction(),
+        listLocationsAction(),
       ]);
 
       if (invRes.success && invRes.data) {
@@ -129,8 +132,13 @@ export default function SalesPage() {
       if (stockRes.success && stockRes.data) {
         const invRows = stockRes.data as Array<{ productId: string; locationId: string; available: number }>;
         setInventory(invRows);
-        if (!locationId && invRows.length > 0) {
-          setLocationId(invRows[0].locationId);
+      }
+      if (locRes.success && locRes.data) {
+        const locs = locRes.data as Array<{ id: string; name: string }>;
+        setDbLocations(locs);
+        if (locs.length > 0) {
+          const shop = locs.find((l) => l.name.toLowerCase() === "shop") ?? locs[0];
+          setLocationId((prev) => prev || shop.id);
         }
       }
     } finally {
@@ -148,14 +156,14 @@ export default function SalesPage() {
   });
 
   const locations = useMemo(() => {
+    if (dbLocations.length > 0) return dbLocations;
     const map = new Map<string, string>();
+    inventory.forEach((row: any) => {
+      if (row.locationId && row.locationName) map.set(row.locationId, row.locationName);
+    });
     invoices.forEach((i) => map.set(i.location.id, i.location.name));
-    if (map.size === 0) {
-      map.set("loc-shop", "Shop");
-      map.set("loc-warehouse", "Warehouse");
-    }
     return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
-  }, [invoices]);
+  }, [dbLocations, inventory, invoices]);
 
   const filteredInvoices = useMemo(() => {
     const q = query.trim().toLowerCase();

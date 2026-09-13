@@ -13,6 +13,7 @@ import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
+import { revalidatePath } from "next/cache";
 
 const deletePartySchema = z.object({ id: z.string().min(1, "Party is required") });
 
@@ -20,6 +21,7 @@ export async function listPartiesAction() {
   return runAction("parties.list", async () => {
     await requireSession();
     const parties = await prisma.party.findMany({
+      where: { deletedAt: null },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
     });
 
@@ -40,7 +42,7 @@ export async function listInventoryAction() {
     await requireSession();
     const [products, locations] = await Promise.all([
       prisma.product.findMany({
-        where: { isActive: true },
+        where: { deletedAt: null, isActive: true },
         orderBy: { name: "asc" },
       }),
       prisma.location.findMany({ orderBy: { name: "asc" } }),
@@ -62,6 +64,7 @@ export async function listInventoryAction() {
           breadth: Number(product.breadth),
           packetWeight: Number(product.packetWeight),
           reamWeight: Number(product.reamWeight),
+          isActive: product.isActive,
         })),
       ),
     );
@@ -100,6 +103,7 @@ export async function upsertPartyAction(raw: unknown) {
           address,
           creditLimit,
           isActive: Boolean(input.isActive),
+          deletedAt: null,
         },
       });
     } else {
@@ -112,6 +116,7 @@ export async function upsertPartyAction(raw: unknown) {
           address,
           creditLimit,
           isActive: Boolean(input.isActive),
+          deletedAt: null,
         },
       });
     }
@@ -121,6 +126,9 @@ export async function upsertPartyAction(raw: unknown) {
       name: party.name,
       type: party.type,
     });
+
+    revalidatePath("/parties");
+    revalidatePath("/dashboard");
 
     return party;
   });
@@ -149,6 +157,9 @@ export async function softDeletePartyAction(raw: unknown) {
     emitRealtimeEvent(["parties", "sales", "purchases", "payments"], "delete", "Party", {
       id: input.id,
     });
+
+    revalidatePath("/parties");
+    revalidatePath("/dashboard");
 
     return res;
   });
@@ -194,6 +205,10 @@ export async function adjustStockAction(raw: unknown) {
       productId: input.productId,
       locationId: input.locationId,
     });
+
+    revalidatePath("/inventory");
+    revalidatePath("/stock-movements");
+    revalidatePath("/dashboard");
 
     return res;
   });
@@ -252,6 +267,10 @@ export async function transferStockAction(raw: unknown) {
       fromLocationId: input.fromLocationId,
       toLocationId: input.toLocationId,
     });
+
+    revalidatePath("/inventory");
+    revalidatePath("/stock-movements");
+    revalidatePath("/dashboard");
 
     return res;
   });

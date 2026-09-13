@@ -134,7 +134,7 @@ export function PartyForm({
               <select
                 id="isActive"
                 className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-base md:text-sm"
-                {...register("isActive", { setValueAs: (value) => value === "true" })}
+                {...register("isActive", { setValueAs: (value) => value === true || value === "true" })}
               >
                 <option value="true">Active (Can trade)</option>
                 <option value="false">Inactive (Suspended)</option>
@@ -177,7 +177,7 @@ export function PartyForm({
           <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:justify-end">
             {onDelete ? (
               <Button type="button" variant="destructive" onClick={() => {
-                if (window.confirm("Confirm: deactivate this party?")) void onDelete();
+                if (window.confirm("Confirm: delete this party? It will be removed from your contact directory.")) void onDelete();
               }} disabled={submitting || isSubmitting}>
                 <Trash2 className="mr-2 h-4 w-4" />
                 {deleteLabel}

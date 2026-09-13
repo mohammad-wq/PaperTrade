@@ -35,5 +35,13 @@ if (fs.existsSync(standaloneDir)) {
     fs.copyFileSync(envSrc, envDest);
     console.log("[standalone] Successfully copied .env to .next/standalone/.env");
   }
+
+  const pdfkitSrc = path.join(rootDir, "node_modules", "pdfkit");
+  const pdfkitDest = path.join(standaloneDir, "node_modules", "pdfkit");
+  if (fs.existsSync(pdfkitSrc)) {
+    fs.mkdirSync(pdfkitDest, { recursive: true });
+    fs.cpSync(pdfkitSrc, pdfkitDest, { recursive: true });
+    console.log("[standalone] Successfully copied node_modules/pdfkit to .next/standalone/node_modules/pdfkit");
+  }
 }
 

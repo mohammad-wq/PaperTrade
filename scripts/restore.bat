@@ -1,9 +1,9 @@
 @echo off
 REM ==============================================================================
 REM Paper Trade - Database Restore Script (Native Windows)
-REM Restores a specified .sql file into the local PostgreSQL database.
-REM Usage: Drag and drop a .sql file onto this script, or run:
-REM scripts\restore.bat backups\papertrade_backup_YYYYMMDD_HHMMSS.sql
+REM Restores a specified .dump file (custom format -F c) using pg_restore.
+REM Usage: Drag and drop a .dump file onto this script, or run:
+REM scripts\restore.bat backups\local\papertrade_YYYY-MM-DD_HHMM.dump
 REM ==============================================================================
 
 cd /d "%~dp0\.."
@@ -11,8 +11,8 @@ cd /d "%~dp0\.."
 set BACKUP_FILE=%~1
 
 if "%BACKUP_FILE%"=="" (
-    echo Usage: %0 ^<path-to-sql-file^>
-    echo You can also drag and drop a .sql backup file directly onto this icon.
+    echo Usage: %0 ^<path-to-dump-file^>
+    echo You can also drag and drop a .dump backup file directly onto this icon.
     pause
     exit /b 1
 )
@@ -35,16 +35,20 @@ if /i not "%CONFIRM%"=="YES" (
     exit /b 0
 )
 
-REM Check if psql is in PATH; if not, check default PostgreSQL install location
-where psql >nul 2>&1
+REM Check if pg_restore is in PATH; if not, check default PostgreSQL install locations
+where pg_restore >nul 2>&1
 if errorlevel 1 (
-    if exist "C:\Program Files\PostgreSQL\16\bin\psql.exe" (
+    if exist "C:\Program Files\PostgreSQL\17\bin\pg_restore.exe" (
+        set PATH=C:\Program Files\PostgreSQL\17\bin;%PATH%
+    ) else if exist "C:\Program Files\PostgreSQL\16\bin\pg_restore.exe" (
         set PATH=C:\Program Files\PostgreSQL\16\bin;%PATH%
+    ) else if exist "C:\Program Files\PostgreSQL\15\bin\pg_restore.exe" (
+        set PATH=C:\Program Files\PostgreSQL\15\bin;%PATH%
     )
 )
 
-echo Restoring database from %BACKUP_FILE%...
-psql -U postgres -d paperbiz -f "%BACKUP_FILE%"
+echo Restoring database from %BACKUP_FILE% using pg_restore...
+pg_restore -U postgres -d papertrade --clean --if-exists -v -F c "%BACKUP_FILE%"
 
 if %ERRORLEVEL% EQU 0 (
     echo [SUCCESS] Database restored successfully!

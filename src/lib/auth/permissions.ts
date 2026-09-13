@@ -25,7 +25,7 @@ export const MODULE_DEFINITIONS = [
   { key: "reports", label: "Reports", routes: ["/reports", "/financial-reports"] },
   { key: "purchase-orders", label: "Purchase Orders", routes: ["/purchase-orders"] },
   { key: "stock-movements", label: "Stock Movements", routes: ["/stock-movements"] },
-  { key: "ledger", label: "Ledger", routes: ["/ledger"] },
+  { key: "ledger", label: "Ledger", routes: ["/ledger", "/receivables-payables"] },
   { key: "storage-charges", label: "Storage Charges", routes: ["/storage-charges"] },
   { key: "users", label: "Users", routes: ["/users"] },
   { key: "settings", label: "Settings", routes: ["/settings"] },

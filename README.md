@@ -382,8 +382,8 @@ Add the following line to back up daily at 8:00 PM:
 ```
 
 ### Method 3: Manual Script Execution
-- **Windows:** Run `scripts\backup.bat` to back up, or drag a `.sql` file onto `scripts\restore.bat`.
-- **Linux:** Run `./scripts/backup.sh` to back up, or `./scripts/restore.sh backups/your_snapshot.sql` to restore.
+- **Windows:** Run `scripts\backup.bat` to back up, or drag a `.dump` file onto `scripts\restore.bat`.
+- **Linux:** Run `./scripts/backup.sh` to back up, or `./scripts/restore.sh backups/local/your_snapshot.dump` to restore.
 
 ---
 

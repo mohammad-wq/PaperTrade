@@ -1,4 +1,8 @@
-import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import React from "react";
+import { Document, Page, Text, View, StyleSheet, Font } from "@react-pdf/renderer";
+
+// Prevent hyphenation crashes and prevent words/numbers from breaking across lines
+Font.registerHyphenationCallback((word) => [word]);
 
 const styles = StyleSheet.create({
   page: {
@@ -78,7 +82,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#cbd5e1",
     borderRadius: 4,
-    overflow: "hidden",
   },
   tableHeader: {
     flexDirection: "row",
@@ -512,8 +515,11 @@ export function PartyStatementPdfView({
     runningBalance: number;
   }>;
 }) {
-  const totalDebits = ledgerRows.reduce((sum, r) => sum + r.debit, 0);
-  const totalCredits = ledgerRows.reduce((sum, r) => sum + r.credit, 0);
+  const safeOpeningBalance = typeof openingBalance === "number" && !isNaN(openingBalance) ? openingBalance : 0;
+  const safeCurrentBalance = typeof currentBalance === "number" && !isNaN(currentBalance) ? currentBalance : 0;
+  const rows = Array.isArray(ledgerRows) ? ledgerRows : [];
+  const totalDebits = rows.reduce((sum, r) => sum + (Number(r.debit) || 0), 0);
+  const totalCredits = rows.reduce((sum, r) => sum + (Number(r.credit) || 0), 0);
 
   return (
     <Document>
@@ -546,11 +552,11 @@ export function PartyStatementPdfView({
               <Text style={styles.kpiValue}>PKR {party.creditLimit.toLocaleString()}</Text>
             </View>
           ) : null}
-          <View style={[styles.kpiCard, { backgroundColor: currentBalance >= 0 ? "#ecfdf5" : "#fff1f2" }]}>
+          <View style={[styles.kpiCard, { backgroundColor: safeCurrentBalance >= 0 ? "#ecfdf5" : "#fff1f2" }]}>
             <Text style={styles.kpiLabel}>Closing Balance</Text>
-            <Text style={[styles.kpiValue, { color: currentBalance >= 0 ? "#065f46" : "#9f1239" }]}>
-              PKR {Math.abs(currentBalance).toLocaleString()}{" "}
-              {currentBalance >= 0 ? "(Receivable)" : "(Payable)"}
+            <Text style={[styles.kpiValue, { color: safeCurrentBalance >= 0 ? "#065f46" : "#9f1239" }]}>
+              PKR {Math.abs(safeCurrentBalance).toLocaleString()}{" "}
+              {safeCurrentBalance >= 0 ? "(Receivable)" : "(Payable)"}
             </Text>
           </View>
         </View>
@@ -567,37 +573,37 @@ export function PartyStatementPdfView({
           </View>
 
           {/* Opening Balance Row if date-filtered */}
-          {openingBalance !== 0 && (
+          {safeOpeningBalance !== 0 && (
             <View style={[styles.tableRow, { backgroundColor: "#fef9c3" }]}>
               <Text style={[{ width: "15%" }, styles.cellBold]}>{startDate || "—"}</Text>
               <Text style={[{ width: "16%" }, styles.cellBold]}>B/F</Text>
               <Text style={[{ width: "37%" }, styles.cellBold]}>Opening Balance (Brought Forward)</Text>
-              <Text style={[{ width: "11%", textAlign: "right" }, styles.cell]}>{openingBalance > 0 ? openingBalance.toLocaleString() : "—"}</Text>
-              <Text style={[{ width: "11%", textAlign: "right" }, styles.cell]}>{openingBalance < 0 ? Math.abs(openingBalance).toLocaleString() : "—"}</Text>
-              <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>{openingBalance.toLocaleString()}</Text>
+              <Text style={[{ width: "11%", textAlign: "right" }, styles.cell]}>{safeOpeningBalance > 0 ? safeOpeningBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</Text>
+              <Text style={[{ width: "11%", textAlign: "right" }, styles.cell]}>{safeOpeningBalance < 0 ? Math.abs(safeOpeningBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</Text>
+              <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>{safeOpeningBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
             </View>
           )}
 
-          {ledgerRows.length === 0 ? (
+          {rows.length === 0 ? (
             <View style={styles.tableRow}>
               <Text style={[{ width: "100%", textAlign: "center", color: "#64748b" }, styles.cell]}>
                 No transaction records found for this account period.
               </Text>
             </View>
           ) : (
-            ledgerRows.map((row, idx) => (
+            rows.map((row, idx) => (
               <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
                 <Text style={[{ width: "15%" }, styles.cell]}>{row.date}</Text>
                 <Text style={[{ width: "16%" }, styles.cell]}>{row.referenceType}</Text>
                 <Text style={[{ width: "37%" }, styles.cell]}>{row.description}</Text>
                 <Text style={[{ width: "11%", textAlign: "right", color: row.debit > 0 ? "#065f46" : "#94a3b8" }, styles.cell]}>
-                  {row.debit > 0 ? row.debit.toLocaleString() : "—"}
+                  {row.debit > 0 ? row.debit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
                 </Text>
                 <Text style={[{ width: "11%", textAlign: "right", color: row.credit > 0 ? "#b45309" : "#94a3b8" }, styles.cell]}>
-                  {row.credit > 0 ? row.credit.toLocaleString() : "—"}
+                  {row.credit > 0 ? row.credit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
                 </Text>
                 <Text style={[{ width: "10%", textAlign: "right", fontWeight: "bold" }, styles.cellBold]}>
-                  {row.runningBalance.toLocaleString()}
+                  {row.runningBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </Text>
               </View>
             ))
@@ -606,9 +612,9 @@ export function PartyStatementPdfView({
           {/* Period Summary Totals */}
           <View style={[styles.tableRowHighlight, { borderTopWidth: 1.5 }]}>
             <Text style={[{ width: "68%" }, styles.cellBold]}>Total Period Activity & Net Closing Balance</Text>
-            <Text style={[{ width: "11%", textAlign: "right" }, styles.cellBold]}>{totalDebits.toLocaleString()}</Text>
-            <Text style={[{ width: "11%", textAlign: "right" }, styles.cellBold]}>{totalCredits.toLocaleString()}</Text>
-            <Text style={[{ width: "10%", textAlign: "right", color: "#065f46" }, styles.cellBold]}>{currentBalance.toLocaleString()}</Text>
+            <Text style={[{ width: "11%", textAlign: "right" }, styles.cellBold]}>{totalDebits.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+            <Text style={[{ width: "11%", textAlign: "right" }, styles.cellBold]}>{totalCredits.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+            <Text style={[{ width: "10%", textAlign: "right", color: "#065f46" }, styles.cellBold]}>{safeCurrentBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
           </View>
         </View>
 

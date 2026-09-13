@@ -92,7 +92,7 @@ function getDatabaseConfig(env = parseEnv()) {
         password: decodeURIComponent(url.password || ''),
         host: url.hostname || 'localhost',
         port: url.port || '5432',
-        database: url.pathname.replace(/^\//, '') || 'paperbiz',
+        database: url.pathname.replace(/^\//, '') || 'papertrade',
       };
     } catch {
       // Fallback regex if URL parse fails on weird characters
@@ -104,7 +104,7 @@ function getDatabaseConfig(env = parseEnv()) {
           password: decodeURIComponent(match[2]),
           host: match[3],
           port: match[4] || '5432',
-          database: match[5] || 'paperbiz',
+          database: match[5] || 'papertrade',
         };
       }
     }
@@ -115,7 +115,7 @@ function getDatabaseConfig(env = parseEnv()) {
     password: env.PGPASSWORD || '',
     host: env.PGHOST || 'localhost',
     port: env.PGPORT || '5432',
-    database: env.PGDATABASE || 'paperbiz',
+    database: env.PGDATABASE || 'papertrade',
   };
 }
 
@@ -354,7 +354,7 @@ function runLocalBackup(tag = 'LOCAL') {
   const pgDumpBin = findPgDump();
 
   const { fileStamp } = getTimestampParts();
-  const filename = `paperbiz_${fileStamp}.dump`;
+  const filename = `papertrade_${fileStamp}.dump`;
   const targetFile = path.join(localDir, filename);
 
   const args = [
@@ -542,35 +542,35 @@ function runCloudBackup(tag = 'CLOUD', specificLocalFile = null) {
   // latest -> week 1
   // new -> latest
   try {
-    if (existingRemoteFiles.includes('paperbiz_weekly_2.dump')) {
+    if (existingRemoteFiles.includes('papertrade_weekly_2.dump')) {
       runRcloneCmd([
         'moveto',
-        `${normalizedRemote}paperbiz_weekly_2.dump`,
-        `${normalizedRemote}paperbiz_weekly_3.dump`,
+        `${normalizedRemote}papertrade_weekly_2.dump`,
+        `${normalizedRemote}papertrade_weekly_3.dump`,
       ], 45000);
     }
 
-    if (existingRemoteFiles.includes('paperbiz_weekly_1.dump')) {
+    if (existingRemoteFiles.includes('papertrade_weekly_1.dump')) {
       runRcloneCmd([
         'moveto',
-        `${normalizedRemote}paperbiz_weekly_1.dump`,
-        `${normalizedRemote}paperbiz_weekly_2.dump`,
+        `${normalizedRemote}papertrade_weekly_1.dump`,
+        `${normalizedRemote}papertrade_weekly_2.dump`,
       ], 45000);
     }
 
-    if (existingRemoteFiles.includes('paperbiz_latest.dump')) {
+    if (existingRemoteFiles.includes('papertrade_latest.dump')) {
       runRcloneCmd([
         'moveto',
-        `${normalizedRemote}paperbiz_latest.dump`,
-        `${normalizedRemote}paperbiz_weekly_1.dump`,
+        `${normalizedRemote}papertrade_latest.dump`,
+        `${normalizedRemote}papertrade_weekly_1.dump`,
       ], 45000);
     }
 
-    // Copy new dump to paperbiz_latest.dump
+    // Copy new dump to papertrade_latest.dump
     let uploadRes = runRcloneCmd([
       'copyto',
       localFileToUpload,
-      `${normalizedRemote}paperbiz_latest.dump`,
+      `${normalizedRemote}papertrade_latest.dump`,
     ], 120000);
 
     // Fallback: If copyto failed, attempt copy
@@ -598,12 +598,12 @@ function runCloudBackup(tag = 'CLOUD', specificLocalFile = null) {
       logFile,
       tag,
       'SUCCESS',
-      `Uploaded paperbiz_latest.dump (${fileSizeFormatted}) to ${normalizedRemote} (Rolling archive rotated)`
+      `Uploaded papertrade_latest.dump (${fileSizeFormatted}) to ${normalizedRemote} (Rolling archive rotated)`
     );
 
     return {
       success: true,
-      remotePath: `${normalizedRemote}paperbiz_latest.dump`,
+      remotePath: `${normalizedRemote}papertrade_latest.dump`,
       fileSize: stat.size,
       fileSizeFormatted,
       tag,
@@ -663,7 +663,7 @@ function runManualBackup() {
     logFile,
     tag,
     'SUCCESS',
-    `Local dump (${localResult.filename}, ${localResult.fileSizeFormatted}) + Cloud sync (paperbiz_latest.dump) completed successfully`
+    `Local dump (${localResult.filename}, ${localResult.fileSizeFormatted}) + Cloud sync (papertrade_latest.dump) completed successfully`
   );
 
   return {

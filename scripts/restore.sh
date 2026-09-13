@@ -1,8 +1,8 @@
 #!/bin/bash
 # ==============================================================================
 # Paper Trade - Database Restore Script (Linux & macOS)
-# Restores a specified .sql file into the Docker PostgreSQL container.
-# Usage: ./scripts/restore.sh [path_to_backup.sql]
+# Restores a specified .dump file (custom format -F c) using pg_restore.
+# Usage: ./scripts/restore.sh [path_to_backup.dump]
 # ==============================================================================
 
 set -e
@@ -13,8 +13,8 @@ cd "$SCRIPT_DIR/.."
 BACKUP_FILE="$1"
 
 if [ -z "$BACKUP_FILE" ]; then
-  echo "Usage: $0 <path-to-sql-file>"
-  echo "Example: $0 backups/papertrade_backup_20260908_120000.sql"
+  echo "Usage: $0 <path-to-dump-file>"
+  echo "Example: $0 backups/local/papertrade_2026-09-13_1405.dump"
   exit 1
 fi
 
@@ -35,7 +35,13 @@ if [ "$CONFIRM" != "yes" ]; then
 fi
 
 echo "Restoring database..."
-cat "$BACKUP_FILE" | docker compose exec -T db psql -U postgres papertrade
+if command -v docker >/dev/null 2>&1 && docker compose ps 2>/dev/null | grep -q "db.*running"; then
+  echo "Restoring via Docker PostgreSQL container..."
+  docker compose exec -T db pg_restore -U "${PGUSER:-papertrade}" -d "${PGDATABASE:-papertrade}" --clean --if-exists -v -F c < "$BACKUP_FILE"
+else
+  echo "Restoring via native pg_restore..."
+  pg_restore -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U "${PGUSER:-papertrade}" -d "${PGDATABASE:-papertrade}" --clean --if-exists -v -F c "$BACKUP_FILE"
+fi
 
 echo "✔ Database restored successfully!"
 

@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowUpRight, Plus, Search, Users, Phone, Mail, MapPin, FileText, Filter, CheckCircle2 } from "lucide-react";
-import { listPartiesAction } from "@/actions/parties";
+import { ArrowUpRight, Plus, Search, Users, Phone, Mail, MapPin, FileText, FileSpreadsheet, Filter, CheckCircle2, Trash2 } from "lucide-react";
+import { listPartiesAction, softDeletePartyAction } from "@/actions/parties";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -48,6 +48,16 @@ export default function PartiesPage() {
   useRealtimeListener(["parties", "sales", "purchases", "payments"], () => {
     void fetchParties(true);
   });
+
+  async function handleDeleteParty(id: string, name: string) {
+    if (!window.confirm(`Confirm: delete "${name}"? It will be removed from your contact directory.`)) return;
+    const res = await softDeletePartyAction({ id });
+    if (res.success) {
+      setParties((prev) => prev.filter((p) => p.id !== id));
+    } else {
+      alert(res.error || "Failed to delete party.");
+    }
+  }
 
   const customerCount = useMemo(() => parties.filter((p) => p.type === PartyType.CUSTOMER).length, [parties]);
   const supplierCount = useMemo(() => parties.filter((p) => p.type === PartyType.SUPPLIER).length, [parties]);
@@ -228,13 +238,24 @@ export default function PartiesPage() {
                           </div>
                         </div>
 
-                        <Link
-                          href={`/parties/${party.id}/edit`}
-                          className="text-slate-400 hover:text-emerald-700 transition-colors p-1"
-                          title="Edit Party"
-                        >
-                          <ArrowUpRight className="h-4 w-4" />
-                        </Link>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteParty(party.id, party.name)}
+                            className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-colors"
+                            title="Delete Party"
+                            aria-label={`Delete ${party.name}`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                          <Link
+                            href={`/parties/${party.id}/edit`}
+                            className="text-slate-400 hover:text-emerald-700 transition-colors p-1"
+                            title="Edit Party"
+                          >
+                            <ArrowUpRight className="h-4 w-4" />
+                          </Link>
+                        </div>
                       </div>
 
                       {/* Contact Info */}
@@ -297,15 +318,26 @@ export default function PartiesPage() {
                       >
                         Edit Details
                       </Link>
-                      <a
-                        href={`/api/pdf/reports/party-statement?download=true&partyId=${party.id}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-200 border border-slate-200 transition-colors"
-                      >
-                        <FileText className="h-3 w-3 text-rose-600" />
-                        PDF Statement
-                      </a>
+                      <div className="flex items-center gap-1.5">
+                        <a
+                          href={`/api/excel/reports/party-statement?partyId=${party.id}`}
+                          download
+                          className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-200 border border-slate-200 transition-colors"
+                          title="Download Excel Statement"
+                        >
+                          <FileSpreadsheet className="h-3 w-3 text-emerald-700" />
+                          Excel
+                        </a>
+                        <a
+                          href={`/api/pdf/reports/party-statement?download=true&partyId=${party.id}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-200 border border-slate-200 transition-colors"
+                        >
+                          <FileText className="h-3 w-3 text-rose-600" />
+                          PDF Statement
+                        </a>
+                      </div>
                     </div>
                   </div>
                 );

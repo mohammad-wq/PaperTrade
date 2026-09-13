@@ -21,6 +21,7 @@ import {
   listPurchaseOrdersAction,
   createPurchaseOrderAction,
   updatePurchaseOrderStatusAction,
+  listLocationsAction,
 } from "@/actions/orders";
 import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
@@ -70,6 +71,7 @@ export default function PurchaseOrdersPage() {
   const [orders, setOrders] = useState<PORow[]>([]);
   const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
+  const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -87,10 +89,11 @@ export default function PurchaseOrdersPage() {
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const [poRes, partyRes, prodRes] = await Promise.all([
+      const [poRes, partyRes, prodRes, locRes] = await Promise.all([
         listPurchaseOrdersAction(),
         listPartiesAction(),
         listProductsAction(),
+        listLocationsAction(),
       ]);
 
       if (poRes.success && poRes.data) {
@@ -102,6 +105,14 @@ export default function PurchaseOrdersPage() {
       }
       if (prodRes.success && prodRes.data) {
         setProducts(prodRes.data as ProductOption[]);
+      }
+      if (locRes.success && locRes.data) {
+        const locs = locRes.data as Array<{ id: string; name: string }>;
+        setDbLocations(locs);
+        if (locs.length > 0) {
+          const shop = locs.find((l) => l.name.toLowerCase() === "shop") ?? locs[0];
+          setLocationId((prev) => prev || shop.id);
+        }
       }
     } finally {
       if (!isBackground) setLoading(false);
@@ -117,14 +128,11 @@ export default function PurchaseOrdersPage() {
   });
 
   const locations = useMemo(() => {
+    if (dbLocations.length > 0) return dbLocations;
     const map = new Map<string, string>();
     orders.forEach((o) => map.set(o.location.id, o.location.name));
-    if (map.size === 0) {
-      map.set("loc-shop", "Shop");
-      map.set("loc-warehouse", "Warehouse");
-    }
     return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
-  }, [orders]);
+  }, [dbLocations, orders]);
 
   const filteredOrders = useMemo(() => {
     const q = query.trim().toLowerCase();

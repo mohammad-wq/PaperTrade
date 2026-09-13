@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { listProductsAction, softDeleteProductAction, upsertProductAction } from "@/actions/products";
+import {
+  listCategoriesAction,
+  listProductsAction,
+  listQualitiesAction,
+  softDeleteProductAction,
+  upsertProductAction,
+} from "@/actions/products";
 import { ProductForm } from "@/components/products/product-form";
 import { Button } from "@/components/ui/button";
 import { type ProductInput } from "@/schemas/product";
@@ -27,18 +33,6 @@ const EMPTY_FORM: ProductInput = {
   isActive: true,
 };
 
-const sampleCategories = [
-  { id: "cat-1", name: "Newsprint" },
-  { id: "cat-2", name: "Maplitho" },
-  { id: "cat-3", name: "Offset" },
-];
-
-const sampleQualities = [
-  { id: "qual-1", name: "Premium" },
-  { id: "qual-2", name: "Standard" },
-  { id: "qual-3", name: "Economy" },
-];
-
 type ProductRecord = ProductInput & {
   id: string;
   packetWeight: number;
@@ -50,6 +44,8 @@ type ProductRecord = ProductInput & {
 export function ProductEditor({ productId }: { productId?: string }) {
   const router = useRouter();
   const [product, setProduct] = useState<ProductRecord | null>(null);
+  const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
+  const [qualities, setQualities] = useState<Array<{ id: string; name: string }>>([]);
   const [loading, setLoading] = useState(Boolean(productId));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +61,18 @@ export function ProductEditor({ productId }: { productId?: string }) {
     }
     setLoading(false);
   }, [productId]);
+
+  useEffect(() => {
+    async function loadMetadata() {
+      const [catRes, qualRes] = await Promise.all([
+        listCategoriesAction(),
+        listQualitiesAction(),
+      ]);
+      if (catRes.success && catRes.data) setCategories(catRes.data);
+      if (qualRes.success && qualRes.data) setQualities(qualRes.data);
+    }
+    void loadMetadata();
+  }, []);
 
   useEffect(() => {
     if (productId) void loadProduct();
@@ -96,11 +104,31 @@ export function ProductEditor({ productId }: { productId?: string }) {
   const initialValues = product
     ? {
         ...product,
+        isActive: product.isActive !== false,
         reorderLevel: product.reorderLevel ?? 0,
         serialNo: product.serialNo ?? "",
         remarks: product.remarks ?? "",
       }
-    : EMPTY_FORM;
+    : {
+        ...EMPTY_FORM,
+        isActive: true,
+        categoryId: categories[0]?.id ?? "",
+        qualityId: qualities[0]?.id ?? "",
+      };
+
+  const handleCategoryCreated = (newCategory: { id: string; name: string }) => {
+    setCategories((prev) => {
+      if (prev.some((c) => c.id === newCategory.id)) return prev;
+      return [...prev, newCategory].sort((a, b) => a.name.localeCompare(b.name));
+    });
+  };
+
+  const handleQualityCreated = (newQuality: { id: string; name: string }) => {
+    setQualities((prev) => {
+      if (prev.some((q) => q.id === newQuality.id)) return prev;
+      return [...prev, newQuality].sort((a, b) => a.name.localeCompare(b.name));
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -114,14 +142,17 @@ export function ProductEditor({ productId }: { productId?: string }) {
         <p className="text-sm text-slate-600">Keep every item measured in packets or reams.</p>
       </div>
       <ProductForm
+        key={product?.id ?? "new"}
         initialValues={initialValues}
-        categories={sampleCategories}
-        qualities={sampleQualities}
+        categories={categories}
+        qualities={qualities}
         submitting={saving}
         onSubmit={handleSubmit}
         onDelete={productId ? handleDelete : undefined}
+        onCategoryCreated={handleCategoryCreated}
+        onQualityCreated={handleQualityCreated}
         submitLabel={productId ? "Update product" : "Create product"}
-        deleteLabel="Deactivate product"
+        deleteLabel="Delete product"
       />
     </div>
   );

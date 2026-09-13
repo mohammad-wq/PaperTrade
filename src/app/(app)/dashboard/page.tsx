@@ -174,23 +174,28 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Outstanding Receivables */}
-        <Card className="border-sky-900/15 bg-gradient-to-br from-sky-50/70 via-white to-white shadow-xs">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-semibold uppercase tracking-wider text-sky-800">Receivables / Payables</CardTitle>
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-100 text-sky-700">
-              <Wallet className="h-4 w-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-lg font-bold text-sky-900">
-              +PKR {data ? data.totalReceivables.toLocaleString() : "..."}
-            </div>
-            <p className="text-xs text-slate-600 mt-0.5">
-              Payables: PKR {data ? data.totalPayables.toLocaleString() : "..."}
-            </p>
-          </CardContent>
-        </Card>
+        {/* Outstanding Receivables / Payables */}
+        <Link href="/receivables-payables" className="group block">
+          <Card className="h-full border-sky-900/15 bg-gradient-to-br from-sky-50/70 via-white to-white shadow-xs transition-all hover:border-sky-300 hover:shadow-md">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-sky-800">Receivables / Payables</CardTitle>
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-100 text-sky-700 transition-colors group-hover:bg-sky-200">
+                <Wallet className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-lg font-bold text-sky-900">
+                +PKR {data ? data.totalReceivables.toLocaleString() : "..."}
+              </div>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Payables: PKR {data ? data.totalPayables.toLocaleString() : "..."}
+              </p>
+              <span className="inline-flex items-center text-[10px] font-semibold text-sky-700 mt-2 group-hover:underline">
+                View Account Breakdown →
+              </span>
+            </CardContent>
+          </Card>
+        </Link>
       </div>
 
       {/* Low Stock Alerts Banner (if any) */}

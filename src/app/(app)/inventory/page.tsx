@@ -15,11 +15,13 @@ import {
   Weight,
 } from "lucide-react";
 import { listInventoryAction, adjustStockAction, transferStockAction } from "@/actions/parties";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useRealtime } from "@/components/providers/realtime-provider";
 
 type InventoryRow = {
   productId: string;
@@ -35,9 +37,12 @@ type InventoryRow = {
   breadth: number;
   packetWeight: number;
   reamWeight: number;
+  isActive?: boolean;
 };
 
 export default function InventoryPage() {
+  const router = useRouter();
+  const { broadcastLocalChange } = useRealtime();
   const [rows, setRows] = useState<InventoryRow[]>([]);
   const [query, setQuery] = useState("");
   const [selectedLocationId, setSelectedLocationId] = useState("all");
@@ -141,10 +146,24 @@ export default function InventoryPage() {
 
     const res = await adjustStockAction({ productId, locationId, quantity, direction, reason });
     if (res.success) {
+      // Optimistic local state update for instantaneous zero-latency feedback
+      setRows((prev) =>
+        prev.map((row) => {
+          if (row.productId === productId && row.locationId === locationId) {
+            const diff = direction === "IN" ? quantity : -quantity;
+            return { ...row, available: Math.max(0, row.available + diff) };
+          }
+          return row;
+        })
+      );
+
       setReason("");
       setQuantity(1);
       setMsg({ type: "success", text: "Stock adjustment recorded successfully." });
-      await fetchRows();
+
+      broadcastLocalChange(["inventory", "stock-movements", "dashboard"]);
+      router.refresh();
+      await fetchRows(true);
     } else {
       setMsg({ type: "error", text: res.error || "Adjustment failed." });
     }
@@ -169,10 +188,26 @@ export default function InventoryPage() {
     });
 
     if (res.success) {
+      // Optimistic local state update
+      setRows((prev) =>
+        prev.map((row) => {
+          if (row.productId === transferProductId && row.locationId === fromLocationId) {
+            return { ...row, available: Math.max(0, row.available - transferQuantity) };
+          }
+          if (row.productId === transferProductId && row.locationId === toLocationId) {
+            return { ...row, available: row.available + transferQuantity };
+          }
+          return row;
+        })
+      );
+
       setTransferNotes("");
       setTransferQuantity(1);
       setMsg({ type: "success", text: "Stock transferred successfully between locations." });
-      await fetchRows();
+
+      broadcastLocalChange(["inventory", "stock-movements", "dashboard"]);
+      router.refresh();
+      await fetchRows(true);
     } else {
       setMsg({ type: "error", text: res.error || "Transfer failed." });
     }
@@ -348,7 +383,14 @@ export default function InventoryPage() {
                       <div className="space-y-1">
                         <div className="flex items-start justify-between gap-2">
                           <div>
-                            <p className="font-bold text-xs text-slate-900">{row.productNo}</p>
+                            <div className="flex items-center gap-1.5">
+                              <p className="font-bold text-xs text-slate-900">{row.productNo}</p>
+                              {row.isActive === false && (
+                                <span className="rounded bg-amber-100 px-1.5 py-0.2 text-[10px] font-semibold text-amber-800 border border-amber-200">
+                                  Inactive
+                                </span>
+                              )}
+                            </div>
                             <p className="text-xs font-semibold text-slate-800">{row.productName}</p>
                           </div>
                           <span

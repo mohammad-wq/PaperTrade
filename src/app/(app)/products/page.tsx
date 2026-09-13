@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowUpRight, Plus, Search, Scale, Layers } from "lucide-react";
+import { ArrowUpRight, Plus, Search, Scale, Layers, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { listProductsAction } from "@/actions/products";
+import { listProductsAction, softDeleteProductAction } from "@/actions/products";
 import { type ProductInput } from "@/schemas/product";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 
@@ -61,6 +61,16 @@ export default function ProductsPage() {
   useRealtimeListener(["products"], () => {
     void fetchProducts(true);
   });
+
+  async function handleDeleteProduct(id: string, name: string) {
+    if (!window.confirm(`Confirm: delete "${name}"? It will be removed from your catalog and inventory.`)) return;
+    const res = await softDeleteProductAction({ id });
+    if (res.success) {
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+    } else {
+      alert(res.error || "Failed to delete product.");
+    }
+  }
 
   const filteredProducts = useMemo(() => {
     const search = query.trim().toLowerCase();
@@ -155,6 +165,19 @@ export default function ProductsPage() {
                         >
                           {product.isActive ? "Active" : "Inactive"}
                         </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void handleDeleteProduct(product.id, product.name);
+                          }}
+                          className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-colors"
+                          title="Delete Product"
+                          aria-label={`Delete ${product.name}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                         <ArrowUpRight className="h-4 w-4 text-emerald-600 opacity-0 transition-opacity group-hover:opacity-100" />
                       </div>
                     </div>
