@@ -1,5 +1,5 @@
-import { ProductEditor } from "@/components/products/product-editor";
+import { redirect } from "next/navigation";
 
 export default function NewProductPage() {
-  return <ProductEditor />;
+  redirect("/products?action=new");
 }

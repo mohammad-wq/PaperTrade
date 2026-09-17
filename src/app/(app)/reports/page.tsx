@@ -42,6 +42,36 @@ type ProfitLossData = {
   grossMarginPct?: number;
   netMarginPct?: number;
   expenseBreakdown?: Array<{ name: string; amount: number }>;
+  expenseItems?: Array<{
+    id: string;
+    date: string;
+    partyId: string | null;
+    partyName: string | null;
+    referenceType: string;
+    referenceId: string;
+    description: string;
+    amount: number;
+  }>;
+  salesBreakdown?: Array<{
+    id: string;
+    date: string;
+    partyId: string;
+    partyName: string;
+    referenceType: string;
+    referenceId: string;
+    description: string;
+    amount: number;
+  }>;
+  purchasesBreakdown?: Array<{
+    id: string;
+    date: string;
+    partyId: string;
+    partyName: string;
+    referenceType: string;
+    referenceId: string;
+    description: string;
+    amount: number;
+  }>;
 };
 
 type BalanceSheetData = {
@@ -64,6 +94,26 @@ type BalanceSheetData = {
   equity: number;
   isBalanced?: boolean;
   totalLiabilitiesAndEquity?: number;
+  receivablesSchedule?: Array<{
+    partyId: string;
+    partyName: string;
+    partyType: string;
+    phone: string | null;
+    balance: number;
+    referenceType: string;
+    referenceId: string;
+    asOfDate: string;
+  }>;
+  payablesSchedule?: Array<{
+    partyId: string;
+    partyName: string;
+    partyType: string;
+    phone: string | null;
+    balance: number;
+    referenceType: string;
+    referenceId: string;
+    asOfDate: string;
+  }>;
 };
 
 type CashFlowData = {
@@ -75,6 +125,8 @@ type CashFlowData = {
   flowDetails: Array<{
     id: string;
     date: string;
+    partyId?: string | null;
+    partyName?: string | null;
     description: string;
     referenceType: string;
     referenceId: string;
@@ -95,6 +147,7 @@ type PartyStatementData = {
     creditLimit: number | null;
   };
   openingBalance: number;
+  openingBalanceSourceYear?: string | null;
   totalPeriodDebits: number;
   totalPeriodCredits: number;
   closingBalance: number;
@@ -102,9 +155,13 @@ type PartyStatementData = {
   ledgerRows: Array<{
     id: string;
     date: Date;
+    partyId?: string;
+    partyName?: string;
     description: string;
     referenceType: string;
     referenceId: string;
+    referenceDocNo?: string | null;
+    sourceFinancialYear?: string | null;
     debit: number;
     credit: number;
     runningBalance: number;
@@ -128,6 +185,7 @@ export default function ReportsPage() {
   const [plStart, setPlStart] = useState("");
   const [plEnd, setPlEnd] = useState("");
   const [plData, setPlData] = useState<ProfitLossData | null>(null);
+  const [plDetailTab, setPlDetailTab] = useState<"summary" | "sales" | "purchases" | "expenses">("summary");
 
   // Cash Flow State
   const [cfStart, setCfStart] = useState("");
@@ -492,6 +550,191 @@ export default function ReportsPage() {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* Detailed Transaction Breakdown (Sales, Purchases, Expenses) with Party ID & Reference ID */}
+              <Card className="border-slate-200 bg-white">
+                <CardHeader className="pb-3 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <CardTitle className="text-sm font-bold">Transaction Audit Breakdown</CardTitle>
+                    <CardDescription className="text-xs">
+                      Inspect individual sales, purchases, and expenses with counterparty IDs and reference tracking
+                    </CardDescription>
+                  </div>
+                  <div className="flex rounded-md border border-slate-200 bg-slate-50 p-0.5 text-xs">
+                    <button
+                      onClick={() => setPlDetailTab("summary")}
+                      className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                        plDetailTab === "summary" ? "bg-white text-slate-900 font-bold shadow-2xs" : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Summary
+                    </button>
+                    <button
+                      onClick={() => setPlDetailTab("sales")}
+                      className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                        plDetailTab === "sales" ? "bg-white text-emerald-900 font-bold shadow-2xs" : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Sales ({plData.salesBreakdown?.length || 0})
+                    </button>
+                    <button
+                      onClick={() => setPlDetailTab("purchases")}
+                      className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                        plDetailTab === "purchases" ? "bg-white text-amber-900 font-bold shadow-2xs" : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Purchases ({plData.purchasesBreakdown?.length || 0})
+                    </button>
+                    <button
+                      onClick={() => setPlDetailTab("expenses")}
+                      className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                        plDetailTab === "expenses" ? "bg-white text-rose-900 font-bold shadow-2xs" : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Expenses ({plData.expenseItems?.length || 0})
+                    </button>
+                  </div>
+                </CardHeader>
+                <CardContent className="p-0">
+                  {plDetailTab === "sales" && (
+                    <div className="divide-y divide-slate-100 text-xs">
+                      {(!plData.salesBreakdown || plData.salesBreakdown.length === 0) ? (
+                        <p className="p-6 text-center text-slate-500">No sales transactions logged for this period.</p>
+                      ) : (
+                        plData.salesBreakdown.map((tx) => (
+                          <div key={tx.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50/50">
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-slate-800">
+                                  {format(new Date(tx.date), "dd/MM/yyyy")}
+                                </span>
+                                <span className="font-semibold text-slate-900">{tx.partyName}</span>
+                                {tx.partyId && tx.partyId !== "N/A" && (
+                                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 border border-slate-200">
+                                    Party ID: {tx.partyId}
+                                  </span>
+                                )}
+                                <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 border border-emerald-200">
+                                  {tx.referenceType}
+                                </span>
+                                <span className="text-[10px] font-mono text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+                                  Ref: {tx.referenceId}
+                                </span>
+                              </div>
+                              <p className="text-slate-600">{tx.description}</p>
+                            </div>
+                            <div className="text-right">
+                              <span className="font-bold text-emerald-800 text-sm">
+                                PKR {tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+
+                  {plDetailTab === "purchases" && (
+                    <div className="divide-y divide-slate-100 text-xs">
+                      {(!plData.purchasesBreakdown || plData.purchasesBreakdown.length === 0) ? (
+                        <p className="p-6 text-center text-slate-500">No purchase transactions logged for this period.</p>
+                      ) : (
+                        plData.purchasesBreakdown.map((tx) => (
+                          <div key={tx.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50/50">
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-slate-800">
+                                  {format(new Date(tx.date), "dd/MM/yyyy")}
+                                </span>
+                                <span className="font-semibold text-slate-900">{tx.partyName}</span>
+                                {tx.partyId && tx.partyId !== "N/A" && (
+                                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 border border-slate-200">
+                                    Party ID: {tx.partyId}
+                                  </span>
+                                )}
+                                <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 border border-amber-200">
+                                  {tx.referenceType}
+                                </span>
+                                <span className="text-[10px] font-mono text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+                                  Ref: {tx.referenceId}
+                                </span>
+                              </div>
+                              <p className="text-slate-600">{tx.description}</p>
+                            </div>
+                            <div className="text-right">
+                              <span className="font-bold text-amber-800 text-sm">
+                                PKR {tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+
+                  {plDetailTab === "expenses" && (
+                    <div className="divide-y divide-slate-100 text-xs">
+                      {(!plData.expenseItems || plData.expenseItems.length === 0) ? (
+                        <p className="p-6 text-center text-slate-500">No itemized expense records for this period.</p>
+                      ) : (
+                        plData.expenseItems.map((tx) => (
+                          <div key={tx.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50/50">
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-slate-800">
+                                  {format(new Date(tx.date), "dd/MM/yyyy")}
+                                </span>
+                                {tx.partyName && (
+                                  <span className="font-semibold text-slate-900">{tx.partyName}</span>
+                                )}
+                                {tx.partyId && (
+                                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 border border-slate-200">
+                                    Party ID: {tx.partyId}
+                                  </span>
+                                )}
+                                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600 border border-slate-200">
+                                  {tx.referenceType}
+                                </span>
+                                <span className="text-[10px] font-mono text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+                                  Ref: {tx.referenceId}
+                                </span>
+                              </div>
+                              <p className="text-slate-600">{tx.description}</p>
+                            </div>
+                            <div className="text-right">
+                              <span className="font-bold text-slate-800 text-sm">
+                                PKR {tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+
+                  {plDetailTab === "summary" && (
+                    <div className="p-4 text-xs text-slate-600 space-y-2">
+                      <p>
+                        Click the tabs above (<strong>Sales</strong>, <strong>Purchases</strong>, or <strong>Expenses</strong>) to audit individual transactions contributing to this Income Statement, complete with counterparty IDs and document references.
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                        <div className="p-3 rounded-lg border border-slate-100 bg-slate-50">
+                          <p className="text-slate-500 font-semibold">Total Sales Entries</p>
+                          <p className="text-lg font-bold text-slate-800">{plData.salesBreakdown?.length || 0} Transactions</p>
+                        </div>
+                        <div className="p-3 rounded-lg border border-slate-100 bg-slate-50">
+                          <p className="text-slate-500 font-semibold">Total Purchase Entries</p>
+                          <p className="text-lg font-bold text-slate-800">{plData.purchasesBreakdown?.length || 0} Transactions</p>
+                        </div>
+                        <div className="p-3 rounded-lg border border-slate-100 bg-slate-50">
+                          <p className="text-slate-500 font-semibold">Total Expense Entries</p>
+                          <p className="text-lg font-bold text-slate-800">{plData.expenseItems?.length || 0} Records</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             </div>
           )}
         </div>
@@ -636,13 +879,23 @@ export default function ReportsPage() {
                       {cfData.flowDetails.map((tx) => (
                         <div key={tx.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50/50">
                           <div className="space-y-0.5">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-semibold text-slate-800">
                                 {format(new Date(tx.date), "dd/MM/yyyy")}
                               </span>
                               <span className="text-[10px] font-bold rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">
                                 {tx.referenceType}
                               </span>
+                              {tx.referenceId && (
+                                <span className="text-[10px] font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                  Ref: {tx.referenceId}
+                                </span>
+                              )}
+                              {tx.partyName && (
+                                <span className="text-[10px] font-medium text-slate-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                                  Party: {tx.partyName} {tx.partyId ? `(${tx.partyId.slice(-6)})` : ""}
+                                </span>
+                              )}
                             </div>
                             <p className="text-slate-600">{tx.description}</p>
                           </div>
@@ -723,8 +976,9 @@ export default function ReportsPage() {
           </Card>
 
           {bsData && (
-            <div className="grid gap-6 md:grid-cols-2">
-              {/* Assets Column */}
+            <div className="space-y-6">
+              <div className="grid gap-6 md:grid-cols-2">
+                {/* Assets Column */}
               <Card className="border-emerald-900/15 bg-white">
                 <CardHeader className="border-b border-slate-100 pb-3">
                   <div className="flex justify-between items-center">
@@ -799,6 +1053,108 @@ export default function ReportsPage() {
                 </CardContent>
               </Card>
             </div>
+
+              {/* Receivables & Payables Detailed Party Schedules with Party ID & Reference ID */}
+              <div className="grid gap-6 md:grid-cols-2">
+                {/* Receivables Schedule */}
+                <Card className="border-slate-200 bg-white">
+                  <CardHeader className="border-b border-slate-100 pb-3">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <CardTitle className="text-sm font-bold text-slate-900">Accounts Receivable Schedule</CardTitle>
+                        <CardDescription className="text-xs">Outstanding customer balances with party tracking</CardDescription>
+                      </div>
+                      <span className="text-xs font-bold text-emerald-800">
+                        {bsData.receivablesSchedule?.length || 0} Customers
+                      </span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    {(!bsData.receivablesSchedule || bsData.receivablesSchedule.length === 0) ? (
+                      <p className="p-6 text-center text-xs text-slate-500">No outstanding customer receivables.</p>
+                    ) : (
+                      <div className="divide-y divide-slate-100 text-xs max-h-96 overflow-y-auto">
+                        {bsData.receivablesSchedule.map((item) => (
+                          <div key={item.partyId} className="p-3 flex items-center justify-between hover:bg-slate-50/50">
+                            <div className="space-y-0.5">
+                              <p className="font-semibold text-slate-900">{item.partyName}</p>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-[10px] font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                  ID: {item.partyId}
+                                </span>
+                                {item.phone && (
+                                  <span className="text-[10px] text-slate-500">{item.phone}</span>
+                                )}
+                                {item.referenceId && item.referenceId !== "—" && (
+                                  <span className="text-[10px] font-mono text-slate-500 bg-slate-50 px-1 py-0.5 rounded border border-slate-200">
+                                    Ref: {item.referenceId}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <span className="font-bold text-slate-900">
+                                PKR {item.balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </span>
+                              <span className="text-[10px] text-emerald-700 block font-semibold">Dr (Receivable)</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Payables Schedule */}
+                <Card className="border-slate-200 bg-white">
+                  <CardHeader className="border-b border-slate-100 pb-3">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <CardTitle className="text-sm font-bold text-slate-900">Accounts Payable Schedule</CardTitle>
+                        <CardDescription className="text-xs">Outstanding supplier balances with party tracking</CardDescription>
+                      </div>
+                      <span className="text-xs font-bold text-amber-800">
+                        {bsData.payablesSchedule?.length || 0} Suppliers
+                      </span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    {(!bsData.payablesSchedule || bsData.payablesSchedule.length === 0) ? (
+                      <p className="p-6 text-center text-xs text-slate-500">No outstanding supplier payables.</p>
+                    ) : (
+                      <div className="divide-y divide-slate-100 text-xs max-h-96 overflow-y-auto">
+                        {bsData.payablesSchedule.map((item) => (
+                          <div key={item.partyId} className="p-3 flex items-center justify-between hover:bg-slate-50/50">
+                            <div className="space-y-0.5">
+                              <p className="font-semibold text-slate-900">{item.partyName}</p>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-[10px] font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                  ID: {item.partyId}
+                                </span>
+                                {item.phone && (
+                                  <span className="text-[10px] text-slate-500">{item.phone}</span>
+                                )}
+                                {item.referenceId && item.referenceId !== "—" && (
+                                  <span className="text-[10px] font-mono text-slate-500 bg-slate-50 px-1 py-0.5 rounded border border-slate-200">
+                                    Ref: {item.referenceId}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <span className="font-bold text-slate-900">
+                                PKR {item.balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </span>
+                              <span className="text-[10px] text-rose-700 block font-semibold">Cr (Payable)</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -868,10 +1224,13 @@ export default function ReportsPage() {
               {/* Party Profile Summary */}
               <div className="rounded-xl border border-sky-200 bg-sky-50/50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h2 className="text-lg font-bold text-slate-900">{partyData.party.name}</h2>
                     <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-800">
                       {partyData.party.type}
+                    </span>
+                    <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-mono font-semibold text-slate-700">
+                      ID: {partyData.party.id}
                     </span>
                   </div>
                   <p className="text-xs text-slate-600 mt-1">
@@ -995,7 +1354,11 @@ export default function ReportsPage() {
                       <span className="rounded bg-amber-200/80 px-1.5 py-0.5 text-[10px] font-bold text-amber-900 uppercase tracking-wide">
                         Opening b/f
                       </span>
-                      <span>Opening Balance Brought Forward</span>
+                      <span>
+                        {(partyData as any).openingBalanceSourceYear
+                          ? `Opening Balance (Carried forward from Financial Year ${(partyData as any).openingBalanceSourceYear})`
+                          : "Opening Balance Brought Forward"}
+                      </span>
                     </div>
                     <div className="text-right font-bold text-slate-900">
                       PKR {Math.abs(partyData.openingBalance).toLocaleString()}{" "}
@@ -1012,13 +1375,29 @@ export default function ReportsPage() {
                       {partyData.ledgerRows.map((row) => (
                         <div key={row.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50/50">
                           <div className="space-y-0.5">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-semibold text-slate-800">
                                 {format(new Date(row.date), "dd/MM/yyyy")}
                               </span>
-                              <span className="text-[10px] font-bold rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">
-                                {row.referenceType}
+                              <span className={`text-[10px] font-bold rounded px-1.5 py-0.5 ${
+                                row.referenceType === "OPENING_BALANCE"
+                                  ? "bg-amber-200 text-amber-900"
+                                  : "bg-slate-100 text-slate-600"
+                              }`}>
+                                {row.referenceType === "OPENING_BALANCE" && (row as any).sourceFinancialYear
+                                  ? `OPENING (FY ${(row as any).sourceFinancialYear})`
+                                  : row.referenceType}
                               </span>
+                              {row.referenceDocNo && (
+                                <span className="text-[10px] font-mono font-bold text-slate-900 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                  Doc: {row.referenceDocNo}
+                                </span>
+                              )}
+                              {row.referenceId && (
+                                <span className="text-[10px] font-mono text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+                                  Ref: {row.referenceId}
+                                </span>
+                              )}
                             </div>
                             <p className="text-slate-600">{row.description}</p>
                           </div>

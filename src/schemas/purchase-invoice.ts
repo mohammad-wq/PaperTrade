@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const lineItem = z.object({
   productId: z.string().min(1, "Product is required"),
+  warehouseLotId: z.string().trim().optional().nullable(),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unitCost: z.coerce.number().min(0),
 });
@@ -9,6 +10,7 @@ const lineItem = z.object({
 export const purchaseInvoiceSchema = z.object({
   supplierId: z.string().min(1, "Supplier is required"),
   locationId: z.string().min(1, "Location is required"),
+  warehouseLotId: z.string().trim().optional().nullable(),
   purchaseOrderId: z.string().optional().nullable(),
   date: z.coerce.date(),
   notes: z.string().trim().max(1000).optional().or(z.literal("")),

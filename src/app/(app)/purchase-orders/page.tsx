@@ -35,6 +35,7 @@ type PORow = {
   date: Date;
   status: PurchaseOrderStatus;
   notes: string | null;
+  financialYear?: { id: string; label: string; isActive?: boolean } | null;
   supplier: { id: string; name: string; phone: string | null };
   location: { id: string; name: string };
   items: Array<{
@@ -75,6 +76,7 @@ export default function PurchaseOrdersPage() {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   // Form
@@ -137,6 +139,10 @@ export default function PurchaseOrdersPage() {
   const filteredOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
     return orders.filter((order) => {
+      // Financial year filter
+      if (yearFilter === "CURRENT" && order.financialYear && order.financialYear.isActive === false) {
+        return false;
+      }
       const matchesQuery =
         !q ||
         order.orderNo.toLowerCase().includes(q) ||
@@ -145,7 +151,7 @@ export default function PurchaseOrdersPage() {
       const matchesStatus = statusFilter === "ALL" || order.status === statusFilter;
       return matchesQuery && matchesStatus;
     });
-  }, [orders, query, statusFilter]);
+  }, [orders, query, statusFilter, yearFilter]);
 
   const orderSubtotal = useMemo(
     () => items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0),
@@ -293,27 +299,55 @@ export default function PurchaseOrdersPage() {
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
+      <div className="flex flex-col sm:flex-row gap-2 items-center justify-between">
+        <div className="relative flex-1 w-full">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search by PO number, supplier, or location..."
-            className="pl-9 bg-white"
+            className="pl-9 bg-white text-xs h-9 w-full"
           />
         </div>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700"
-        >
-          <option value="ALL">All Statuses</option>
-          <option value="DRAFT">Draft</option>
-          <option value="SENT">Sent</option>
-          <option value="FULFILLED">Fulfilled</option>
-          <option value="CANCELLED">Cancelled</option>
-        </select>
+
+        <div className="flex items-center gap-2 self-end sm:self-auto text-xs shrink-0">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 h-8"
+          >
+            <option value="ALL">All Statuses</option>
+            <option value="DRAFT">Draft</option>
+            <option value="SENT">Sent</option>
+            <option value="FULFILLED">Fulfilled</option>
+            <option value="CANCELLED">Cancelled</option>
+          </select>
+
+          <div className="inline-flex rounded-md border border-slate-300 p-0.5 bg-slate-100">
+            <button
+              type="button"
+              onClick={() => setYearFilter("CURRENT")}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                yearFilter === "CURRENT"
+                  ? "bg-white text-sky-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Current Year
+            </button>
+            <button
+              type="button"
+              onClick={() => setYearFilter("ALL")}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                yearFilter === "ALL"
+                  ? "bg-white text-slate-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              All Years (Archive)
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* PO List */}
@@ -339,7 +373,14 @@ export default function PurchaseOrdersPage() {
                 <CardHeader className="pb-3 border-b border-slate-100">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <CardTitle className="text-base font-bold text-slate-900">{order.orderNo}</CardTitle>
+                      <div className="flex items-center gap-1.5">
+                        <CardTitle className="text-base font-bold text-slate-900">{order.orderNo}</CardTitle>
+                        {order.financialYear && (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">
+                            {order.financialYear.label}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs font-medium text-sky-900">{order.supplier.name}</p>
                     </div>
                     {getStatusBadge(order.status)}

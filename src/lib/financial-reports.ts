@@ -55,12 +55,10 @@ export async function calculateProfitLoss(params?: { startDate?: string; endDate
       accountType: AccountType.EXPENSE,
       ...(whereClause ? { date: whereClause.date } : {}),
     },
-    select: {
-      description: true,
-      referenceType: true,
-      debit: true,
-      credit: true,
+    include: {
+      party: { select: { id: true, name: true } },
     },
+    orderBy: { date: "desc" },
   });
 
   const expenseCategories = new Map<string, number>();
@@ -93,6 +91,59 @@ export async function calculateProfitLoss(params?: { startDate?: string; endDate
     amount,
   }));
 
+  const expenseItems = expenseEntries.map((e) => ({
+    id: e.id,
+    date: e.date.toISOString(),
+    partyId: e.partyId || null,
+    partyName: e.party?.name || null,
+    referenceType: e.referenceType,
+    referenceId: e.referenceId,
+    description: e.description || "Operating Expense",
+    amount: Number(e.debit) - Number(e.credit),
+  }));
+
+  // Detailed Sales & Purchases line items with Party ID and Transaction Reference ID
+  const [salesEntries, purchaseEntries] = await Promise.all([
+    prisma.ledgerEntry.findMany({
+      where: {
+        accountType: AccountType.SALES,
+        ...(whereClause ? { date: whereClause.date } : {}),
+      },
+      include: { party: { select: { id: true, name: true, type: true } } },
+      orderBy: { date: "desc" },
+    }),
+    prisma.ledgerEntry.findMany({
+      where: {
+        accountType: AccountType.PURCHASES,
+        ...(whereClause ? { date: whereClause.date } : {}),
+      },
+      include: { party: { select: { id: true, name: true, type: true } } },
+      orderBy: { date: "desc" },
+    }),
+  ]);
+
+  const salesBreakdown = salesEntries.map((e) => ({
+    id: e.id,
+    date: e.date.toISOString(),
+    partyId: e.partyId || "N/A",
+    partyName: e.party?.name || "Direct Cash Customer",
+    referenceType: e.referenceType,
+    referenceId: e.referenceId,
+    description: e.description || "Sale Invoice",
+    amount: Number(e.credit) - Number(e.debit),
+  }));
+
+  const purchasesBreakdown = purchaseEntries.map((e) => ({
+    id: e.id,
+    date: e.date.toISOString(),
+    partyId: e.partyId || "N/A",
+    partyName: e.party?.name || "Paper Mill / Supplier",
+    referenceType: e.referenceType,
+    referenceId: e.referenceId,
+    description: e.description || "Purchase Invoice",
+    amount: Number(e.debit) - Number(e.credit),
+  }));
+
   const netProfit = grossProfit - expenses;
   const netMarginPct = netSales > 0 ? (netProfit / netSales) * 100 : 0;
 
@@ -111,6 +162,9 @@ export async function calculateProfitLoss(params?: { startDate?: string; endDate
     grossMarginPct: Math.round(grossMarginPct * 100) / 100,
     netMarginPct: Math.round(netMarginPct * 100) / 100,
     expenseBreakdown,
+    expenseItems,
+    salesBreakdown,
+    purchasesBreakdown,
   };
 }
 
@@ -188,6 +242,102 @@ export async function calculateBalanceSheet(params?: { asOfDate?: string }) {
   const totalLiabilities = effectivePayables;
   const equity = totalAssets - totalLiabilities;
 
+  // Party-wise schedule for receivables and payables with Party ID & Transaction Reference ID
+  const partyEntries = await prisma.ledgerEntry.groupBy({
+    by: ["partyId"],
+    where: {
+      partyId: { not: null },
+      date: { lte: asOf },
+    },
+    _sum: { debit: true, credit: true },
+  });
+
+  const partyIds = partyEntries
+    .map((r) => r.partyId)
+    .filter((id): id is string => Boolean(id));
+
+  const [partiesList, latestEntries] = await Promise.all([
+    prisma.party.findMany({
+      where: { id: { in: partyIds } },
+      select: { id: true, name: true, type: true, phone: true },
+    }),
+    prisma.ledgerEntry.findMany({
+      where: {
+        partyId: { in: partyIds },
+        date: { lte: asOf },
+      },
+      orderBy: { date: "desc" },
+      distinct: ["partyId"],
+      select: {
+        partyId: true,
+        referenceType: true,
+        referenceId: true,
+        date: true,
+      },
+    }),
+  ]);
+
+  const partyMap = new Map(partiesList.map((p) => [p.id, p]));
+  const latestEntryMap = new Map(latestEntries.map((e) => [e.partyId!, e]));
+
+  const receivablesSchedule: Array<{
+    partyId: string;
+    partyName: string;
+    partyType: string;
+    phone: string | null;
+    balance: number;
+    referenceType: string;
+    referenceId: string;
+    asOfDate: string;
+  }> = [];
+
+  const payablesSchedule: Array<{
+    partyId: string;
+    partyName: string;
+    partyType: string;
+    phone: string | null;
+    balance: number;
+    referenceType: string;
+    referenceId: string;
+    asOfDate: string;
+  }> = [];
+
+  for (const row of partyEntries) {
+    if (!row.partyId) continue;
+    const debit = Number(row._sum.debit ?? 0);
+    const credit = Number(row._sum.credit ?? 0);
+    const net = debit - credit;
+    const p = partyMap.get(row.partyId);
+    const latest = latestEntryMap.get(row.partyId);
+
+    if (net > 0.001) {
+      receivablesSchedule.push({
+        partyId: row.partyId,
+        partyName: p?.name || "Customer",
+        partyType: p?.type || "CUSTOMER",
+        phone: p?.phone || null,
+        balance: net,
+        referenceType: latest?.referenceType || "INVOICE",
+        referenceId: latest?.referenceId || "—",
+        asOfDate: latest?.date ? latest.date.toISOString() : asOf.toISOString(),
+      });
+    } else if (net < -0.001) {
+      payablesSchedule.push({
+        partyId: row.partyId,
+        partyName: p?.name || "Supplier",
+        partyType: p?.type || "SUPPLIER",
+        phone: p?.phone || null,
+        balance: Math.abs(net),
+        referenceType: latest?.referenceType || "PURCHASE",
+        referenceId: latest?.referenceId || "—",
+        asOfDate: latest?.date ? latest.date.toISOString() : asOf.toISOString(),
+      });
+    }
+  }
+
+  receivablesSchedule.sort((a, b) => b.balance - a.balance);
+  payablesSchedule.sort((a, b) => b.balance - a.balance);
+
   return {
     asOf: asOf.toISOString(),
     assets: {
@@ -208,6 +358,8 @@ export async function calculateBalanceSheet(params?: { asOfDate?: string }) {
     equity,
     isBalanced: true,
     totalLiabilitiesAndEquity: totalLiabilities + equity,
+    receivablesSchedule,
+    payablesSchedule,
   };
 }
 
@@ -243,6 +395,9 @@ export async function calculateCashFlow(params?: { startDate?: string; endDate?:
       accountType: AccountType.CASH,
       ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
     },
+    include: {
+      party: { select: { id: true, name: true } },
+    },
     orderBy: { date: "asc" },
   });
 
@@ -260,6 +415,8 @@ export async function calculateCashFlow(params?: { startDate?: string; endDate?:
     return {
       id: entry.id,
       date: entry.date.toISOString(),
+      partyId: entry.partyId || null,
+      partyName: entry.party?.name || null,
       description: entry.description,
       referenceType: entry.referenceType,
       referenceId: entry.referenceId,
@@ -309,6 +466,7 @@ export async function calculatePartyStatement(params: {
 
   // 1. Calculate Opening Balance before startDate
   let openingBalance = 0;
+  let openingBalanceSourceYear: string | null = null;
   if (params.startDate) {
     const priorEntries = await prisma.ledgerEntry.aggregate({
       where: {
@@ -318,6 +476,19 @@ export async function calculatePartyStatement(params: {
       _sum: { debit: true, credit: true },
     });
     openingBalance = Number(priorEntries._sum.debit ?? 0) - Number(priorEntries._sum.credit ?? 0);
+
+    const latestOpening = await prisma.ledgerEntry.findFirst({
+      where: {
+        partyId: params.partyId,
+        referenceType: "OPENING_BALANCE",
+        date: { lt: new Date(params.startDate) },
+      },
+      include: { sourceFinancialYear: { select: { label: true } } },
+      orderBy: { date: "desc" },
+    });
+    if (latestOpening?.sourceFinancialYear) {
+      openingBalanceSourceYear = latestOpening.sourceFinancialYear.label;
+    }
   }
 
   // 2. Query period ledger entries
@@ -326,8 +497,43 @@ export async function calculatePartyStatement(params: {
       partyId: params.partyId,
       ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
     },
+    include: {
+      sourceFinancialYear: { select: { id: true, label: true } },
+    },
     orderBy: { date: "asc" },
   });
+
+  // Resolve human-readable document references for transaction cross-referencing
+  const saleInvoiceIds = entries.filter((e) => e.referenceType === "SALE_INVOICE").map((e) => e.referenceId);
+  const purchaseInvoiceIds = entries.filter((e) => e.referenceType === "PURCHASE_INVOICE").map((e) => e.referenceId);
+  const paymentIds = entries.filter((e) => e.referenceType === "PAYMENT").map((e) => e.referenceId);
+  const saleReturnIds = entries.filter((e) => e.referenceType === "SALE_RETURN").map((e) => e.referenceId);
+  const purchaseReturnIds = entries.filter((e) => e.referenceType === "PURCHASE_RETURN").map((e) => e.referenceId);
+
+  const [saleInvoices, purchaseInvoices, paymentsList, saleReturns, purchaseReturns] = await Promise.all([
+    saleInvoiceIds.length > 0
+      ? prisma.saleInvoice.findMany({ where: { id: { in: saleInvoiceIds } }, select: { id: true, invoiceNo: true } })
+      : [],
+    purchaseInvoiceIds.length > 0
+      ? prisma.purchaseInvoice.findMany({ where: { id: { in: purchaseInvoiceIds } }, select: { id: true, invoiceNo: true } })
+      : [],
+    paymentIds.length > 0
+      ? prisma.payment.findMany({ where: { id: { in: paymentIds } }, select: { id: true, receiptNo: true } })
+      : [],
+    saleReturnIds.length > 0
+      ? prisma.saleReturn.findMany({ where: { id: { in: saleReturnIds } }, select: { id: true, returnNo: true } })
+      : [],
+    purchaseReturnIds.length > 0
+      ? prisma.purchaseReturn.findMany({ where: { id: { in: purchaseReturnIds } }, select: { id: true, returnNo: true } })
+      : [],
+  ]);
+
+  const docNoMap = new Map<string, string>();
+  for (const item of saleInvoices) docNoMap.set(item.id, item.invoiceNo);
+  for (const item of purchaseInvoices) docNoMap.set(item.id, item.invoiceNo);
+  for (const item of paymentsList) docNoMap.set(item.id, item.receiptNo || `RCT-${item.id.slice(0, 8)}`);
+  for (const item of saleReturns) docNoMap.set(item.id, item.returnNo);
+  for (const item of purchaseReturns) docNoMap.set(item.id, item.returnNo);
 
   let totalPeriodDebits = 0;
   let totalPeriodCredits = 0;
@@ -343,9 +549,13 @@ export async function calculatePartyStatement(params: {
     return {
       id: entry.id,
       date: entry.date,
+      partyId: party.id,
+      partyName: party.name,
       description: entry.description,
       referenceType: entry.referenceType,
       referenceId: entry.referenceId,
+      referenceDocNo: docNoMap.get(entry.referenceId) || null,
+      sourceFinancialYear: entry.sourceFinancialYear?.label || null,
       debit,
       credit,
       runningBalance,
@@ -425,6 +635,7 @@ export async function calculatePartyStatement(params: {
       creditLimit: party.creditLimit ? Number(party.creditLimit) : null,
     },
     openingBalance,
+    openingBalanceSourceYear,
     totalPeriodDebits,
     totalPeriodCredits,
     closingBalance,

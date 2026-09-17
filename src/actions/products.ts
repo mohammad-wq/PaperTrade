@@ -16,14 +16,22 @@ const deleteProductSchema = z.object({ id: z.string().min(1, "Product is require
 export async function listProductsAction() {
   return runAction("products.list", async () => {
     await requireSession();
-    const products = await prisma.product.findMany({
-      where: { deletedAt: null },
-      orderBy: [{ isActive: "desc" }, { createdAt: "desc" }],
-      include: {
-        category: { select: { id: true, name: true } },
-        quality: { select: { id: true, name: true } },
-      },
-    });
+    const [products, stockSums] = await Promise.all([
+      prisma.product.findMany({
+        where: { deletedAt: null },
+        orderBy: [{ isActive: "desc" }, { createdAt: "desc" }],
+        include: {
+          category: { select: { id: true, name: true } },
+          quality: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.stockMovement.groupBy({
+        by: ["productId"],
+        _sum: { quantity: true },
+      }),
+    ]);
+
+    const stockMap = new Map(stockSums.map((s) => [s.productId, Number(s._sum.quantity || 0)]));
 
     return products.map((product) => ({
       ...product,
@@ -37,6 +45,7 @@ export async function listProductsAction() {
       wholesalePrice: Number(product.wholesalePrice),
       labourCharges: Number(product.labourCharges),
       reorderLevel: product.reorderLevel ? Number(product.reorderLevel) : null,
+      currentStock: stockMap.get(product.id) ?? 0,
     }));
   });
 }

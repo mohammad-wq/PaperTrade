@@ -9,7 +9,14 @@ import {
   calculateCashFlow,
   calculatePartyStatement,
 } from "@/lib/financial-reports";
-import { ProfitLossPdfView, CashFlowPdfView, BalanceSheetPdfView, PartyStatementPdfView } from "@/pdf/reports";
+import {
+  ProfitLossPdfView,
+  CashFlowPdfView,
+  BalanceSheetPdfView,
+  PartyStatementPdfView,
+  GeneralLedgerPdfView,
+} from "@/pdf/reports";
+import { prisma } from "@/lib/db";
 import { format } from "date-fns";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
@@ -73,6 +80,25 @@ export async function GET(
         grossProfit: data.grossProfit,
         expenses: data.expenses,
         netProfit: data.netProfit,
+        grossSales: data.grossSales,
+        salesReturns: data.salesReturns,
+        grossPurchases: data.grossPurchases,
+        purchaseReturns: data.purchaseReturns,
+        grossMarginPct: data.grossMarginPct,
+        netMarginPct: data.netMarginPct,
+        expenseBreakdown: data.expenseBreakdown,
+        expenseItems: data.expenseItems?.map((e) => ({
+          ...e,
+          date: safeFormatDate(e.date) || "—",
+        })),
+        salesBreakdown: data.salesBreakdown?.map((s) => ({
+          ...s,
+          date: safeFormatDate(s.date) || "—",
+        })),
+        purchasesBreakdown: data.purchasesBreakdown?.map((p) => ({
+          ...p,
+          date: safeFormatDate(p.date) || "—",
+        })),
       });
     } else if (reportType === "cash-flow") {
       const data = await calculateCashFlow({ startDate, endDate });
@@ -108,6 +134,8 @@ export async function GET(
         assets: data.assets,
         liabilities: data.liabilities,
         equity: data.equity,
+        receivablesSchedule: data.receivablesSchedule,
+        payablesSchedule: data.payablesSchedule,
       });
     } else if (reportType === "party-statement") {
       if (!partyId) {
@@ -126,11 +154,67 @@ export async function GET(
         party: data.party,
         currentBalance: data.currentBalance,
         openingBalance: data.openingBalance,
+        openingBalanceSourceYear: (data as any).openingBalanceSourceYear,
         startDate: safeFormatDate(startDate),
         endDate: safeFormatDate(endDate),
         ledgerRows: data.ledgerRows.map((r) => ({
           ...r,
           date: safeFormatDate(r.date) || "—",
+        })),
+      });
+    } else if (reportType === "general-ledger") {
+      const accountType = searchParams.get("accountType") || undefined;
+      const dateFilter: Record<string, Date> = {};
+      if (startDate) dateFilter.gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        dateFilter.lte = end;
+      }
+
+      const entries = await prisma.ledgerEntry.findMany({
+        where: {
+          ...(partyId && partyId !== "ALL" ? { partyId } : {}),
+          ...(accountType && accountType !== "ALL" ? { accountType: accountType as any } : {}),
+          ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
+        },
+        include: {
+          party: { select: { id: true, name: true } },
+        },
+        orderBy: { date: "asc" },
+      });
+
+      const totalDebit = entries.reduce((s, e) => s + Number(e.debit), 0);
+      const totalCredit = entries.reduce((s, e) => s + Number(e.credit), 0);
+
+      const period = startDate && endDate
+        ? `${startDate} to ${endDate}`
+        : startDate
+        ? `From ${startDate}`
+        : endDate
+        ? `Up to ${endDate}`
+        : "All Time";
+
+      const filters = [
+        accountType && accountType !== "ALL" ? `Account: ${accountType}` : null,
+        partyId && partyId !== "ALL" ? `Party ID: ${partyId}` : null,
+      ].filter(Boolean).join(" | ") || "None";
+
+      filename = `General-Ledger-${startDate || "all"}-to-${endDate || "present"}.pdf`;
+      docElement = React.createElement(GeneralLedgerPdfView, {
+        period,
+        filterInfo: filters,
+        totalDebit,
+        totalCredit,
+        entries: entries.map((e) => ({
+          date: safeFormatDate(e.date) || "",
+          accountType: e.accountType,
+          partyName: e.party ? `${e.party.name} (${e.party.id.slice(-6)})` : "—",
+          referenceType: e.referenceType,
+          referenceId: e.referenceId,
+          description: e.description,
+          debit: Number(e.debit),
+          credit: Number(e.credit),
         })),
       });
     }

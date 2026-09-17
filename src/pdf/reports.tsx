@@ -4,147 +4,219 @@ import { Document, Page, Text, View, StyleSheet, Font } from "@react-pdf/rendere
 // Prevent hyphenation crashes and prevent words/numbers from breaking across lines
 Font.registerHyphenationCallback((word) => [word]);
 
+const formatMoney = (val?: number | null) => {
+  if (typeof val !== "number" || isNaN(val)) return "0.00";
+  return val.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
 const styles = StyleSheet.create({
   page: {
-    padding: 36,
-    fontSize: 9,
+    paddingTop: 36,
+    paddingBottom: 44,
+    paddingHorizontal: 36,
+    fontSize: 8.5,
     fontFamily: "Helvetica",
-    color: "#1e293b",
-    lineHeight: 1.4,
+    color: "#111827",
+    lineHeight: 1.35,
   },
+  pageLandscape: {
+    paddingTop: 32,
+    paddingBottom: 40,
+    paddingHorizontal: 32,
+    fontSize: 8,
+    fontFamily: "Helvetica",
+    color: "#111827",
+    lineHeight: 1.3,
+  },
+  // Top Header Block
   headerRow: {
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "flex-start",
     borderBottomWidth: 1.5,
-    borderBottomColor: "#065f46",
-    paddingBottom: 12,
-    marginBottom: 16,
+    borderBottomColor: "#000000",
+    paddingBottom: 10,
+    marginBottom: 12,
+  },
+  brandBox: {
+    width: "55%",
   },
   brandName: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#065f46",
-    letterSpacing: 0.5,
+    fontSize: 18,
+    fontFamily: "Times-Bold",
+    color: "#000000",
+    letterSpacing: 0.3,
+    marginBottom: 3,
   },
   brandMeta: {
     fontSize: 8,
-    color: "#64748b",
-    marginTop: 2,
+    fontFamily: "Helvetica",
+    color: "#374151",
+    marginTop: 1,
+    lineHeight: 1.35,
   },
   reportTitleBox: {
+    width: "45%",
     alignItems: "flex-end",
   },
   reportTitle: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#0f172a",
+    fontSize: 15,
+    fontFamily: "Times-Bold",
+    color: "#000000",
     textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginBottom: 3,
   },
   reportSubtitle: {
-    fontSize: 8.5,
-    color: "#047857",
-    marginTop: 2,
-    fontWeight: "bold",
+    fontSize: 9,
+    fontFamily: "Helvetica-Bold",
+    color: "#1f2937",
+    marginTop: 1,
   },
   filterBadge: {
     fontSize: 8,
-    color: "#64748b",
+    fontFamily: "Helvetica",
+    color: "#4b5563",
     marginTop: 2,
   },
+  // KPI Summary Bar
   summaryGrid: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 16,
-    gap: 8,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#000000",
   },
   kpiCard: {
     flex: 1,
-    padding: 8,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    backgroundColor: "#f8fafc",
+    padding: 6,
+    borderRightWidth: 1,
+    borderRightColor: "#000000",
+    backgroundColor: "#ffffff",
+  },
+  kpiCardLast: {
+    flex: 1,
+    padding: 6,
+    backgroundColor: "#f9fafb",
   },
   kpiLabel: {
-    fontSize: 7.5,
-    fontWeight: "bold",
-    color: "#64748b",
+    fontSize: 7,
+    fontFamily: "Helvetica-Bold",
+    color: "#374151",
     textTransform: "uppercase",
+    letterSpacing: 0.3,
   },
   kpiValue: {
-    fontSize: 12,
-    fontWeight: "bold",
-    color: "#0f172a",
-    marginTop: 3,
+    fontSize: 10.5,
+    fontFamily: "Helvetica-Bold",
+    color: "#000000",
+    marginTop: 2,
   },
+  // Section Headings
+  sectionHeadingBox: {
+    marginTop: 10,
+    marginBottom: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: "#374151",
+    paddingBottom: 2,
+  },
+  sectionTitle: {
+    fontSize: 10,
+    fontFamily: "Times-Bold",
+    color: "#000000",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  // Itemized Tables
   table: {
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    borderRadius: 4,
+    marginBottom: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#000000",
+    borderBottomWidth: 1,
+    borderBottomColor: "#000000",
   },
   tableHeader: {
     flexDirection: "row",
-    backgroundColor: "#f1f5f9",
+    backgroundColor: "#f3f4f6",
     borderBottomWidth: 1,
-    borderBottomColor: "#cbd5e1",
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    borderBottomColor: "#000000",
+    paddingVertical: 4.5,
+    paddingHorizontal: 4,
   },
   tableRow: {
     flexDirection: "row",
-    borderBottomWidth: 1,
-    borderBottomColor: "#f1f5f9",
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    borderBottomWidth: 0.5,
+    borderBottomColor: "#e5e7eb",
+    paddingVertical: 4,
+    paddingHorizontal: 4,
   },
   tableRowAlternate: {
     flexDirection: "row",
-    borderBottomWidth: 1,
-    borderBottomColor: "#f1f5f9",
+    borderBottomWidth: 0.5,
+    borderBottomColor: "#e5e7eb",
     backgroundColor: "#fafafa",
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
   },
-  tableRowHighlight: {
+  tableRowTotal: {
     flexDirection: "row",
     borderTopWidth: 1,
-    borderTopColor: "#cbd5e1",
-    backgroundColor: "#ecfdf5",
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    borderTopColor: "#000000",
+    borderBottomWidth: 2,
+    borderBottomColor: "#000000",
+    backgroundColor: "#f9fafb",
+    paddingVertical: 4.5,
+    paddingHorizontal: 4,
+  },
+  tableRowSubtotal: {
+    flexDirection: "row",
+    borderTopWidth: 0.75,
+    borderTopColor: "#374151",
+    borderBottomWidth: 0.75,
+    borderBottomColor: "#374151",
+    backgroundColor: "#f9fafb",
+    paddingVertical: 4,
+    paddingHorizontal: 4,
   },
   headerCell: {
-    fontSize: 8,
-    fontWeight: "bold",
-    color: "#334155",
+    fontSize: 7.5,
+    fontFamily: "Helvetica-Bold",
+    color: "#000000",
     textTransform: "uppercase",
+    letterSpacing: 0.3,
   },
   cell: {
-    fontSize: 8.5,
-    color: "#1e293b",
+    fontSize: 8,
+    fontFamily: "Helvetica",
+    color: "#111827",
   },
   cellBold: {
-    fontSize: 8.5,
-    fontWeight: "bold",
-    color: "#0f172a",
+    fontSize: 8,
+    fontFamily: "Helvetica-Bold",
+    color: "#000000",
+  },
+  cellMono: {
+    fontSize: 7.5,
+    fontFamily: "Helvetica",
+    color: "#374151",
   },
   footer: {
     position: "absolute",
-    bottom: 24,
+    bottom: 20,
     left: 36,
     right: 36,
-    borderTopWidth: 1,
-    borderTopColor: "#f1f5f9",
-    paddingTop: 8,
+    borderTopWidth: 0.75,
+    borderTopColor: "#9ca3af",
+    paddingTop: 5,
     flexDirection: "row",
     justifyContent: "space-between",
     fontSize: 7.5,
-    color: "#94a3b8",
+    fontFamily: "Helvetica",
+    color: "#6b7280",
   },
 });
 
-// P&L Statement PDF
+// 1. Income Statement (Profit & Loss) PDF
 export function ProfitLossPdfView({
   companyName = "PAPER TRADE CO.",
   companyAddress = "Wholesale Paper Market, Station Road",
@@ -155,6 +227,16 @@ export function ProfitLossPdfView({
   grossProfit,
   expenses,
   netProfit,
+  grossSales,
+  salesReturns,
+  grossPurchases,
+  purchaseReturns,
+  grossMarginPct,
+  netMarginPct,
+  expenseBreakdown,
+  expenseItems,
+  salesBreakdown,
+  purchasesBreakdown,
 }: {
   companyName?: string;
   companyAddress?: string;
@@ -165,12 +247,47 @@ export function ProfitLossPdfView({
   grossProfit: number;
   expenses: number;
   netProfit: number;
+  grossSales?: number;
+  salesReturns?: number;
+  grossPurchases?: number;
+  purchaseReturns?: number;
+  grossMarginPct?: number;
+  netMarginPct?: number;
+  expenseBreakdown?: Array<{ name: string; amount: number }>;
+  expenseItems?: Array<{
+    date: string;
+    partyId: string | null;
+    partyName: string | null;
+    referenceType: string;
+    referenceId: string;
+    description: string;
+    amount: number;
+  }>;
+  salesBreakdown?: Array<{
+    date: string;
+    partyId: string;
+    partyName: string;
+    referenceType: string;
+    referenceId: string;
+    description: string;
+    amount: number;
+  }>;
+  purchasesBreakdown?: Array<{
+    date: string;
+    partyId: string;
+    partyName: string;
+    referenceType: string;
+    referenceId: string;
+    description: string;
+    amount: number;
+  }>;
 }) {
   return (
     <Document>
       <Page size="A4" style={styles.page}>
+        {/* Header Block */}
         <View style={styles.headerRow}>
-          <View>
+          <View style={styles.brandBox}>
             <Text style={styles.brandName}>{companyName}</Text>
             <Text style={styles.brandMeta}>{companyAddress}</Text>
             <Text style={styles.brandMeta}>Phone: {companyPhone}</Text>
@@ -182,63 +299,195 @@ export function ProfitLossPdfView({
           </View>
         </View>
 
-        {/* Executive KPI Cards */}
+        {/* Executive KPI Summary Bar */}
         <View style={styles.summaryGrid}>
           <View style={styles.kpiCard}>
             <Text style={styles.kpiLabel}>Trading Revenue</Text>
-            <Text style={styles.kpiValue}>PKR {sales.toLocaleString()}</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(sales)}</Text>
           </View>
           <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>Cost of Goods (Purchases)</Text>
-            <Text style={styles.kpiValue}>PKR {purchases.toLocaleString()}</Text>
+            <Text style={styles.kpiLabel}>Cost of Goods (COGS)</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(purchases)}</Text>
           </View>
           <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>Gross Margin</Text>
-            <Text style={[styles.kpiValue, { color: "#065f46" }]}>PKR {grossProfit.toLocaleString()}</Text>
+            <Text style={styles.kpiLabel}>Gross Profit Margin</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(grossProfit)}</Text>
           </View>
-          <View style={[styles.kpiCard, { backgroundColor: netProfit >= 0 ? "#ecfdf5" : "#fff1f2", borderColor: netProfit >= 0 ? "#a7f3d0" : "#fecdd3" }]}>
-            <Text style={[styles.kpiLabel, { color: netProfit >= 0 ? "#065f46" : "#9f1239" }]}>Net Income</Text>
-            <Text style={[styles.kpiValue, { color: netProfit >= 0 ? "#064e3b" : "#881337" }]}>PKR {netProfit.toLocaleString()}</Text>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Operating Expenses</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(expenses)}</Text>
+          </View>
+          <View style={styles.kpiCardLast}>
+            <Text style={styles.kpiLabel}>{netProfit >= 0 ? "Net Profit" : "Net Loss"}</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(netProfit)}</Text>
           </View>
         </View>
 
-        {/* Detailed Breakdown Table */}
+        {/* Statement Summary Table */}
         <View style={styles.table}>
           <View style={styles.tableHeader}>
-            <Text style={[{ width: "70%" }, styles.headerCell]}>Accounting Line Item</Text>
+            <Text style={[{ width: "70%" }, styles.headerCell]}>Accounting Particulars</Text>
             <Text style={[{ width: "30%", textAlign: "right" }, styles.headerCell]}>Amount (PKR)</Text>
           </View>
 
+          {/* Revenue */}
           <View style={styles.tableRow}>
-            <Text style={[{ width: "70%" }, styles.cellBold]}>Gross Trading Sales</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{sales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-
-          <View style={styles.tableRowAlternate}>
-            <Text style={[{ width: "70%", paddingLeft: 12 }, styles.cell]}>Less: Purchases & Mill Stock Cost</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>({purchases.toLocaleString(undefined, { minimumFractionDigits: 2 })})</Text>
-          </View>
-
-          <View style={[styles.tableRow, { backgroundColor: "#f8fafc" }]}>
-            <Text style={[{ width: "70%" }, styles.cellBold]}>Gross Trading Margin</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{grossProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-
-          <View style={styles.tableRowAlternate}>
-            <Text style={[{ width: "70%", paddingLeft: 12 }, styles.cell]}>Less: Operating & Warehouse Storage Expenses</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>({expenses.toLocaleString(undefined, { minimumFractionDigits: 2 })})</Text>
-          </View>
-
-          <View style={styles.tableRowHighlight}>
-            <Text style={[{ width: "70%" }, styles.cellBold]}>Net Profit / Operating Income</Text>
-            <Text style={[{ width: "30%", textAlign: "right", color: netProfit >= 0 ? "#065f46" : "#be123c" }, styles.cellBold]}>
-              {netProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            <Text style={[{ width: "70%" }, styles.cellBold]}>1. Trading Sales Revenue</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>
+              {formatMoney(grossSales ?? sales)}
             </Text>
+          </View>
+          {salesReturns !== undefined && salesReturns > 0 ? (
+            <View style={styles.tableRowAlternate}>
+              <Text style={[{ width: "70%", paddingLeft: 10 }, styles.cell]}>
+                Less: Sales Returns & Credit Allowances
+              </Text>
+              <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>
+                ({formatMoney(salesReturns)})
+              </Text>
+            </View>
+          ) : null}
+          <View style={styles.tableRowSubtotal}>
+            <Text style={[{ width: "70%", paddingLeft: 10 }, styles.cellBold]}>Net Operating Sales</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{formatMoney(sales)}</Text>
+          </View>
+
+          {/* Cost of Goods */}
+          <View style={styles.tableRow}>
+            <Text style={[{ width: "70%" }, styles.cellBold]}>2. Cost of Goods Sold (Purchases)</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>
+              ({formatMoney(grossPurchases ?? purchases)})
+            </Text>
+          </View>
+          {purchaseReturns !== undefined && purchaseReturns > 0 ? (
+            <View style={styles.tableRowAlternate}>
+              <Text style={[{ width: "70%", paddingLeft: 10 }, styles.cell]}>
+                Less: Purchase Returns & Mill Debit Notes
+              </Text>
+              <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>
+                + {formatMoney(purchaseReturns)}
+              </Text>
+            </View>
+          ) : null}
+          <View style={styles.tableRowSubtotal}>
+            <Text style={[{ width: "70%", paddingLeft: 10 }, styles.cellBold]}>Net Cost of Goods Sold (COGS)</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>({formatMoney(purchases)})</Text>
+          </View>
+
+          {/* Gross Margin */}
+          <View style={[styles.tableRow, { backgroundColor: "#f9fafb" }]}>
+            <Text style={[{ width: "70%" }, styles.cellBold]}>
+              GROSS TRADING PROFIT {grossMarginPct !== undefined ? `(${grossMarginPct.toFixed(1)}% Margin)` : ""}
+            </Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{formatMoney(grossProfit)}</Text>
+          </View>
+
+          {/* Operating Expenses */}
+          <View style={styles.tableRow}>
+            <Text style={[{ width: "70%" }, styles.cellBold]}>3. Operating & Storage Expenses</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>({formatMoney(expenses)})</Text>
+          </View>
+          {expenseBreakdown && expenseBreakdown.length > 0
+            ? expenseBreakdown.map((exp, idx) => (
+                <View key={idx} style={styles.tableRowAlternate}>
+                  <Text style={[{ width: "70%", paddingLeft: 10 }, styles.cell]}>Less: {exp.name}</Text>
+                  <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>({formatMoney(exp.amount)})</Text>
+                </View>
+              ))
+            : null}
+
+          {/* Net Profit */}
+          <View style={styles.tableRowTotal}>
+            <Text style={[{ width: "70%" }, styles.cellBold]}>
+              NET OPERATING {netProfit >= 0 ? "PROFIT" : "LOSS"} {netMarginPct !== undefined ? `(${netMarginPct.toFixed(1)}% Net Margin)` : ""}
+            </Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{formatMoney(netProfit)}</Text>
           </View>
         </View>
 
+        {/* Sales Breakdown Schedule */}
+        {salesBreakdown && salesBreakdown.length > 0 && (
+          <View wrap={false}>
+            <View style={styles.sectionHeadingBox}>
+              <Text style={styles.sectionTitle}>Sales Audit Schedule (Party ID & Transaction References)</Text>
+            </View>
+            <View style={styles.table}>
+              <View style={styles.tableHeader}>
+                <Text style={[{ width: "12%" }, styles.headerCell]}>Date</Text>
+                <Text style={[{ width: "16%" }, styles.headerCell]}>Party ID</Text>
+                <Text style={[{ width: "26%" }, styles.headerCell]}>Customer Name</Text>
+                <Text style={[{ width: "22%" }, styles.headerCell]}>Ref (Type & ID)</Text>
+                <Text style={[{ width: "24%", textAlign: "right" }, styles.headerCell]}>Amount (PKR)</Text>
+              </View>
+              {salesBreakdown.slice(0, 25).map((row, idx) => (
+                <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
+                  <Text style={[{ width: "12%" }, styles.cell]}>{row.date}</Text>
+                  <Text style={[{ width: "16%" }, styles.cellMono]}>{row.partyId}</Text>
+                  <Text style={[{ width: "26%" }, styles.cellBold]}>{row.partyName}</Text>
+                  <Text style={[{ width: "22%" }, styles.cellMono]}>{row.referenceType}: {row.referenceId}</Text>
+                  <Text style={[{ width: "24%", textAlign: "right" }, styles.cellBold]}>{formatMoney(row.amount)}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Purchases Breakdown Schedule */}
+        {purchasesBreakdown && purchasesBreakdown.length > 0 && (
+          <View wrap={false}>
+            <View style={styles.sectionHeadingBox}>
+              <Text style={styles.sectionTitle}>Purchases Audit Schedule (Party ID & Transaction References)</Text>
+            </View>
+            <View style={styles.table}>
+              <View style={styles.tableHeader}>
+                <Text style={[{ width: "12%" }, styles.headerCell]}>Date</Text>
+                <Text style={[{ width: "16%" }, styles.headerCell]}>Party ID</Text>
+                <Text style={[{ width: "26%" }, styles.headerCell]}>Supplier / Mill</Text>
+                <Text style={[{ width: "22%" }, styles.headerCell]}>Ref (Type & ID)</Text>
+                <Text style={[{ width: "24%", textAlign: "right" }, styles.headerCell]}>Amount (PKR)</Text>
+              </View>
+              {purchasesBreakdown.slice(0, 25).map((row, idx) => (
+                <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
+                  <Text style={[{ width: "12%" }, styles.cell]}>{row.date}</Text>
+                  <Text style={[{ width: "16%" }, styles.cellMono]}>{row.partyId}</Text>
+                  <Text style={[{ width: "26%" }, styles.cellBold]}>{row.partyName}</Text>
+                  <Text style={[{ width: "22%" }, styles.cellMono]}>{row.referenceType}: {row.referenceId}</Text>
+                  <Text style={[{ width: "24%", textAlign: "right" }, styles.cellBold]}>{formatMoney(row.amount)}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Operating Expenses Schedule */}
+        {expenseItems && expenseItems.length > 0 && (
+          <View wrap={false}>
+            <View style={styles.sectionHeadingBox}>
+              <Text style={styles.sectionTitle}>Operating Expenses Audit Schedule</Text>
+            </View>
+            <View style={styles.table}>
+              <View style={styles.tableHeader}>
+                <Text style={[{ width: "12%" }, styles.headerCell]}>Date</Text>
+                <Text style={[{ width: "16%" }, styles.headerCell]}>Party ID</Text>
+                <Text style={[{ width: "26%" }, styles.headerCell]}>Payee / Party</Text>
+                <Text style={[{ width: "22%" }, styles.headerCell]}>Ref & Description</Text>
+                <Text style={[{ width: "24%", textAlign: "right" }, styles.headerCell]}>Amount (PKR)</Text>
+              </View>
+              {expenseItems.slice(0, 25).map((row, idx) => (
+                <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
+                  <Text style={[{ width: "12%" }, styles.cell]}>{row.date}</Text>
+                  <Text style={[{ width: "16%" }, styles.cellMono]}>{row.partyId || "—"}</Text>
+                  <Text style={[{ width: "26%" }, styles.cellBold]}>{row.partyName || "Internal Expense"}</Text>
+                  <Text style={[{ width: "22%" }, styles.cellMono]}>{row.description}</Text>
+                  <Text style={[{ width: "24%", textAlign: "right" }, styles.cellBold]}>{formatMoney(row.amount)}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
         <View style={styles.footer} fixed>
-          <Text>{companyName} — Certified Financial Report</Text>
+          <Text>{companyName} — Certified Financial Statement</Text>
           <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>
       </Page>
@@ -246,7 +495,199 @@ export function ProfitLossPdfView({
   );
 }
 
-// Cash Flow Statement PDF
+// 2. Balance Sheet (Statement of Financial Position) PDF
+export function BalanceSheetPdfView({
+  companyName = "PAPER TRADE CO.",
+  companyAddress = "Wholesale Paper Market, Station Road",
+  companyPhone = "+92-300-1234567",
+  asOfDate,
+  assets,
+  liabilities,
+  equity,
+  receivablesSchedule = [],
+  payablesSchedule = [],
+}: {
+  companyName?: string;
+  companyAddress?: string;
+  companyPhone?: string;
+  asOfDate: string;
+  assets: {
+    cash: number;
+    receivables: number;
+    inventory: number;
+    totalAssets: number;
+  };
+  liabilities: {
+    payables: number;
+    totalLiabilities: number;
+  };
+  equity: number;
+  receivablesSchedule?: Array<{
+    partyId: string;
+    partyName: string;
+    phone: string | null;
+    balance: number;
+    referenceType: string;
+    referenceId: string;
+  }>;
+  payablesSchedule?: Array<{
+    partyId: string;
+    partyName: string;
+    phone: string | null;
+    balance: number;
+    referenceType: string;
+    referenceId: string;
+  }>;
+}) {
+  return (
+    <Document>
+      <Page size="A4" style={styles.page}>
+        {/* Header Block */}
+        <View style={styles.headerRow}>
+          <View style={styles.brandBox}>
+            <Text style={styles.brandName}>{companyName}</Text>
+            <Text style={styles.brandMeta}>{companyAddress}</Text>
+            <Text style={styles.brandMeta}>Phone: {companyPhone}</Text>
+          </View>
+          <View style={styles.reportTitleBox}>
+            <Text style={styles.reportTitle}>Balance Sheet</Text>
+            <Text style={styles.reportSubtitle}>Statement of Financial Position</Text>
+            <Text style={styles.filterBadge}>As of: {asOfDate}</Text>
+          </View>
+        </View>
+
+        {/* Top Summary Bar */}
+        <View style={styles.summaryGrid}>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Total Current Assets</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(assets.totalAssets)}</Text>
+          </View>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Total Liabilities</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(liabilities.totalLiabilities)}</Text>
+          </View>
+          <View style={styles.kpiCardLast}>
+            <Text style={styles.kpiLabel}>Owner&apos;s Equity & Net Worth</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(equity)}</Text>
+          </View>
+        </View>
+
+        {/* Assets Section */}
+        <View style={styles.sectionHeadingBox}>
+          <Text style={styles.sectionTitle}>1. Current Assets</Text>
+        </View>
+        <View style={styles.table}>
+          <View style={styles.tableHeader}>
+            <Text style={[{ width: "70%" }, styles.headerCell]}>Asset Category</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.headerCell]}>Valuation (PKR)</Text>
+          </View>
+          <View style={styles.tableRow}>
+            <Text style={[{ width: "70%" }, styles.cell]}>Cash in Hand & Bank Balances (Liquid Funds)</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>{formatMoney(assets.cash)}</Text>
+          </View>
+          <View style={styles.tableRowAlternate}>
+            <Text style={[{ width: "70%" }, styles.cell]}>Accounts Receivable (Customer Outstandings)</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>{formatMoney(assets.receivables)}</Text>
+          </View>
+          <View style={styles.tableRow}>
+            <Text style={[{ width: "70%" }, styles.cell]}>Physical Paper Inventory (At Cost Valuation)</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>{formatMoney(assets.inventory)}</Text>
+          </View>
+          <View style={styles.tableRowTotal}>
+            <Text style={[{ width: "70%" }, styles.cellBold]}>TOTAL CURRENT ASSETS</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{formatMoney(assets.totalAssets)}</Text>
+          </View>
+        </View>
+
+        {/* Liabilities & Equity Section */}
+        <View style={styles.sectionHeadingBox}>
+          <Text style={styles.sectionTitle}>2. Liabilities & Equity</Text>
+        </View>
+        <View style={styles.table}>
+          <View style={styles.tableHeader}>
+            <Text style={[{ width: "70%" }, styles.headerCell]}>Liabilities & Capital</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.headerCell]}>Amount (PKR)</Text>
+          </View>
+          <View style={styles.tableRow}>
+            <Text style={[{ width: "70%" }, styles.cell]}>Accounts Payable (Paper Mills / Trade Suppliers)</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>{formatMoney(liabilities.payables)}</Text>
+          </View>
+          <View style={styles.tableRowSubtotal}>
+            <Text style={[{ width: "70%" }, styles.cellBold]}>TOTAL CURRENT LIABILITIES</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{formatMoney(liabilities.totalLiabilities)}</Text>
+          </View>
+          <View style={styles.tableRowAlternate}>
+            <Text style={[{ width: "70%" }, styles.cell]}>Owner&apos;s Capital & Cumulative Retained Earnings</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>{formatMoney(equity)}</Text>
+          </View>
+          <View style={styles.tableRowTotal}>
+            <Text style={[{ width: "70%" }, styles.cellBold]}>TOTAL LIABILITIES & NET EQUITY</Text>
+            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>
+              {formatMoney(liabilities.totalLiabilities + equity)}
+            </Text>
+          </View>
+        </View>
+
+        {/* Receivables Schedule */}
+        {receivablesSchedule && receivablesSchedule.length > 0 && (
+          <View wrap={false}>
+            <View style={styles.sectionHeadingBox}>
+              <Text style={styles.sectionTitle}>Schedule of Accounts Receivable (Customers with Party ID & Ref)</Text>
+            </View>
+            <View style={styles.table}>
+              <View style={styles.tableHeader}>
+                <Text style={[{ width: "18%" }, styles.headerCell]}>Party ID</Text>
+                <Text style={[{ width: "34%" }, styles.headerCell]}>Customer Name</Text>
+                <Text style={[{ width: "24%" }, styles.headerCell]}>Latest Ref ID</Text>
+                <Text style={[{ width: "24%", textAlign: "right" }, styles.headerCell]}>Balance Dr (PKR)</Text>
+              </View>
+              {receivablesSchedule.slice(0, 30).map((row, idx) => (
+                <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
+                  <Text style={[{ width: "18%" }, styles.cellMono]}>{row.partyId}</Text>
+                  <Text style={[{ width: "34%" }, styles.cellBold]}>{row.partyName}</Text>
+                  <Text style={[{ width: "24%" }, styles.cellMono]}>{row.referenceType}: {row.referenceId}</Text>
+                  <Text style={[{ width: "24%", textAlign: "right" }, styles.cellBold]}>{formatMoney(row.balance)}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Payables Schedule */}
+        {payablesSchedule && payablesSchedule.length > 0 && (
+          <View wrap={false}>
+            <View style={styles.sectionHeadingBox}>
+              <Text style={styles.sectionTitle}>Schedule of Accounts Payable (Suppliers with Party ID & Ref)</Text>
+            </View>
+            <View style={styles.table}>
+              <View style={styles.tableHeader}>
+                <Text style={[{ width: "18%" }, styles.headerCell]}>Party ID</Text>
+                <Text style={[{ width: "34%" }, styles.headerCell]}>Supplier Name</Text>
+                <Text style={[{ width: "24%" }, styles.headerCell]}>Latest Ref ID</Text>
+                <Text style={[{ width: "24%", textAlign: "right" }, styles.headerCell]}>Balance Cr (PKR)</Text>
+              </View>
+              {payablesSchedule.slice(0, 30).map((row, idx) => (
+                <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
+                  <Text style={[{ width: "18%" }, styles.cellMono]}>{row.partyId}</Text>
+                  <Text style={[{ width: "34%" }, styles.cellBold]}>{row.partyName}</Text>
+                  <Text style={[{ width: "24%" }, styles.cellMono]}>{row.referenceType}: {row.referenceId}</Text>
+                  <Text style={[{ width: "24%", textAlign: "right" }, styles.cellBold]}>{formatMoney(row.balance)}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        <View style={styles.footer} fixed>
+          <Text>{companyName} — Certified Statement of Financial Position</Text>
+          <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+        </View>
+      </Page>
+    </Document>
+  );
+}
+
+// 3. Statement of Cash Flows PDF
 export function CashFlowPdfView({
   companyName = "PAPER TRADE CO.",
   companyAddress = "Wholesale Paper Market, Station Road",
@@ -270,8 +711,11 @@ export function CashFlowPdfView({
   endingBalance: number;
   flowDetails: Array<{
     date: string;
+    partyId?: string | null;
+    partyName?: string | null;
     description: string;
     referenceType: string;
+    referenceId?: string;
     inflow: number;
     outflow: number;
     balance: number;
@@ -280,74 +724,98 @@ export function CashFlowPdfView({
   return (
     <Document>
       <Page size="A4" style={styles.page}>
+        {/* Header Block */}
         <View style={styles.headerRow}>
-          <View>
+          <View style={styles.brandBox}>
             <Text style={styles.brandName}>{companyName}</Text>
             <Text style={styles.brandMeta}>{companyAddress}</Text>
             <Text style={styles.brandMeta}>Phone: {companyPhone}</Text>
           </View>
           <View style={styles.reportTitleBox}>
             <Text style={styles.reportTitle}>Statement of Cash Flows</Text>
-            <Text style={styles.reportSubtitle}>Cash & Bank Movements</Text>
+            <Text style={styles.reportSubtitle}>Cash & Bank Transactions</Text>
             <Text style={styles.filterBadge}>Period: {period}</Text>
           </View>
         </View>
 
+        {/* Summary Bar */}
         <View style={styles.summaryGrid}>
           <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>Total Collections (Inflow)</Text>
-            <Text style={[styles.kpiValue, { color: "#065f46" }]}>PKR {cashInflow.toLocaleString()}</Text>
+            <Text style={styles.kpiLabel}>Beginning Balance (b/f)</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(startingBalance)}</Text>
           </View>
           <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>Total Disbursements (Outflow)</Text>
-            <Text style={[styles.kpiValue, { color: "#b45309" }]}>PKR {cashOutflow.toLocaleString()}</Text>
+            <Text style={styles.kpiLabel}>Total Cash Inflow</Text>
+            <Text style={styles.kpiValue}>+ {formatMoney(cashInflow)}</Text>
           </View>
-          <View style={[styles.kpiCard, { backgroundColor: netCashFlow >= 0 ? "#ecfdf5" : "#fff1f2" }]}>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Total Cash Outflow</Text>
+            <Text style={styles.kpiValue}>- {formatMoney(cashOutflow)}</Text>
+          </View>
+          <View style={styles.kpiCard}>
             <Text style={styles.kpiLabel}>Net Operational Flow</Text>
-            <Text style={[styles.kpiValue, { color: netCashFlow >= 0 ? "#065f46" : "#be123c" }]}>PKR {netCashFlow.toLocaleString()}</Text>
+            <Text style={styles.kpiValue}>{formatMoney(netCashFlow)}</Text>
           </View>
-          <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>Current Liquid Balance</Text>
-            <Text style={styles.kpiValue}>PKR {endingBalance.toLocaleString()}</Text>
+          <View style={styles.kpiCardLast}>
+            <Text style={styles.kpiLabel}>Ending Cash Position</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(endingBalance)}</Text>
           </View>
         </View>
 
+        {/* Cash Flow Table */}
         <View style={styles.table}>
           <View style={styles.tableHeader}>
-            <Text style={[{ width: "16%" }, styles.headerCell]}>Date</Text>
-            <Text style={[{ width: "42%" }, styles.headerCell]}>Description / Reference</Text>
-            <Text style={[{ width: "14%", textAlign: "right" }, styles.headerCell]}>Inflow (Dr)</Text>
-            <Text style={[{ width: "14%", textAlign: "right" }, styles.headerCell]}>Outflow (Cr)</Text>
-            <Text style={[{ width: "14%", textAlign: "right" }, styles.headerCell]}>Cash Position</Text>
+            <Text style={[{ width: "11%" }, styles.headerCell]}>Date</Text>
+            <Text style={[{ width: "23%" }, styles.headerCell]}>Party (Name & ID)</Text>
+            <Text style={[{ width: "18%" }, styles.headerCell]}>Ref (Type & ID)</Text>
+            <Text style={[{ width: "20%" }, styles.headerCell]}>Description</Text>
+            <Text style={[{ width: "9%", textAlign: "right" }, styles.headerCell]}>Inflow</Text>
+            <Text style={[{ width: "9%", textAlign: "right" }, styles.headerCell]}>Outflow</Text>
+            <Text style={[{ width: "10%", textAlign: "right" }, styles.headerCell]}>Balance</Text>
           </View>
 
           {flowDetails.length === 0 ? (
             <View style={styles.tableRow}>
-              <Text style={[{ width: "100%", textAlign: "center", color: "#64748b" }, styles.cell]}>
-                No cash transactions found for this period.
+              <Text style={[{ width: "100%", textAlign: "center", color: "#6b7280" }, styles.cell]}>
+                No cash transactions logged in this period.
               </Text>
             </View>
           ) : (
-            flowDetails.slice(0, 30).map((row, idx) => (
+            flowDetails.slice(0, 45).map((row, idx) => (
               <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
-                <Text style={[{ width: "16%" }, styles.cell]}>{row.date}</Text>
-                <Text style={[{ width: "42%" }, styles.cell]}>{row.description}</Text>
-                <Text style={[{ width: "14%", textAlign: "right", color: row.inflow > 0 ? "#065f46" : "#94a3b8" }, styles.cell]}>
-                  {row.inflow > 0 ? row.inflow.toLocaleString() : "—"}
+                <Text style={[{ width: "11%" }, styles.cell]}>{row.date}</Text>
+                <Text style={[{ width: "23%" }, styles.cellBold]}>
+                  {row.partyName ? `${row.partyName}${row.partyId ? ` (${row.partyId.slice(-6)})` : ""}` : "Direct Cash"}
                 </Text>
-                <Text style={[{ width: "14%", textAlign: "right", color: row.outflow > 0 ? "#b45309" : "#94a3b8" }, styles.cell]}>
-                  {row.outflow > 0 ? row.outflow.toLocaleString() : "—"}
+                <Text style={[{ width: "18%" }, styles.cellMono]}>
+                  {row.referenceType}{row.referenceId ? `: ${row.referenceId}` : ""}
                 </Text>
-                <Text style={[{ width: "14%", textAlign: "right", fontWeight: "bold" }, styles.cellBold]}>
-                  {row.balance.toLocaleString()}
+                <Text style={[{ width: "20%" }, styles.cell]}>{row.description}</Text>
+                <Text style={[{ width: "9%", textAlign: "right" }, styles.cell]}>
+                  {row.inflow > 0 ? formatMoney(row.inflow) : "—"}
+                </Text>
+                <Text style={[{ width: "9%", textAlign: "right" }, styles.cell]}>
+                  {row.outflow > 0 ? formatMoney(row.outflow) : "—"}
+                </Text>
+                <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>
+                  {formatMoney(row.balance)}
                 </Text>
               </View>
             ))
           )}
+
+          {/* Totals Row */}
+          <View style={styles.tableRowTotal}>
+            <Text style={[{ width: "52%" }, styles.cellBold]}>Period Summary & Ending Position</Text>
+            <Text style={[{ width: "20%" }, styles.cellMono]}></Text>
+            <Text style={[{ width: "9%", textAlign: "right" }, styles.cellBold]}>{formatMoney(cashInflow)}</Text>
+            <Text style={[{ width: "9%", textAlign: "right" }, styles.cellBold]}>{formatMoney(cashOutflow)}</Text>
+            <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>{formatMoney(endingBalance)}</Text>
+          </View>
         </View>
 
         <View style={styles.footer} fixed>
-          <Text>{companyName} — Certified Cash Flow Report</Text>
+          <Text>{companyName} — Certified Cash Flow Statement</Text>
           <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>
       </Page>
@@ -355,130 +823,7 @@ export function CashFlowPdfView({
   );
 }
 
-// Balance Sheet PDF
-export function BalanceSheetPdfView({
-  companyName = "PAPER TRADE CO.",
-  companyAddress = "Wholesale Paper Market, Station Road",
-  companyPhone = "+92-300-1234567",
-  asOfDate,
-  assets,
-  liabilities,
-  equity,
-}: {
-  companyName?: string;
-  companyAddress?: string;
-  companyPhone?: string;
-  asOfDate: string;
-  assets: {
-    cash: number;
-    receivables: number;
-    inventory: number;
-    totalAssets: number;
-  };
-  liabilities: {
-    payables: number;
-    totalLiabilities: number;
-  };
-  equity: number;
-}) {
-  return (
-    <Document>
-      <Page size="A4" style={styles.page}>
-        <View style={styles.headerRow}>
-          <View>
-            <Text style={styles.brandName}>{companyName}</Text>
-            <Text style={styles.brandMeta}>{companyAddress}</Text>
-            <Text style={styles.brandMeta}>Phone: {companyPhone}</Text>
-          </View>
-          <View style={styles.reportTitleBox}>
-            <Text style={styles.reportTitle}>Balance Sheet</Text>
-            <Text style={styles.reportSubtitle}>Statement of Financial Position</Text>
-            <Text style={styles.filterBadge}>As of: {asOfDate}</Text>
-          </View>
-        </View>
-
-        {/* Top Summary */}
-        <View style={styles.summaryGrid}>
-          <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>Total Assets</Text>
-            <Text style={[styles.kpiValue, { color: "#065f46" }]}>PKR {assets.totalAssets.toLocaleString()}</Text>
-          </View>
-          <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>Total Liabilities</Text>
-            <Text style={[styles.kpiValue, { color: "#b45309" }]}>PKR {liabilities.totalLiabilities.toLocaleString()}</Text>
-          </View>
-          <View style={[styles.kpiCard, { backgroundColor: "#ecfdf5", borderColor: "#a7f3d0" }]}>
-            <Text style={styles.kpiLabel}>Owner Equity / Net Worth</Text>
-            <Text style={[styles.kpiValue, { color: "#064e3b" }]}>PKR {equity.toLocaleString()}</Text>
-          </View>
-        </View>
-
-        {/* Assets Section */}
-        <View style={styles.table}>
-          <View style={styles.tableHeader}>
-            <Text style={[{ width: "70%" }, styles.headerCell]}>Current Assets</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.headerCell]}>Valuation (PKR)</Text>
-          </View>
-
-          <View style={styles.tableRow}>
-            <Text style={[{ width: "70%" }, styles.cell]}>Cash in Hand & Bank Balances</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>{assets.cash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-
-          <View style={styles.tableRowAlternate}>
-            <Text style={[{ width: "70%" }, styles.cell]}>Accounts Receivable (Customer Outstandings)</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>{assets.receivables.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-
-          <View style={styles.tableRow}>
-            <Text style={[{ width: "70%" }, styles.cell]}>Warehouse & Shop Physical Inventory (At Cost)</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>{assets.inventory.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-
-          <View style={styles.tableRowHighlight}>
-            <Text style={[{ width: "70%" }, styles.cellBold]}>Total Current Assets</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{assets.totalAssets.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-        </View>
-
-        {/* Liabilities & Equity Section */}
-        <View style={styles.table}>
-          <View style={styles.tableHeader}>
-            <Text style={[{ width: "70%" }, styles.headerCell]}>Liabilities & Net Equity</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.headerCell]}>Amount (PKR)</Text>
-          </View>
-
-          <View style={styles.tableRow}>
-            <Text style={[{ width: "70%" }, styles.cell]}>Accounts Payable (Paper Mills / Suppliers)</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cell]}>{liabilities.payables.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-
-          <View style={[styles.tableRow, { backgroundColor: "#fffbeb" }]}>
-            <Text style={[{ width: "70%" }, styles.cellBold]}>Total Current Liabilities</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{liabilities.totalLiabilities.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-
-          <View style={styles.tableRowAlternate}>
-            <Text style={[{ width: "70%" }, styles.cell]}>Owner&apos;s Retained Capital & Net Worth</Text>
-            <Text style={[{ width: "30%", textAlign: "right", color: "#065f46" }, styles.cellBold]}>{equity.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-
-          <View style={styles.tableRowHighlight}>
-            <Text style={[{ width: "70%" }, styles.cellBold]}>Total Liabilities & Equity</Text>
-            <Text style={[{ width: "30%", textAlign: "right" }, styles.cellBold]}>{(liabilities.totalLiabilities + equity).toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-          </View>
-        </View>
-
-        <View style={styles.footer} fixed>
-          <Text>{companyName} — Certified Balance Sheet</Text>
-          <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
-        </View>
-      </Page>
-    </Document>
-  );
-}
-
-// Party Account Statement PDF
+// 4. Statement of Account (Party Ledger) PDF
 export function PartyStatementPdfView({
   companyName = "PAPER TRADE CO.",
   companyAddress = "Wholesale Paper Market, Station Road",
@@ -486,6 +831,7 @@ export function PartyStatementPdfView({
   party,
   currentBalance,
   openingBalance = 0,
+  openingBalanceSourceYear,
   startDate,
   endDate,
   ledgerRows,
@@ -494,6 +840,7 @@ export function PartyStatementPdfView({
   companyAddress?: string;
   companyPhone?: string;
   party: {
+    id?: string;
     name: string;
     type: string;
     phone?: string | null;
@@ -503,13 +850,18 @@ export function PartyStatementPdfView({
   };
   currentBalance: number;
   openingBalance?: number;
+  openingBalanceSourceYear?: string | null;
   startDate?: string;
   endDate?: string;
   ledgerRows: Array<{
     date: string;
+    partyId?: string;
+    partyName?: string;
     description: string;
     referenceType: string;
     referenceId: string;
+    referenceDocNo?: string | null;
+    sourceFinancialYear?: string | null;
     debit: number;
     credit: number;
     runningBalance: number;
@@ -524,39 +876,49 @@ export function PartyStatementPdfView({
   return (
     <Document>
       <Page size="A4" style={styles.page}>
+        {/* Header Block */}
         <View style={styles.headerRow}>
-          <View>
+          <View style={styles.brandBox}>
             <Text style={styles.brandName}>{companyName}</Text>
             <Text style={styles.brandMeta}>{companyAddress}</Text>
             <Text style={styles.brandMeta}>Phone: {companyPhone}</Text>
           </View>
           <View style={styles.reportTitleBox}>
             <Text style={styles.reportTitle}>Statement of Account</Text>
-            <Text style={styles.reportSubtitle}>{party.name} ({party.type})</Text>
+            <Text style={styles.reportSubtitle}>{party.name}</Text>
             <Text style={styles.filterBadge}>
               Period: {startDate || "Start"} to {endDate || "Present"}
             </Text>
           </View>
         </View>
 
-        {/* Party Profile Banner */}
-        <View style={[styles.summaryGrid, { marginBottom: 12 }]}>
+        {/* Party Profile Summary */}
+        <View style={styles.summaryGrid}>
           <View style={[styles.kpiCard, { flex: 2 }]}>
-            <Text style={styles.kpiLabel}>Account Contact</Text>
-            <Text style={[styles.cellBold, { marginTop: 2 }]}>{party.address || "Address on file"}</Text>
-            <Text style={styles.cell}>Tel: {party.phone || "—"} | Email: {party.email || "—"}</Text>
+            <Text style={styles.kpiLabel}>Account Information</Text>
+            <Text style={[styles.cellBold, { marginTop: 2 }]}>
+              {party.name} ({party.type}){party.id ? ` • ID: ${party.id}` : ""}
+            </Text>
+            <Text style={styles.cell}>Address: {party.address || "On file"} | Phone: {party.phone || "—"}</Text>
           </View>
           {party.creditLimit ? (
             <View style={styles.kpiCard}>
               <Text style={styles.kpiLabel}>Credit Limit</Text>
-              <Text style={styles.kpiValue}>PKR {party.creditLimit.toLocaleString()}</Text>
+              <Text style={styles.kpiValue}>PKR {formatMoney(party.creditLimit)}</Text>
             </View>
           ) : null}
-          <View style={[styles.kpiCard, { backgroundColor: safeCurrentBalance >= 0 ? "#ecfdf5" : "#fff1f2" }]}>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Opening Balance (b/f)</Text>
+            <Text style={styles.kpiValue}>
+              PKR {formatMoney(Math.abs(safeOpeningBalance))}{" "}
+              {safeOpeningBalance >= 0 ? "Dr" : "Cr"}
+            </Text>
+          </View>
+          <View style={styles.kpiCardLast}>
             <Text style={styles.kpiLabel}>Closing Balance</Text>
-            <Text style={[styles.kpiValue, { color: safeCurrentBalance >= 0 ? "#065f46" : "#9f1239" }]}>
-              PKR {Math.abs(safeCurrentBalance).toLocaleString()}{" "}
-              {safeCurrentBalance >= 0 ? "(Receivable)" : "(Payable)"}
+            <Text style={styles.kpiValue}>
+              PKR {formatMoney(Math.abs(safeCurrentBalance))}{" "}
+              {safeCurrentBalance >= 0 ? "Dr (Receivable)" : "Cr (Payable)"}
             </Text>
           </View>
         </View>
@@ -564,62 +926,213 @@ export function PartyStatementPdfView({
         {/* Ledger Records Table */}
         <View style={styles.table}>
           <View style={styles.tableHeader}>
-            <Text style={[{ width: "15%" }, styles.headerCell]}>Date</Text>
-            <Text style={[{ width: "16%" }, styles.headerCell]}>Doc Type</Text>
-            <Text style={[{ width: "37%" }, styles.headerCell]}>Transaction Particulars</Text>
-            <Text style={[{ width: "11%", textAlign: "right" }, styles.headerCell]}>Debit (Dr)</Text>
-            <Text style={[{ width: "11%", textAlign: "right" }, styles.headerCell]}>Credit (Cr)</Text>
+            <Text style={[{ width: "11%" }, styles.headerCell]}>Date</Text>
+            <Text style={[{ width: "12%" }, styles.headerCell]}>Doc Type</Text>
+            <Text style={[{ width: "18%" }, styles.headerCell]}>Doc # / Ref ID</Text>
+            <Text style={[{ width: "31%" }, styles.headerCell]}>Particulars</Text>
+            <Text style={[{ width: "9%", textAlign: "right" }, styles.headerCell]}>Debit (Dr)</Text>
+            <Text style={[{ width: "9%", textAlign: "right" }, styles.headerCell]}>Credit (Cr)</Text>
             <Text style={[{ width: "10%", textAlign: "right" }, styles.headerCell]}>Balance</Text>
           </View>
 
-          {/* Opening Balance Row if date-filtered */}
+          {/* Opening Balance Row */}
           {safeOpeningBalance !== 0 && (
-            <View style={[styles.tableRow, { backgroundColor: "#fef9c3" }]}>
-              <Text style={[{ width: "15%" }, styles.cellBold]}>{startDate || "—"}</Text>
-              <Text style={[{ width: "16%" }, styles.cellBold]}>B/F</Text>
-              <Text style={[{ width: "37%" }, styles.cellBold]}>Opening Balance (Brought Forward)</Text>
-              <Text style={[{ width: "11%", textAlign: "right" }, styles.cell]}>{safeOpeningBalance > 0 ? safeOpeningBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</Text>
-              <Text style={[{ width: "11%", textAlign: "right" }, styles.cell]}>{safeOpeningBalance < 0 ? Math.abs(safeOpeningBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</Text>
-              <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>{safeOpeningBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+            <View style={[styles.tableRow, { backgroundColor: "#f9fafb" }]}>
+              <Text style={[{ width: "11%" }, styles.cellBold]}>{startDate || "—"}</Text>
+              <Text style={[{ width: "12%" }, styles.cellBold]}>B/F</Text>
+              <Text style={[{ width: "18%" }, styles.cellMono]}>OPENING</Text>
+              <Text style={[{ width: "31%" }, styles.cellBold]}>
+                {openingBalanceSourceYear
+                  ? `Opening Balance (Carried forward from FY ${openingBalanceSourceYear})`
+                  : "Opening Balance Brought Forward"}
+              </Text>
+              <Text style={[{ width: "9%", textAlign: "right" }, styles.cell]}>
+                {safeOpeningBalance > 0 ? formatMoney(safeOpeningBalance) : "—"}
+              </Text>
+              <Text style={[{ width: "9%", textAlign: "right" }, styles.cell]}>
+                {safeOpeningBalance < 0 ? formatMoney(Math.abs(safeOpeningBalance)) : "—"}
+              </Text>
+              <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>
+                {formatMoney(safeOpeningBalance)}
+              </Text>
             </View>
           )}
 
           {rows.length === 0 ? (
             <View style={styles.tableRow}>
-              <Text style={[{ width: "100%", textAlign: "center", color: "#64748b" }, styles.cell]}>
+              <Text style={[{ width: "100%", textAlign: "center", color: "#6b7280" }, styles.cell]}>
                 No transaction records found for this account period.
               </Text>
             </View>
           ) : (
-            rows.map((row, idx) => (
+            rows.map((row, idx) => {
+              const isOpening = row.referenceType === "OPENING_BALANCE";
+              const desc = isOpening && row.sourceFinancialYear
+                ? `Opening Balance (Carried forward from FY ${row.sourceFinancialYear})`
+                : row.description;
+
+              const docDisplay = row.referenceDocNo
+                ? `${row.referenceDocNo}`
+                : row.referenceId
+                ? `${row.referenceId}`
+                : "—";
+
+              return (
+                <View
+                  key={idx}
+                  style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}
+                >
+                  <Text style={[{ width: "11%" }, styles.cell]}>{row.date}</Text>
+                  <Text style={[{ width: "12%" }, styles.cellBold]}>{row.referenceType}</Text>
+                  <Text style={[{ width: "18%" }, styles.cellMono]}>{docDisplay}</Text>
+                  <Text style={[{ width: "31%" }, styles.cell]}>{desc}</Text>
+                  <Text style={[{ width: "9%", textAlign: "right" }, styles.cell]}>
+                    {row.debit > 0 ? formatMoney(row.debit) : "—"}
+                  </Text>
+                  <Text style={[{ width: "9%", textAlign: "right" }, styles.cell]}>
+                    {row.credit > 0 ? formatMoney(row.credit) : "—"}
+                  </Text>
+                  <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>
+                    {formatMoney(row.runningBalance)}
+                  </Text>
+                </View>
+              );
+            })
+          )}
+
+          {/* Totals Row */}
+          <View style={styles.tableRowTotal}>
+            <Text style={[{ width: "41%" }, styles.cellBold]}>Total Period Activity & Net Closing Balance</Text>
+            <Text style={[{ width: "31%" }, styles.cell]}></Text>
+            <Text style={[{ width: "9%", textAlign: "right" }, styles.cellBold]}>{formatMoney(totalDebits)}</Text>
+            <Text style={[{ width: "9%", textAlign: "right" }, styles.cellBold]}>{formatMoney(totalCredits)}</Text>
+            <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>{formatMoney(safeCurrentBalance)}</Text>
+          </View>
+        </View>
+
+        <View style={styles.footer} fixed>
+          <Text>{companyName} — Statement of Account</Text>
+          <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+        </View>
+      </Page>
+    </Document>
+  );
+}
+
+// 5. General Ledger Report PDF (Landscape)
+export function GeneralLedgerPdfView({
+  companyName = "PAPER TRADE CO.",
+  companyAddress = "Wholesale Paper Market, Station Road",
+  companyPhone = "+92-300-1234567",
+  period = "All Time",
+  filterInfo,
+  totalDebit = 0,
+  totalCredit = 0,
+  entries = [],
+}: {
+  companyName?: string;
+  companyAddress?: string;
+  companyPhone?: string;
+  period?: string;
+  filterInfo?: string;
+  totalDebit?: number;
+  totalCredit?: number;
+  entries?: Array<{
+    date: string;
+    accountType: string;
+    partyName: string;
+    referenceType: string;
+    referenceId: string;
+    description: string;
+    debit: number;
+    credit: number;
+  }>;
+}) {
+  const safeTotalDebit = Number(totalDebit) || 0;
+  const safeTotalCredit = Number(totalCredit) || 0;
+  const netBalance = safeTotalDebit - safeTotalCredit;
+
+  return (
+    <Document>
+      <Page size="A4" orientation="landscape" style={styles.pageLandscape}>
+        {/* Header Block */}
+        <View style={styles.headerRow}>
+          <View style={styles.brandBox}>
+            <Text style={styles.brandName}>{companyName}</Text>
+            <Text style={styles.brandMeta}>{companyAddress}</Text>
+            <Text style={styles.brandMeta}>Phone: {companyPhone}</Text>
+          </View>
+          <View style={styles.reportTitleBox}>
+            <Text style={styles.reportTitle}>General Ledger</Text>
+            <Text style={styles.reportSubtitle}>Period: {period}</Text>
+            {filterInfo && <Text style={styles.filterBadge}>Filters: {filterInfo}</Text>}
+          </View>
+        </View>
+
+        {/* Summary Bar */}
+        <View style={styles.summaryGrid}>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Total Debits (Dr)</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(safeTotalDebit)}</Text>
+          </View>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Total Credits (Cr)</Text>
+            <Text style={styles.kpiValue}>PKR {formatMoney(safeTotalCredit)}</Text>
+          </View>
+          <View style={styles.kpiCardLast}>
+            <Text style={styles.kpiLabel}>Net Balance (Dr - Cr)</Text>
+            <Text style={styles.kpiValue}>
+              PKR {formatMoney(Math.abs(netBalance))} {netBalance >= 0 ? "(Debit)" : "(Credit)"}
+            </Text>
+          </View>
+        </View>
+
+        {/* Ledger Table */}
+        <View style={styles.table}>
+          <View style={styles.tableHeader}>
+            <Text style={[{ width: "9%" }, styles.headerCell]}>Date</Text>
+            <Text style={[{ width: "11%" }, styles.headerCell]}>Account</Text>
+            <Text style={[{ width: "20%" }, styles.headerCell]}>Party / Counterparty</Text>
+            <Text style={[{ width: "16%" }, styles.headerCell]}>Ref (Type & ID)</Text>
+            <Text style={[{ width: "24%" }, styles.headerCell]}>Particulars</Text>
+            <Text style={[{ width: "10%", textAlign: "right" }, styles.headerCell]}>Debit (PKR)</Text>
+            <Text style={[{ width: "10%", textAlign: "right" }, styles.headerCell]}>Credit (PKR)</Text>
+          </View>
+
+          {entries.length === 0 ? (
+            <View style={styles.tableRow}>
+              <Text style={[{ width: "100%", textAlign: "center", color: "#6b7280" }, styles.cell]}>
+                No general ledger records found matching the applied criteria.
+              </Text>
+            </View>
+          ) : (
+            entries.map((row, idx) => (
               <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
-                <Text style={[{ width: "15%" }, styles.cell]}>{row.date}</Text>
-                <Text style={[{ width: "16%" }, styles.cell]}>{row.referenceType}</Text>
-                <Text style={[{ width: "37%" }, styles.cell]}>{row.description}</Text>
-                <Text style={[{ width: "11%", textAlign: "right", color: row.debit > 0 ? "#065f46" : "#94a3b8" }, styles.cell]}>
-                  {row.debit > 0 ? row.debit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+                <Text style={[{ width: "9%" }, styles.cell]}>{row.date}</Text>
+                <Text style={[{ width: "11%" }, styles.cellBold]}>{row.accountType}</Text>
+                <Text style={[{ width: "20%" }, styles.cell]}>{row.partyName}</Text>
+                <Text style={[{ width: "16%" }, styles.cellMono]}>{row.referenceType}: {row.referenceId}</Text>
+                <Text style={[{ width: "24%" }, styles.cell]}>{row.description}</Text>
+                <Text style={[{ width: "10%", textAlign: "right" }, styles.cell]}>
+                  {row.debit > 0 ? formatMoney(row.debit) : "—"}
                 </Text>
-                <Text style={[{ width: "11%", textAlign: "right", color: row.credit > 0 ? "#b45309" : "#94a3b8" }, styles.cell]}>
-                  {row.credit > 0 ? row.credit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
-                </Text>
-                <Text style={[{ width: "10%", textAlign: "right", fontWeight: "bold" }, styles.cellBold]}>
-                  {row.runningBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                <Text style={[{ width: "10%", textAlign: "right" }, styles.cell]}>
+                  {row.credit > 0 ? formatMoney(row.credit) : "—"}
                 </Text>
               </View>
             ))
           )}
 
-          {/* Period Summary Totals */}
-          <View style={[styles.tableRowHighlight, { borderTopWidth: 1.5 }]}>
-            <Text style={[{ width: "68%" }, styles.cellBold]}>Total Period Activity & Net Closing Balance</Text>
-            <Text style={[{ width: "11%", textAlign: "right" }, styles.cellBold]}>{totalDebits.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-            <Text style={[{ width: "11%", textAlign: "right" }, styles.cellBold]}>{totalCredits.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-            <Text style={[{ width: "10%", textAlign: "right", color: "#065f46" }, styles.cellBold]}>{safeCurrentBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+          {/* Grand Totals */}
+          <View style={styles.tableRowTotal}>
+            <Text style={[{ width: "80%" }, styles.cellBold]}>Total General Ledger Activity</Text>
+            <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>{formatMoney(safeTotalDebit)}</Text>
+            <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>{formatMoney(safeTotalCredit)}</Text>
           </View>
         </View>
 
         <View style={styles.footer} fixed>
-          <Text>{companyName} — Account Statement</Text>
+          <Text>{companyName} — General Ledger Audit Report</Text>
           <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>
       </Page>

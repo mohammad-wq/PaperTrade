@@ -12,6 +12,7 @@ import { saleInvoiceSchema } from "@/schemas/sale-invoice";
 import { purchaseInvoiceSchema } from "@/schemas/purchase-invoice";
 import { AccountType, InvoiceStatus, PartyType, PaymentMethod, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { getActiveFinancialYear, getNextAtomicSequence, updateInvoiceSettlementStatus } from "@/lib/financial-year";
 
 export async function listSaleInvoicesAction() {
   return runAction("sales.list", async () => {
@@ -25,6 +26,7 @@ export async function listSaleInvoicesAction() {
         customer: { select: { id: true, name: true, phone: true } },
         location: { select: { id: true, name: true } },
         deliveryOrder: { select: { id: true, doNo: true } },
+        financialYear: { select: { id: true, label: true, isActive: true } },
         items: {
           include: {
             product: { select: { id: true, productNo: true, name: true, unit: true } },
@@ -174,22 +176,28 @@ export async function createSaleInvoiceAction(raw: unknown) {
         ? Math.min(totalAmount, rawPaid > 0 ? rawPaid : totalAmount)
         : Math.min(totalAmount, Math.max(0, rawPaid));
 
-      // 3. Multi-table transaction with collision-proof invoice number
-      const invoiceNumber = generateDocumentNumber("INV");
+      // 3. Multi-table transaction with atomic financial year sequence
+      const activeYear = await getActiveFinancialYear(tx);
+      const { sequenceNo, formattedNumber } = await getNextAtomicSequence(tx, activeYear.id, "SALE_INVOICE");
+
       const walkInContactDetails =
         input.customerType === "WALK_IN" && (input.walkInPhone || input.walkInAddress)
           ? `Walk-in: ${[input.walkInName || "Walk-in Customer", input.walkInPhone, input.walkInAddress].filter(Boolean).join(" | ")}`
           : null;
       const finalNotes = [input.notes?.trim(), walkInContactDetails].filter(Boolean).join(" — ");
 
+      const isSettled = paidAmount >= totalAmount;
+
       const invoice = await tx.saleInvoice.create({
         data: {
-          invoiceNo: invoiceNumber,
+          invoiceNo: formattedNumber,
+          financialYearId: activeYear.id,
+          sequenceNo,
           customerId: targetCustomerId,
           locationId: input.locationId,
           deliveryOrderId: input.deliveryOrderId || null,
           date: input.date,
-          status: InvoiceStatus.POSTED,
+          status: isSettled ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
           totalAmount,
           amountPaid: paidAmount,
           notes: finalNotes || null,
@@ -342,9 +350,11 @@ export async function listPurchaseInvoicesAction() {
         supplier: { select: { id: true, name: true, phone: true } },
         location: { select: { id: true, name: true } },
         purchaseOrder: { select: { id: true, orderNo: true } },
+        financialYear: { select: { id: true, label: true, isActive: true } },
         items: {
           include: {
             product: { select: { id: true, productNo: true, name: true, unit: true } },
+            warehouseLot: { select: { id: true, lotNumber: true } },
           },
         },
       },
@@ -379,22 +389,27 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
 
     const res = await withResourceQueue(lockKeys, async (tx) => {
       const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
-      const invoiceNumber = generateDocumentNumber("PINV");
+      
+      const activeYear = await getActiveFinancialYear(tx);
+      const { sequenceNo, formattedNumber } = await getNextAtomicSequence(tx, activeYear.id, "PURCHASE_INVOICE");
 
       const invoice = await tx.purchaseInvoice.create({
         data: {
-          invoiceNo: invoiceNumber,
+          invoiceNo: formattedNumber,
+          financialYearId: activeYear.id,
+          sequenceNo,
           supplierId: input.supplierId,
           locationId: input.locationId,
           purchaseOrderId: input.purchaseOrderId || null,
           date: input.date,
-          status: InvoiceStatus.POSTED,
+          status: InvoiceStatus.OPEN,
           totalAmount,
           notes: input.notes || null,
           createdById: session.user.id,
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
+              warehouseLotId: item.warehouseLotId || input.warehouseLotId || null,
               quantity: item.quantity,
               unitCost: item.unitCost,
               lineTotal: item.quantity * item.unitCost,
@@ -427,6 +442,7 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
             data: {
               productId: item.productId,
               locationId: input.locationId,
+              warehouseLotId: item.warehouseLotId || input.warehouseLotId || null,
               type: StockMovementType.PURCHASE_IN,
               quantity: item.quantity,
               referenceType: "PURCHASE_INVOICE",

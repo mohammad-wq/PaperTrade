@@ -10,6 +10,7 @@ import { emitRealtimeEvent } from "@/lib/realtime";
 import { saleReturnSchema, purchaseReturnSchema } from "@/schemas/return";
 import { getStockOnHand } from "@/lib/stock";
 import { AccountType, StockMovementType } from "@prisma/client";
+import { getActiveFinancialYear, getNextAtomicSequence, updateInvoiceSettlementStatus } from "@/lib/financial-year";
 
 export async function listReturnsAction() {
   return runAction("returns.list", async () => {
@@ -21,6 +22,7 @@ export async function listReturnsAction() {
       prisma.saleReturn.findMany({
         orderBy: { date: "desc" },
         include: {
+          financialYear: { select: { id: true, label: true, isActive: true } },
           customer: { select: { id: true, name: true } },
           location: { select: { id: true, name: true } },
           saleInvoice: { select: { id: true, invoiceNo: true } },
@@ -34,6 +36,7 @@ export async function listReturnsAction() {
       prisma.purchaseReturn.findMany({
         orderBy: { date: "desc" },
         include: {
+          financialYear: { select: { id: true, label: true, isActive: true } },
           supplier: { select: { id: true, name: true } },
           location: { select: { id: true, name: true } },
           purchaseInvoice: { select: { id: true, invoiceNo: true } },
@@ -117,11 +120,18 @@ export async function createSaleReturnAction(raw: unknown) {
       }
 
       const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
-      const returnNo = generateDocumentNumber("SRET");
+      const activeFy = await getActiveFinancialYear(tx);
+      const { sequenceNo, formattedNumber: returnNo } = await getNextAtomicSequence(
+        tx,
+        activeFy.id,
+        "SALE_RETURN"
+      );
 
       const saleReturn = await tx.saleReturn.create({
         data: {
           returnNo,
+          financialYearId: activeFy.id,
+          sequenceNo,
           saleInvoiceId: invoice.id,
           customerId: invoice.customerId,
           locationId: invoice.locationId,
@@ -186,6 +196,9 @@ export async function createSaleReturnAction(raw: unknown) {
           createdById: session.user.id,
         },
       });
+
+      // Recalculate and update settlement status of original invoice
+      await updateInvoiceSettlementStatus(tx, invoice.id, "SALE");
 
       return { id: saleReturn.id, returnNo: saleReturn.returnNo, totalAmount };
     });
@@ -253,11 +266,18 @@ export async function createPurchaseReturnAction(raw: unknown) {
       }
 
       const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
-      const returnNo = generateDocumentNumber("PRET");
+      const activeFy = await getActiveFinancialYear(tx);
+      const { sequenceNo, formattedNumber: returnNo } = await getNextAtomicSequence(
+        tx,
+        activeFy.id,
+        "PURCHASE_RETURN"
+      );
 
       const purchaseReturn = await tx.purchaseReturn.create({
         data: {
           returnNo,
+          financialYearId: activeFy.id,
+          sequenceNo,
           purchaseInvoiceId: invoice.id,
           supplierId: invoice.supplierId,
           locationId: invoice.locationId,
@@ -322,6 +342,9 @@ export async function createPurchaseReturnAction(raw: unknown) {
           createdById: session.user.id,
         },
       });
+
+      // Recalculate and update settlement status of original invoice
+      await updateInvoiceSettlementStatus(tx, invoice.id, "PURCHASE");
 
       return { id: purchaseReturn.id, returnNo: purchaseReturn.returnNo, totalAmount };
     });

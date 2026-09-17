@@ -9,6 +9,11 @@ import { miscExpenseSchema, paymentSchema } from "@/schemas/payment";
 import { AccountType, PartyType } from "@prisma/client";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
+import {
+  getActiveFinancialYear,
+  getNextAtomicSequence,
+  updateInvoiceSettlementStatus,
+} from "@/lib/financial-year";
 
 export async function listPaymentsAction() {
   return runAction("payments.list", async () => {
@@ -110,8 +115,19 @@ export async function createPaymentAction(raw: unknown) {
         throw userError("Party not found.");
       }
 
+      const activeYear = await getActiveFinancialYear(tx);
+      const { sequenceNo, formattedNumber } = await getNextAtomicSequence(
+        tx,
+        activeYear.id,
+        "PAYMENT_RECEIPT",
+      );
+      const receiptNo = `RCT-${formattedNumber}`;
+
       const payment = await tx.payment.create({
         data: {
+          receiptNo,
+          financialYearId: activeYear.id,
+          sequenceNo,
           partyId: input.partyId,
           saleInvoiceId: input.saleInvoiceId || null,
           purchaseInvoiceId: input.purchaseInvoiceId || null,
@@ -153,7 +169,7 @@ export async function createPaymentAction(raw: unknown) {
           },
         });
 
-        // If linked to sale invoice, increment amountPaid
+        // If linked to sale invoice, increment amountPaid and check settlement
         if (input.saleInvoiceId) {
           await tx.saleInvoice.update({
             where: { id: input.saleInvoiceId },
@@ -161,8 +177,12 @@ export async function createPaymentAction(raw: unknown) {
               amountPaid: { increment: input.amount },
             },
           });
+          await updateInvoiceSettlementStatus(tx, input.saleInvoiceId, "SALE");
         }
       } else {
+        if (input.purchaseInvoiceId) {
+          await updateInvoiceSettlementStatus(tx, input.purchaseInvoiceId, "PURCHASE");
+        }
         // Supplier Payment: decreases Payable (Debit), decreases Cash (Credit)
         await tx.ledgerEntry.create({
           data: {
@@ -202,6 +222,6 @@ export async function createPaymentAction(raw: unknown) {
       partyId: input.partyId,
     });
 
-    return { id: result.id, amount: Number(result.amount) };
+    return { id: result.id, amount: Number(result.amount), receiptNo: result.receiptNo };
   });
 }

@@ -16,10 +16,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { listPurchaseInvoicesAction, createPurchaseInvoiceAction } from "@/actions/invoices";
-import { listPurchaseOrdersAction, listLocationsAction } from "@/actions/orders";
+import { listPurchaseOrdersAction } from "@/actions/orders";
+import { listLocationsAction } from "@/actions/locations";
 import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
+import { listWarehouseLotsAction, createWarehouseLotAction } from "@/actions/warehouse-lots";
 import { format } from "date-fns";
+import { cn } from "@/lib/utils";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type PurchaseInvoiceRow = {
@@ -31,11 +34,13 @@ type PurchaseInvoiceRow = {
   supplier: { id: string; name: string; phone: string | null };
   location: { id: string; name: string };
   purchaseOrder?: { id: string; orderNo: string } | null;
+  financialYear?: { id: string; label: string; isActive?: boolean } | null;
   items: Array<{
     id: string;
     quantity: number;
     unitCost: number;
     lineTotal: number;
+    warehouseLot?: { id: string; lotNumber: string } | null;
     product: { id: string; productNo: string; name: string; unit: string };
   }>;
 };
@@ -65,8 +70,23 @@ type POOption = {
 
 type LineItem = {
   productId: string;
+  warehouseLotId?: string;
   quantity: number;
   unitCost: number;
+};
+
+type LocationOption = {
+  id: string;
+  name: string;
+  type: string;
+  address?: string | null;
+};
+
+type WarehouseLotOption = {
+  id: string;
+  locationId: string;
+  lotNumber: string;
+  description: string | null;
 };
 
 export default function PurchasesPage() {
@@ -74,10 +94,20 @@ export default function PurchasesPage() {
   const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [pos, setPos] = useState<POOption[]>([]);
-  const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string }>>([]);
+  const [dbLocations, setDbLocations] = useState<LocationOption[]>([]);
+  const [warehouseLots, setWarehouseLots] = useState<WarehouseLotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("OPEN");
+  const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+
+  // Quick lot creation modal state
+  const [quickLotModalOpen, setQuickLotModalOpen] = useState(false);
+  const [quickLotLineIndex, setQuickLotLineIndex] = useState<number | null>(null);
+  const [quickLotNumber, setQuickLotNumber] = useState("");
+  const [quickLotDesc, setQuickLotDesc] = useState("");
+  const [submittingQuickLot, setSubmittingQuickLot] = useState(false);
 
   // Form state
   const [supplierId, setSupplierId] = useState("");
@@ -85,19 +115,20 @@ export default function PurchasesPage() {
   const [purchaseOrderId, setPurchaseOrderId] = useState("");
   const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState("");
-  const [items, setItems] = useState<LineItem[]>([{ productId: "", quantity: 1, unitCost: 0 }]);
+  const [items, setItems] = useState<LineItem[]>([{ productId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const [invRes, partyRes, prodRes, poRes, locRes] = await Promise.all([
+      const [invRes, partyRes, prodRes, poRes, locRes, lotRes] = await Promise.all([
         listPurchaseInvoicesAction(),
         listPartiesAction(),
         listProductsAction(),
         listPurchaseOrdersAction(),
         listLocationsAction(),
+        listWarehouseLotsAction(undefined, false),
       ]);
 
       if (invRes.success && invRes.data) {
@@ -113,8 +144,11 @@ export default function PurchasesPage() {
       if (poRes.success && poRes.data) {
         setPos(poRes.data as POOption[]);
       }
+      if (lotRes.success && lotRes.data) {
+        setWarehouseLots(lotRes.data as WarehouseLotOption[]);
+      }
       if (locRes.success && locRes.data) {
-        const locs = locRes.data as Array<{ id: string; name: string }>;
+        const locs = locRes.data as LocationOption[];
         setDbLocations(locs);
         if (locs.length > 0) {
           const shop = locs.find((l) => l.name.toLowerCase() === "shop") ?? locs[0];
@@ -136,21 +170,50 @@ export default function PurchasesPage() {
 
   const locations = useMemo(() => {
     if (dbLocations.length > 0) return dbLocations;
-    const map = new Map<string, string>();
-    invoices.forEach((i) => map.set(i.location.id, i.location.name));
-    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+    const map = new Map<string, LocationOption>();
+    invoices.forEach((i) =>
+      map.set(i.location.id, { id: i.location.id, name: i.location.name, type: "WAREHOUSE" }),
+    );
+    return Array.from(map.values());
   }, [dbLocations, invoices]);
 
+  const selectedLocation = useMemo(
+    () => locations.find((l) => l.id === locationId),
+    [locations, locationId],
+  );
+
+  const locationLots = useMemo(
+    () => warehouseLots.filter((lot) => lot.locationId === locationId),
+    [warehouseLots, locationId],
+  );
+
+  const showLotSelector = selectedLocation?.type === "WAREHOUSE" || locationLots.length > 0;
+
   const filteredInvoices = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return invoices;
-    return invoices.filter(
-      (inv) =>
+    return invoices.filter((inv) => {
+      // 1. Status Filter (default: OPEN)
+      if (statusFilter === "OPEN" && inv.status === "SETTLED") {
+        return false;
+      }
+
+      // 2. Financial Year Filter (default: CURRENT)
+      if (yearFilter === "CURRENT") {
+        if (inv.financialYear && inv.financialYear.isActive === false) {
+          return false;
+        }
+      }
+
+      // 3. Query Filter
+      const q = query.trim().toLowerCase();
+      if (!q) return true;
+
+      return (
         inv.invoiceNo.toLowerCase().includes(q) ||
         inv.supplier.name.toLowerCase().includes(q) ||
-        inv.location.name.toLowerCase().includes(q),
-    );
-  }, [invoices, query]);
+        inv.location.name.toLowerCase().includes(q)
+      );
+    });
+  }, [invoices, statusFilter, yearFilter, query]);
 
   const totalPurchases = useMemo(
     () => filteredInvoices.reduce((sum, i) => sum + i.totalAmount, 0),
@@ -167,6 +230,18 @@ export default function PurchasesPage() {
     [suppliers, supplierId],
   );
 
+  function handleLocationChange(newLocId: string) {
+    setLocationId(newLocId);
+    setItems((prev) =>
+      prev.map((it) => {
+        const lotMatches = warehouseLots.some(
+          (l) => l.id === it.warehouseLotId && l.locationId === newLocId,
+        );
+        return lotMatches ? it : { ...it, warehouseLotId: "" };
+      }),
+    );
+  }
+
   function handleProductChange(index: number, pId: string) {
     const product = products.find((p) => p.id === pId);
     const updated = [...items];
@@ -174,6 +249,12 @@ export default function PurchasesPage() {
     if (product) {
       updated[index].unitCost = product.costPrice || 0;
     }
+    setItems(updated);
+  }
+
+  function handleLotChange(index: number, lotId: string) {
+    const updated = [...items];
+    updated[index].warehouseLotId = lotId;
     setItems(updated);
   }
 
@@ -190,12 +271,42 @@ export default function PurchasesPage() {
   }
 
   function addItem() {
-    setItems([...items, { productId: "", quantity: 1, unitCost: 0 }]);
+    setItems([...items, { productId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
   }
 
   function removeItem(index: number) {
     if (items.length <= 1) return;
     setItems(items.filter((_, idx) => idx !== index));
+  }
+
+  async function handleCreateQuickLot(e: React.FormEvent) {
+    e.preventDefault();
+    if (!locationId || !quickLotNumber.trim()) return;
+    setSubmittingQuickLot(true);
+    try {
+      const res = await createWarehouseLotAction({
+        locationId,
+        lotNumber: quickLotNumber.trim(),
+        description: quickLotDesc.trim() || undefined,
+      });
+      if (res.success && res.data) {
+        const newLot = res.data as WarehouseLotOption;
+        setWarehouseLots((prev) => [...prev, newLot]);
+        if (quickLotLineIndex !== null) {
+          handleLotChange(quickLotLineIndex, newLot.id);
+        }
+        setQuickLotModalOpen(false);
+        setQuickLotNumber("");
+        setQuickLotDesc("");
+        setQuickLotLineIndex(null);
+      } else {
+        alert(!res.success ? res.error : "Failed to create lot");
+      }
+    } catch (err: any) {
+      alert(err.message || "Failed to create lot");
+    } finally {
+      setSubmittingQuickLot(false);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -227,6 +338,7 @@ export default function PurchasesPage() {
         notes,
         items: items.map((i) => ({
           productId: i.productId,
+          warehouseLotId: i.warehouseLotId || undefined,
           quantity: i.quantity,
           unitCost: i.unitCost,
         })),
@@ -240,7 +352,7 @@ export default function PurchasesPage() {
         setLocationId("");
         setPurchaseOrderId("");
         setInvoiceDate(new Date().toISOString().slice(0, 10));
-        setItems([{ productId: "", quantity: 1, unitCost: 0 }]);
+        setItems([{ productId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
         setNotes("");
         await loadData();
       }
@@ -288,15 +400,70 @@ export default function PurchasesPage() {
         </CardContent>
       </Card>
 
-      {/* Search Filter */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search by invoice number, supplier, or location..."
-          className="pl-9 bg-white"
-        />
+      {/* Search Filter & Archive Toggles */}
+      <div className="flex flex-col md:flex-row gap-2 items-center justify-between">
+        <div className="relative flex-1 w-full">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by invoice number, supplier, or location..."
+            className="pl-9 bg-white text-xs h-9 w-full"
+          />
+        </div>
+
+        {/* Status & Year Toggles */}
+        <div className="flex items-center gap-1.5 shrink-0 self-end md:self-auto text-xs">
+          <div className="inline-flex rounded-md border border-slate-300 p-0.5 bg-slate-100">
+            <button
+              type="button"
+              onClick={() => setStatusFilter("OPEN")}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                statusFilter === "OPEN"
+                  ? "bg-white text-amber-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Open Invoices
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter("ALL")}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                statusFilter === "ALL"
+                  ? "bg-white text-slate-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              All (inc. Settled)
+            </button>
+          </div>
+
+          <div className="inline-flex rounded-md border border-slate-300 p-0.5 bg-slate-100">
+            <button
+              type="button"
+              onClick={() => setYearFilter("CURRENT")}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                yearFilter === "CURRENT"
+                  ? "bg-white text-amber-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Current Year
+            </button>
+            <button
+              type="button"
+              onClick={() => setYearFilter("ALL")}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                yearFilter === "ALL"
+                  ? "bg-white text-slate-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              All Years (Archive)
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Invoices List / Responsive Cards */}
@@ -309,7 +476,7 @@ export default function PurchasesPage() {
       ) : filteredInvoices.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-slate-500 text-sm">
-            No purchase invoices recorded yet.
+            No purchase invoices match your filters.
           </CardContent>
         </Card>
       ) : (
@@ -319,13 +486,28 @@ export default function PurchasesPage() {
               <CardHeader className="pb-3 border-b border-slate-100">
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <CardTitle className="text-base font-bold text-slate-900">{inv.invoiceNo}</CardTitle>
+                    <div className="flex items-center gap-1.5">
+                      <CardTitle className="text-base font-bold text-slate-900">{inv.invoiceNo}</CardTitle>
+                      {inv.financialYear && (
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">
+                          {inv.financialYear.label}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs font-medium text-amber-800">{inv.supplier.name}</p>
                     {inv.supplier.phone && (
                       <p className="text-[11px] text-slate-400">{inv.supplier.phone}</p>
                     )}
                   </div>
-                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                      inv.status === "SETTLED"
+                        ? "bg-emerald-100 text-emerald-800"
+                        : inv.status === "CANCELLED"
+                        ? "bg-rose-100 text-rose-800"
+                        : "bg-amber-100 text-amber-800"
+                    }`}
+                  >
                     {inv.status}
                   </span>
                 </div>
@@ -346,9 +528,16 @@ export default function PurchasesPage() {
                     <span className="font-semibold text-emerald-800">{inv.purchaseOrder.orderNo}</span>
                   </div>
                 )}
-                <div className="flex justify-between text-slate-600">
+                <div className="flex justify-between items-center text-slate-600">
                   <span>Items:</span>
-                  <span>{inv.items.length} product(s)</span>
+                  <div className="text-right">
+                    <span>{inv.items.length} product(s)</span>
+                    {inv.items.some((it) => it.warehouseLot) && (
+                      <span className="ml-1.5 inline-block text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                        Lot: {Array.from(new Set(inv.items.filter((it) => it.warehouseLot).map((it) => it.warehouseLot!.lotNumber))).join(", ")}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex justify-between border-t border-slate-100 pt-2 font-bold text-sm">
                   <span>Total Amount:</span>
@@ -434,14 +623,14 @@ export default function PurchasesPage() {
                   <select
                     id="location"
                     value={locationId}
-                    onChange={(e) => setLocationId(e.target.value)}
+                    onChange={(e) => handleLocationChange(e.target.value)}
                     className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
                     required
                   >
                     <option value="">Select location</option>
                     {locations.map((loc) => (
                       <option key={loc.id} value={loc.id}>
-                        {loc.name}
+                        {loc.name} {loc.type === "WAREHOUSE" ? "(Warehouse)" : ""}
                       </option>
                     ))}
                   </select>
@@ -484,7 +673,14 @@ export default function PurchasesPage() {
               {/* Line items */}
               <div className="space-y-2 border-t border-slate-100 pt-3">
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">Stock Arrival Items</Label>
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">Stock Arrival Items</Label>
+                    {showLotSelector && (
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
+                        Lot Tracking Active
+                      </span>
+                    )}
+                  </div>
                   <Button type="button" variant="outline" size="sm" onClick={addItem} className="h-7 text-xs">
                     <Plus className="mr-1 h-3 w-3" /> Add Product
                   </Button>
@@ -494,7 +690,12 @@ export default function PurchasesPage() {
                   {items.map((item, idx) => (
                     <div
                       key={idx}
-                      className="grid gap-2 sm:grid-cols-[1fr_100px_120px_100px_36px] items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50"
+                      className={cn(
+                        "grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50",
+                        showLotSelector
+                          ? "sm:grid-cols-[1fr_150px_90px_110px_90px_36px]"
+                          : "sm:grid-cols-[1fr_100px_120px_100px_36px]"
+                      )}
                     >
                       <div>
                         <select
@@ -511,6 +712,36 @@ export default function PurchasesPage() {
                           ))}
                         </select>
                       </div>
+
+                      {showLotSelector && (
+                        <div className="flex items-center gap-1">
+                          <select
+                            value={item.warehouseLotId || ""}
+                            onChange={(e) => handleLotChange(idx, e.target.value)}
+                            className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs"
+                          >
+                            <option value="">No Lot</option>
+                            {locationLots.map((lot) => (
+                              <option key={lot.id} value={lot.id}>
+                                {lot.lotNumber} {lot.description ? `(${lot.description})` : ""}
+                              </option>
+                            ))}
+                          </select>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            title="Quick create new lot for this warehouse"
+                            onClick={() => {
+                              setQuickLotLineIndex(idx);
+                              setQuickLotModalOpen(true);
+                            }}
+                            className="h-7 w-7 shrink-0 p-0 text-amber-800 hover:bg-amber-100"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      )}
 
                       <div>
                         <Input
@@ -581,6 +812,85 @@ export default function PurchasesPage() {
                 </Button>
                 <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs">
                   {submitting ? "Processing..." : "Save & Receive Stock"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Create Lot Modal */}
+      {quickLotModalOpen && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Add Warehouse Lot</h3>
+                <p className="text-[11px] text-slate-500">
+                  Quick-create lot for <strong className="text-slate-700">{selectedLocation?.name || "Selected Location"}</strong>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setQuickLotModalOpen(false);
+                  setQuickLotLineIndex(null);
+                }}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateQuickLot} className="mt-4 space-y-3">
+              <div className="space-y-1">
+                <Label htmlFor="quickLotNo" className="text-xs font-medium text-slate-700">
+                  Lot Number / Tag <span className="text-rose-500">*</span>
+                </Label>
+                <Input
+                  id="quickLotNo"
+                  placeholder="e.g. Lot-12, Bin-4, Reel-01"
+                  value={quickLotNumber}
+                  onChange={(e) => setQuickLotNumber(e.target.value)}
+                  className="text-xs h-8"
+                  required
+                  autoFocus
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="quickLotDesc" className="text-xs font-medium text-slate-700">
+                  Description / Sub-batch <span className="text-slate-400 font-normal">(Optional)</span>
+                </Label>
+                <Input
+                  id="quickLotDesc"
+                  placeholder="e.g. 80 GSM imported paper consignment"
+                  value={quickLotDesc}
+                  onChange={(e) => setQuickLotDesc(e.target.value)}
+                  className="text-xs h-8"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setQuickLotModalOpen(false);
+                    setQuickLotLineIndex(null);
+                  }}
+                  className="text-xs h-8"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={submittingQuickLot || !quickLotNumber.trim()}
+                  className="bg-amber-800 text-white hover:bg-amber-700 text-xs h-8"
+                >
+                  {submittingQuickLot ? "Adding..." : "Save Lot"}
                 </Button>
               </div>
             </form>

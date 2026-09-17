@@ -4,11 +4,15 @@ import { prisma } from "@/lib/db";
 export async function getPartyBalance(
   partyId: string,
   tx?: Prisma.TransactionClient,
+  asOfDate?: Date,
 ): Promise<number> {
   const db = tx ?? prisma;
   const entries = await db.ledgerEntry.groupBy({
     by: ["accountType"],
-    where: { partyId },
+    where: {
+      partyId,
+      ...(asOfDate ? { date: { lte: asOfDate } } : {}),
+    },
     _sum: { debit: true, credit: true },
   });
 

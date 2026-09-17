@@ -11,6 +11,7 @@ import { purchaseOrderSchema } from "@/schemas/order";
 import { deliveryOrderSchema } from "@/schemas/order";
 import { DeliveryOrderStatus, PurchaseOrderStatus, StockMovementType, Unit } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { getActiveFinancialYear, getNextAtomicSequence } from "@/lib/financial-year";
 import { z } from "zod";
 
 async function resolveInternalTransferLocationId(
@@ -56,7 +57,7 @@ async function createDeliveryOrderStockMovements(
     destinationLocationId?: string | null;
     deliveredTo?: string | null;
     saleInvoiceId?: string | null;
-    items: Array<{ productId: string; quantity: number }>;
+    items: Array<{ productId: string; quantity: number; warehouseLotId?: string | null }>;
   },
 ) {
   const destinationLocationId = await resolveInternalTransferLocationId(
@@ -72,6 +73,7 @@ async function createDeliveryOrderStockMovements(
         data: {
           productId: item.productId,
           locationId: order.locationId,
+          warehouseLotId: (item as any).warehouseLotId || null,
           type: StockMovementType.TRANSFER_OUT,
           quantity: item.quantity,
           referenceType: "DELIVERY_ORDER",
@@ -134,6 +136,7 @@ async function createDeliveryOrderStockMovements(
       data: {
         productId: item.productId,
         locationId: order.locationId,
+        warehouseLotId: (item as any).warehouseLotId || null,
         type: StockMovementType.DELIVERY_OUT,
         quantity: item.quantity,
         referenceType: "DELIVERY_ORDER",
@@ -154,6 +157,7 @@ export async function listPurchaseOrdersAction() {
     const orders = await prisma.purchaseOrder.findMany({
       orderBy: { date: "desc" },
       include: {
+        financialYear: { select: { id: true, label: true, isActive: true } },
         supplier: { select: { id: true, name: true, phone: true } },
         location: { select: { id: true, name: true } },
         items: {
@@ -192,10 +196,17 @@ export async function createPurchaseOrderAction(raw: unknown) {
     const lockKeys = [...stockKeys, partyKey, docKey];
 
     const res = await withResourceQueue(lockKeys, async (tx) => {
-      const orderNo = generateDocumentNumber("PO");
+      const activeFy = await getActiveFinancialYear(tx);
+      const { sequenceNo, formattedNumber: orderNo } = await getNextAtomicSequence(
+        tx,
+        activeFy.id,
+        "PURCHASE_ORDER"
+      );
       const order = await tx.purchaseOrder.create({
         data: {
           orderNo,
+          financialYearId: activeFy.id,
+          sequenceNo,
           supplierId: input.supplierId,
           locationId: input.locationId,
           date: input.date,
@@ -324,6 +335,7 @@ export async function listDeliveryOrdersAction() {
     const orders = await prisma.deliveryOrder.findMany({
       orderBy: { date: "desc" },
       include: {
+        financialYear: { select: { id: true, label: true, isActive: true } },
         customer: { select: { id: true, name: true, phone: true } },
         location: { select: { id: true, name: true } },
         destinationLocation: { select: { id: true, name: true } },
@@ -331,6 +343,7 @@ export async function listDeliveryOrdersAction() {
         items: {
           include: {
             product: { select: { id: true, productNo: true, name: true } },
+            warehouseLot: { select: { id: true, lotNumber: true } },
           },
         },
       },
@@ -360,7 +373,12 @@ export async function createDeliveryOrderAction(raw: unknown) {
     const lockKeys = [...stockKeys, ...(partyKey ? [partyKey] : []), docKey];
 
     const res = await withResourceQueue(lockKeys, async (tx) => {
-      const doNo = generateDocumentNumber("DO");
+      const activeFy = await getActiveFinancialYear(tx);
+      const { sequenceNo, formattedNumber: doNo } = await getNextAtomicSequence(
+        tx,
+        activeFy.id,
+        "DELIVERY_ORDER"
+      );
 
       // If creating directly with DISPATCHED status, verify stock first
       if (input.status === DeliveryOrderStatus.DISPATCHED) {
@@ -396,6 +414,8 @@ export async function createDeliveryOrderAction(raw: unknown) {
       const order = await tx.deliveryOrder.create({
         data: {
           doNo,
+          financialYearId: activeFy.id,
+          sequenceNo,
           customerId: input.customerId || null,
           locationId: input.locationId,
           destinationLocationId: input.destinationLocationId || null,
@@ -410,6 +430,7 @@ export async function createDeliveryOrderAction(raw: unknown) {
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
+              warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
               unit: (item.unit ?? Unit.PACKET) as Unit,
             })),
@@ -429,6 +450,7 @@ export async function createDeliveryOrderAction(raw: unknown) {
           items: input.items.map((item) => ({
             productId: item.productId,
             quantity: Number(item.quantity),
+            warehouseLotId: item.warehouseLotId || null,
           })),
         });
       }
@@ -536,6 +558,7 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
           items: order.items.map((item) => ({
             productId: item.productId,
             quantity: Number(item.quantity),
+            warehouseLotId: item.warehouseLotId || null,
           })),
         });
       }

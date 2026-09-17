@@ -14,7 +14,10 @@ export type RealtimeModule =
   | "stock-movements"
   | "storage-charges"
   | "dashboard"
-  | "ledger";
+  | "ledger"
+  | "financial-years"
+  | "locations"
+  | "warehouse-lots";
 
 export interface RealtimeEvent {
   id: string;

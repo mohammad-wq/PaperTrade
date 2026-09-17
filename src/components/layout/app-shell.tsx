@@ -26,6 +26,8 @@ import {
   Layers,
   Banknote,
   Wallet,
+  Calendar,
+  MapPin,
 } from "lucide-react";
 import { Role } from "@prisma/client";
 import { Button } from "@/components/ui/button";
@@ -77,6 +79,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/inventory", label: "Inventory Stock", icon: PackageSearch, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "inventory" },
       { href: "/stock-movements", label: "Stock Movements", icon: ArrowRightLeft, roles: [Role.OWNER, Role.MANAGER], moduleKey: "stock-movements" },
+      { href: "/settings/locations", label: "Locations & Lots", icon: MapPin, roles: [Role.OWNER], moduleKey: "inventory" },
       { href: "/storage-charges", label: "Storage Charges", icon: Warehouse, roles: [Role.OWNER, Role.MANAGER], moduleKey: "storage-charges" },
     ],
   },
@@ -94,6 +97,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: "System Admin",
     items: [
       { href: "/users", label: "Staff & Users", icon: ShieldAlert, roles: [Role.OWNER], moduleKey: "users" },
+      { href: "/settings/financial-years", label: "Financial Years", icon: Calendar, roles: [Role.OWNER], moduleKey: "settings" },
       { href: "/settings", label: "Settings", icon: Settings, roles: [Role.OWNER], moduleKey: "settings" },
     ],
   },

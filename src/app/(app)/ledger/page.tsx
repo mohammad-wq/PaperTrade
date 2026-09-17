@@ -6,7 +6,10 @@ import {
   Search,
   ArrowDownRight,
   ArrowUpRight,
+  Printer,
+  FileText,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { listLedgerEntriesAction } from "@/actions/ledger";
@@ -94,14 +97,42 @@ export default function LedgerPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <div className="flex items-center gap-2">
-          <BookOpen className="h-5 w-5 text-emerald-800" />
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">General Ledger</h1>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <BookOpen className="h-5 w-5 text-emerald-800" />
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">General Ledger</h1>
+          </div>
+          <p className="text-sm text-slate-600">
+            Double-entry bookkeeping journal. Every financial change is recorded as an immutable ledger transaction.
+          </p>
         </div>
-        <p className="text-sm text-slate-600">
-          Double-entry bookkeeping journal. Every financial change is recorded as an immutable ledger transaction.
-        </p>
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.print()}
+            className="text-xs h-8 border-slate-300"
+          >
+            <Printer className="h-3.5 w-3.5 mr-1" />
+            Print
+          </Button>
+
+          <a
+            href={`/api/pdf/reports/general-ledger?download=true&startDate=${startDate}&endDate=${endDate}&partyId=${partyId !== "ALL" ? partyId : ""}&accountType=${accountType !== "ALL" ? accountType : ""}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <Button
+              size="sm"
+              className="text-xs h-8 bg-emerald-800 hover:bg-emerald-900 text-white font-medium"
+            >
+              <FileText className="h-3.5 w-3.5 mr-1" />
+              Export PDF
+            </Button>
+          </a>
+        </div>
       </div>
 
       {/* Summary Cards */}

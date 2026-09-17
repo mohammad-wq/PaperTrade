@@ -49,9 +49,11 @@ enum DeliveryOrderStatus {
 }
 
 enum InvoiceStatus {
+  OPEN
+  SETTLED
+  CANCELLED
   DRAFT
   POSTED
-  CANCELLED
 }
 
 enum AccountType {
@@ -105,11 +107,50 @@ model User {
   expenses               Expense[]
 }
 
+model FinancialYear {
+  id        String   @id @default(cuid())
+  label     String   @unique
+  startDate DateTime
+  endDate   DateTime
+  isActive  Boolean  @default(false)
+  isClosed  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  saleInvoices     SaleInvoice[]
+  purchaseInvoices PurchaseInvoice[]
+  purchaseOrders   PurchaseOrder[]
+  deliveryOrders   DeliveryOrder[]
+  saleReturns      SaleReturn[]
+  purchaseReturns  PurchaseReturn[]
+  payments         Payment[]
+  sequences        DocumentSequence[]
+  openingBalances  LedgerEntry[]      @relation("SourceFinancialYear")
+
+  @@index([isActive])
+  @@index([isClosed])
+}
+
+model DocumentSequence {
+  id              String        @id @default(cuid())
+  financialYearId String
+  documentType    String
+  lastSequence    Int           @default(0)
+
+  financialYear   FinancialYear @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+
+  @@unique([financialYearId, documentType])
+}
+
 model Location {
-  id      String       @id @default(cuid())
-  name    String
-  type    LocationType
-  address String?
+  id        String       @id @default(cuid())
+  name      String
+  type      LocationType
+  address   String?
+  isActive  Boolean      @default(true)
+  deletedAt DateTime?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @default(now()) @updatedAt
 
   stockMovements          StockMovement[]
   purchaseOrders          PurchaseOrder[]
@@ -120,8 +161,29 @@ model Location {
   saleReturns             SaleReturn[]
   purchaseReturns         PurchaseReturn[]
   warehouseStorageCharges WarehouseStorageCharge[]
+  warehouseLots           WarehouseLot[]
 
   @@unique([name, type])
+  @@index([type, isActive])
+}
+
+model WarehouseLot {
+  id          String    @id @default(cuid())
+  locationId  String
+  lotNumber   String
+  description String?
+  isActive    Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  location             Location              @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  stockMovements       StockMovement[]
+  purchaseInvoiceItems PurchaseInvoiceItem[]
+  deliveryOrderItems   DeliveryOrderItem[]
+
+  @@unique([locationId, lotNumber])
+  @@index([locationId, isActive])
 }
 
 model Category {
@@ -196,22 +258,26 @@ model ProductPriceHistory {
 }
 
 model StockMovement {
-  id            String             @id @default(cuid())
-  productId     String
-  locationId    String
-  type          StockMovementType
-  quantity      Decimal            @db.Decimal(14, 4)
-  referenceType String
-  referenceId   String
-  createdById   String
-  createdAt     DateTime           @default(now())
-  notes         String?
+  id             String            @id @default(cuid())
+  productId      String
+  locationId     String
+  warehouseLotId String?
+  type           StockMovementType
+  quantity       Decimal           @db.Decimal(14, 4)
+  referenceType  String
+  referenceId    String
+  createdById    String
+  createdAt      DateTime          @default(now())
+  notes          String?
 
-  product   Product  @relation(fields: [productId], references: [id])
-  location  Location @relation(fields: [locationId], references: [id])
-  createdBy User     @relation(fields: [createdById], references: [id])
+  product      Product       @relation(fields: [productId], references: [id])
+  location     Location      @relation(fields: [locationId], references: [id])
+  warehouseLot WarehouseLot? @relation(fields: [warehouseLotId], references: [id])
+  createdBy    User          @relation(fields: [createdById], references: [id])
 
   @@index([productId, locationId, type])
+  @@index([productId, warehouseLotId])
+  @@index([warehouseLotId])
   @@index([referenceType, referenceId])
   @@index([createdAt])
   @@index([type])
@@ -244,23 +310,27 @@ model Party {
 }
 
 model PurchaseOrder {
-  id         String               @id @default(cuid())
-  orderNo    String               @unique
-  supplierId String
-  locationId String
-  date       DateTime
-  status     PurchaseOrderStatus  @default(DRAFT)
-  notes      String?
-  createdById String
-  createdAt  DateTime             @default(now())
-  updatedAt  DateTime             @updatedAt
+  id              String               @id @default(cuid())
+  orderNo         String               @unique
+  financialYearId String?
+  sequenceNo      Int?
+  supplierId      String
+  locationId      String
+  date            DateTime
+  status          PurchaseOrderStatus  @default(DRAFT)
+  notes           String?
+  createdById     String
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
 
-  supplier  Party               @relation(fields: [supplierId], references: [id])
-  location  Location            @relation(fields: [locationId], references: [id])
-  createdBy User                @relation(fields: [createdById], references: [id])
-  items     PurchaseOrderItem[]
-  invoices  PurchaseInvoice[]
+  financialYear FinancialYear?      @relation(fields: [financialYearId], references: [id])
+  supplier      Party               @relation(fields: [supplierId], references: [id])
+  location      Location            @relation(fields: [locationId], references: [id])
+  createdBy     User                @relation(fields: [createdById], references: [id])
+  items         PurchaseOrderItem[]
+  invoices      PurchaseInvoice[]
 
+  @@index([financialYearId])
   @@index([supplierId])
   @@index([locationId])
   @@index([date])
@@ -285,17 +355,20 @@ model PurchaseOrderItem {
 model PurchaseInvoice {
   id              String        @id @default(cuid())
   invoiceNo       String        @unique
+  financialYearId String?
+  sequenceNo      Int?
   supplierId      String
   locationId      String
   purchaseOrderId String?
   date            DateTime
-  status          InvoiceStatus @default(POSTED)
+  status          InvoiceStatus @default(OPEN)
   totalAmount     Decimal       @db.Decimal(14, 4)
   notes           String?
   createdById     String
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
+  financialYear FinancialYear?        @relation(fields: [financialYearId], references: [id])
   supplier      Party                 @relation(fields: [supplierId], references: [id])
   location      Location              @relation(fields: [locationId], references: [id])
   purchaseOrder PurchaseOrder?        @relation(fields: [purchaseOrderId], references: [id])
@@ -304,6 +377,7 @@ model PurchaseInvoice {
   returns       PurchaseReturn[]
   payments      Payment[]
 
+  @@index([financialYearId])
   @@index([supplierId])
   @@index([locationId])
   @@index([date])
@@ -311,23 +385,28 @@ model PurchaseInvoice {
 }
 
 model PurchaseInvoiceItem {
-  id         String  @id @default(cuid())
-  invoiceId  String
-  productId  String
-  quantity   Decimal @db.Decimal(14, 4)
-  unitCost   Decimal @db.Decimal(14, 4)
-  lineTotal  Decimal @db.Decimal(14, 4)
+  id             String        @id @default(cuid())
+  invoiceId      String
+  productId      String
+  warehouseLotId String?
+  quantity       Decimal       @db.Decimal(14, 4)
+  unitCost       Decimal       @db.Decimal(14, 4)
+  lineTotal      Decimal       @db.Decimal(14, 4)
 
-  invoice PurchaseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
-  product Product         @relation(fields: [productId], references: [id])
+  invoice      PurchaseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  product      Product         @relation(fields: [productId], references: [id])
+  warehouseLot WarehouseLot?   @relation(fields: [warehouseLotId], references: [id])
 
   @@index([invoiceId])
   @@index([productId])
+  @@index([warehouseLotId])
 }
 
 model DeliveryOrder {
   id                    String               @id @default(cuid())
   doNo                  String               @unique
+  financialYearId       String?
+  sequenceNo            Int?
   customerId            String?
   locationId            String
   destinationLocationId String?
@@ -342,6 +421,7 @@ model DeliveryOrder {
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
 
+  financialYear       FinancialYear?      @relation(fields: [financialYearId], references: [id])
   customer            Party?              @relation(fields: [customerId], references: [id])
   location            Location            @relation("SourceLocation", fields: [locationId], references: [id])
   destinationLocation Location?           @relation("DestinationLocation", fields: [destinationLocationId], references: [id])
@@ -350,6 +430,7 @@ model DeliveryOrder {
   createdBy           User                @relation(fields: [createdById], references: [id])
   items               DeliveryOrderItem[]
 
+  @@index([financialYearId])
   @@index([customerId])
   @@index([locationId])
   @@index([destinationLocationId])
@@ -358,27 +439,32 @@ model DeliveryOrder {
 }
 
 model DeliveryOrderItem {
-  id        String  @id @default(cuid())
-  doId      String
-  productId String
-  quantity  Decimal @db.Decimal(14, 4)
-  unit      Unit
+  id             String        @id @default(cuid())
+  doId           String
+  productId      String
+  warehouseLotId String?
+  quantity       Decimal       @db.Decimal(14, 4)
+  unit           Unit
 
   deliveryOrder DeliveryOrder @relation(fields: [doId], references: [id], onDelete: Cascade)
   product       Product       @relation(fields: [productId], references: [id])
+  warehouseLot  WarehouseLot? @relation(fields: [warehouseLotId], references: [id])
 
   @@index([doId])
   @@index([productId])
+  @@index([warehouseLotId])
 }
 
 model SaleInvoice {
   id              String        @id @default(cuid())
   invoiceNo       String        @unique
+  financialYearId String?
+  sequenceNo      Int?
   customerId      String
   locationId      String
   deliveryOrderId String?       @unique
   date            DateTime
-  status          InvoiceStatus @default(POSTED)
+  status          InvoiceStatus @default(OPEN)
   totalAmount     Decimal       @db.Decimal(14, 4)
   amountPaid      Decimal       @default(0) @db.Decimal(14, 4)
   notes           String?
@@ -386,15 +472,17 @@ model SaleInvoice {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
-  customer      Party             @relation(fields: [customerId], references: [id])
-  location      Location          @relation(fields: [locationId], references: [id])
-  deliveryOrder DeliveryOrder?    @relation("SaleInvoiceToDeliveryOrder", fields: [deliveryOrderId], references: [id])
+  financialYear       FinancialYear? @relation(fields: [financialYearId], references: [id])
+  customer            Party          @relation(fields: [customerId], references: [id])
+  location            Location       @relation(fields: [locationId], references: [id])
+  deliveryOrder       DeliveryOrder? @relation("SaleInvoiceToDeliveryOrder", fields: [deliveryOrderId], references: [id])
   deliveryFromInvoice DeliveryOrder? @relation("DeliveryOrderToSaleInvoice")
-  createdBy     User              @relation(fields: [createdById], references: [id])
-  items         SaleInvoiceItem[]
-  returns       SaleReturn[]
-  payments      Payment[]         @relation("SaleInvoicePayments")
+  createdBy           User           @relation(fields: [createdById], references: [id])
+  items               SaleInvoiceItem[]
+  returns             SaleReturn[]
+  payments            Payment[]      @relation("SaleInvoicePayments")
 
+  @@index([financialYearId])
   @@index([customerId])
   @@index([locationId])
   @@index([date])
@@ -417,23 +505,27 @@ model SaleInvoiceItem {
 }
 
 model SaleReturn {
-  id            String   @id @default(cuid())
-  returnNo      String   @unique
-  saleInvoiceId String
-  customerId    String
-  locationId    String
-  date          DateTime
-  reason        String
-  totalAmount   Decimal  @db.Decimal(14, 4)
-  createdById   String
-  createdAt     DateTime @default(now())
+  id              String   @id @default(cuid())
+  returnNo        String   @unique
+  financialYearId String?
+  sequenceNo      Int?
+  saleInvoiceId   String
+  customerId      String
+  locationId      String
+  date            DateTime
+  reason          String
+  totalAmount     Decimal  @db.Decimal(14, 4)
+  createdById     String
+  createdAt       DateTime @default(now())
 
-  saleInvoice SaleInvoice      @relation(fields: [saleInvoiceId], references: [id])
-  customer    Party            @relation(fields: [customerId], references: [id])
-  location    Location         @relation(fields: [locationId], references: [id])
-  createdBy   User             @relation(fields: [createdById], references: [id])
-  items       SaleReturnItem[]
+  financialYear FinancialYear?   @relation(fields: [financialYearId], references: [id])
+  saleInvoice   SaleInvoice      @relation(fields: [saleInvoiceId], references: [id])
+  customer      Party            @relation(fields: [customerId], references: [id])
+  location      Location         @relation(fields: [locationId], references: [id])
+  createdBy     User             @relation(fields: [createdById], references: [id])
+  items         SaleReturnItem[]
 
+  @@index([financialYearId])
   @@index([saleInvoiceId])
   @@index([customerId])
   @@index([date])
@@ -457,6 +549,8 @@ model SaleReturnItem {
 model PurchaseReturn {
   id                String   @id @default(cuid())
   returnNo          String   @unique
+  financialYearId   String?
+  sequenceNo        Int?
   purchaseInvoiceId String
   supplierId        String
   locationId        String
@@ -466,12 +560,14 @@ model PurchaseReturn {
   createdById       String
   createdAt         DateTime @default(now())
 
+  financialYear   FinancialYear?       @relation(fields: [financialYearId], references: [id])
   purchaseInvoice PurchaseInvoice      @relation(fields: [purchaseInvoiceId], references: [id])
   supplier        Party                @relation(fields: [supplierId], references: [id])
   location        Location             @relation(fields: [locationId], references: [id])
   createdBy       User                 @relation(fields: [createdById], references: [id])
   items           PurchaseReturnItem[]
 
+  @@index([financialYearId])
   @@index([purchaseInvoiceId])
   @@index([supplierId])
   @@index([date])
@@ -493,21 +589,24 @@ model PurchaseReturnItem {
 }
 
 model LedgerEntry {
-  id            String      @id @default(cuid())
-  partyId       String?
-  accountType   AccountType
-  debit         Decimal     @default(0) @db.Decimal(14, 4)
-  credit        Decimal     @default(0) @db.Decimal(14, 4)
-  referenceType String
-  referenceId   String
-  date          DateTime
-  description   String
-  createdById   String
-  createdAt     DateTime    @default(now())
+  id                    String         @id @default(cuid())
+  partyId               String?
+  sourceFinancialYearId String?
+  accountType           AccountType
+  debit                 Decimal        @default(0) @db.Decimal(14, 4)
+  credit                Decimal        @default(0) @db.Decimal(14, 4)
+  referenceType         String
+  referenceId           String
+  date                  DateTime
+  description           String
+  createdById           String
+  createdAt             DateTime       @default(now())
 
-  party     Party? @relation(fields: [partyId], references: [id])
-  createdBy User   @relation(fields: [createdById], references: [id])
+  party               Party?         @relation(fields: [partyId], references: [id])
+  sourceFinancialYear FinancialYear? @relation("SourceFinancialYear", fields: [sourceFinancialYearId], references: [id])
+  createdBy           User           @relation(fields: [createdById], references: [id])
 
+  @@index([sourceFinancialYearId])
   @@index([partyId, date])
   @@index([accountType, date])
   @@index([referenceType, referenceId])
@@ -516,6 +615,9 @@ model LedgerEntry {
 
 model Payment {
   id                String        @id @default(cuid())
+  receiptNo         String?       @unique
+  financialYearId   String?
+  sequenceNo        Int?
   partyId           String
   saleInvoiceId     String?
   purchaseInvoiceId String?
@@ -526,11 +628,13 @@ model Payment {
   createdById       String
   createdAt         DateTime      @default(now())
 
+  financialYear   FinancialYear?   @relation(fields: [financialYearId], references: [id])
   party           Party            @relation(fields: [partyId], references: [id])
   saleInvoice     SaleInvoice?     @relation("SaleInvoicePayments", fields: [saleInvoiceId], references: [id])
   purchaseInvoice PurchaseInvoice? @relation(fields: [purchaseInvoiceId], references: [id])
   createdBy       User             @relation(fields: [createdById], references: [id])
 
+  @@index([financialYearId])
   @@index([partyId])
   @@index([date])
   @@index([saleInvoiceId])

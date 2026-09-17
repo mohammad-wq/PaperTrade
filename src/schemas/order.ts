@@ -21,6 +21,7 @@ export type PurchaseOrderInput = z.infer<typeof purchaseOrderSchema>;
 
 export const deliveryOrderItemSchema = z.object({
   productId: z.string().min(1, "Product is required"),
+  warehouseLotId: z.string().trim().optional().nullable(),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unit: z.nativeEnum(Unit).default(Unit.PACKET),
 });

@@ -4,7 +4,7 @@ import { authOptions } from "@/lib/auth/options";
 import { renderToBuffer } from "@react-pdf/renderer";
 import React from "react";
 import { prisma } from "@/lib/db";
-import { DocumentPdfView } from "@/pdf/documents";
+import { DocumentPdfView, PaymentReceiptPdfView } from "@/pdf/documents";
 import { format } from "date-fns";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { verifyDocShareToken } from "@/lib/tokens";
@@ -18,6 +18,7 @@ const ALLOWED_DOC_TYPES = new Set([
   "purchase-invoice",
   "sale-return",
   "purchase-return",
+  "payment-receipt",
 ]);
 
 export async function GET(
@@ -84,6 +85,7 @@ export async function GET(
           customer: true,
           location: true,
           deliveryOrder: true,
+          financialYear: true,
           items: { include: { product: true } },
         },
       });
@@ -96,6 +98,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: "Sale Invoice",
         docNumber: invoice.invoiceNo,
+        financialYearLabel: invoice.financialYear?.label || null,
         date: safeFormatDate(invoice.date),
         partyLabel: "Bill To (Customer)",
         partyName: invoice.customer?.name || "Customer",
@@ -122,6 +125,7 @@ export async function GET(
         include: {
           supplier: true,
           location: true,
+          financialYear: true,
           items: { include: { product: true } },
         },
       });
@@ -136,6 +140,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: "Purchase Order",
         docNumber: po.orderNo,
+        financialYearLabel: po.financialYear?.label || null,
         date: safeFormatDate(po.date),
         partyLabel: "Supplier Details",
         partyName: po.supplier?.name || "Supplier",
@@ -162,7 +167,8 @@ export async function GET(
           location: true,
           destinationLocation: true,
           linkedSaleInvoice: true,
-          items: { include: { product: true } },
+          financialYear: true,
+          items: { include: { product: true, warehouseLot: true } },
         },
       });
 
@@ -174,6 +180,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: doRecord.customer ? "Delivery Order" : "Internal Stock Transfer Order",
         docNumber: doRecord.doNo,
+        financialYearLabel: doRecord.financialYear?.label || null,
         date: safeFormatDate(doRecord.date),
         partyLabel: doRecord.customer ? "Deliver To (Customer)" : "Destination Location",
         partyName: doRecord.customer?.name || (doRecord.destinationLocation ? `Internal Transfer: ${doRecord.destinationLocation.name}` : "Internal Stock Transfer"),
@@ -188,12 +195,17 @@ export async function GET(
         },
         notes: doRecord.notes,
         signatures: { leftLabel: "Dispatched / Delivered By", rightLabel: "Received By (Customer Stamp)" },
-        items: doRecord.items.map((item) => ({
-          name: formatProductName(item.product),
-          specs: formatSpecs(item.product),
-          quantity: Number(item.quantity || 0),
-          unit: item.unit,
-        })),
+        items: doRecord.items.map((item) => {
+          const lotLabel = item.warehouseLot ? `Lot: ${item.warehouseLot.lotNumber}` : null;
+          const baseSpecs = formatSpecs(item.product);
+          const specs = [baseSpecs !== "—" ? baseSpecs : null, lotLabel].filter(Boolean).join(" | ") || "—";
+          return {
+            name: formatProductName(item.product),
+            specs,
+            quantity: Number(item.quantity || 0),
+            unit: item.unit,
+          };
+        }),
       });
     } else if (type === "purchase-invoice") {
       const invoice = await prisma.purchaseInvoice.findUnique({
@@ -202,7 +214,8 @@ export async function GET(
           supplier: true,
           location: true,
           purchaseOrder: true,
-          items: { include: { product: true } },
+          financialYear: true,
+          items: { include: { product: true, warehouseLot: true } },
         },
       });
 
@@ -214,6 +227,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: "Purchase Invoice",
         docNumber: invoice.invoiceNo,
+        financialYearLabel: invoice.financialYear?.label || null,
         date: safeFormatDate(invoice.date),
         partyLabel: "Supplier",
         partyName: invoice.supplier?.name || "Supplier",
@@ -224,14 +238,19 @@ export async function GET(
         totalAmount: Number(invoice.totalAmount || 0),
         notes: invoice.notes,
         signatures: { leftLabel: "Received By", rightLabel: "Verified By" },
-        items: invoice.items.map((item) => ({
-          name: formatProductName(item.product),
-          specs: formatSpecs(item.product),
-          quantity: Number(item.quantity || 0),
-          unit: item.product?.unit || "Unit",
-          unitPrice: Number(item.unitCost || 0),
-          lineTotal: Number(item.lineTotal || 0),
-        })),
+        items: invoice.items.map((item) => {
+          const lotLabel = item.warehouseLot ? `Lot: ${item.warehouseLot.lotNumber}` : null;
+          const baseSpecs = formatSpecs(item.product);
+          const specs = [baseSpecs !== "—" ? baseSpecs : null, lotLabel].filter(Boolean).join(" | ") || "—";
+          return {
+            name: formatProductName(item.product),
+            specs,
+            quantity: Number(item.quantity || 0),
+            unit: item.product?.unit || "Unit",
+            unitPrice: Number(item.unitCost || 0),
+            lineTotal: Number(item.lineTotal || 0),
+          };
+        }),
       });
     } else if (type === "sale-return") {
       const sReturn = await prisma.saleReturn.findUnique({
@@ -240,6 +259,7 @@ export async function GET(
           customer: true,
           location: true,
           saleInvoice: true,
+          financialYear: true,
           items: { include: { product: true } },
         },
       });
@@ -252,6 +272,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: "Sale Credit Note / Return",
         docNumber: sReturn.returnNo,
+        financialYearLabel: sReturn.financialYear?.label || null,
         date: safeFormatDate(sReturn.date),
         partyLabel: "Customer",
         partyName: sReturn.customer?.name || "Customer",
@@ -277,6 +298,7 @@ export async function GET(
           supplier: true,
           location: true,
           purchaseInvoice: true,
+          financialYear: true,
           items: { include: { product: true } },
         },
       });
@@ -289,6 +311,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: "Purchase Debit Note / Return",
         docNumber: pReturn.returnNo,
+        financialYearLabel: pReturn.financialYear?.label || null,
         date: safeFormatDate(pReturn.date),
         partyLabel: "Supplier",
         partyName: pReturn.supplier?.name || "Supplier",
@@ -306,6 +329,38 @@ export async function GET(
           unitPrice: Number(item.unitCost || 0),
           lineTotal: Number(item.lineTotal || 0),
         })),
+      });
+    } else if (type === "payment-receipt") {
+      const payment = await prisma.payment.findUnique({
+        where: { id },
+        include: {
+          party: true,
+          financialYear: true,
+          saleInvoice: true,
+          purchaseInvoice: true,
+          createdBy: true,
+        },
+      });
+
+      if (!payment) {
+        return new NextResponse("Payment receipt not found", { status: 404 });
+      }
+
+      const receiptNo = payment.receiptNo || `RCT-${payment.id.slice(0, 8)}`;
+      filename = `Receipt-${receiptNo}.pdf`;
+      docElement = React.createElement(PaymentReceiptPdfView, {
+        receiptNo,
+        financialYearLabel: payment.financialYear?.label || null,
+        date: safeFormatDate(payment.date),
+        partyName: payment.party?.name || "Customer / Supplier",
+        partyType: payment.party?.type || "CUSTOMER",
+        partyPhone: payment.party?.phone || null,
+        partyAddress: payment.party?.address || null,
+        amount: Number(payment.amount || 0),
+        method: payment.method,
+        notes: payment.notes,
+        invoiceNo: payment.saleInvoice?.invoiceNo || payment.purchaseInvoice?.invoiceNo || null,
+        createdByName: payment.createdBy?.name || "Accounts Dept",
       });
     }
 

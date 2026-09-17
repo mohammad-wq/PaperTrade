@@ -1,5 +1,5 @@
-import { ProductEditor } from "@/components/products/product-editor";
+import { redirect } from "next/navigation";
 
-export default async function EditProductPage({ params }: { params: { id: string } }) {
-  return <ProductEditor productId={params.id} />;
+export default function EditProductPage({ params }: { params: { id: string } }) {
+  redirect(`/products?id=${params.id}`);
 }

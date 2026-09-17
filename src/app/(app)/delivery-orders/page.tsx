@@ -22,10 +22,11 @@ import {
   listDeliveryOrdersAction,
   createDeliveryOrderAction,
   updateDeliveryOrderStatusAction,
-  listLocationsAction,
 } from "@/actions/orders";
+import { listLocationsAction } from "@/actions/locations";
 import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
+import { listWarehouseLotsAction, createWarehouseLotAction } from "@/actions/warehouse-lots";
 import { DeliveryOrderStatus, Unit } from "@prisma/client";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -44,9 +45,11 @@ type DORow = {
   location: { id: string; name: string };
   destinationLocation?: { id: string; name: string } | null;
   linkedSaleInvoice?: { id: string; invoiceNo: string } | null;
+  financialYear?: { id: string; label: string; isActive?: boolean } | null;
   items: Array<{
     id: string;
     quantity: number;
+    warehouseLot?: { id: string; lotNumber: string } | null;
     product: { id: string; productNo: string; name: string };
   }>;
 };
@@ -54,7 +57,15 @@ type DORow = {
 type LocationOption = {
   id: string;
   name: string;
+  type: string;
   address?: string | null;
+};
+
+type WarehouseLotOption = {
+  id: string;
+  locationId: string;
+  lotNumber: string;
+  description: string | null;
 };
 
 type PartyOption = {
@@ -72,6 +83,7 @@ type ProductOption = {
 
 type LineItem = {
   productId: string;
+  warehouseLotId?: string;
   quantity: number;
   unit: Unit;
 };
@@ -81,10 +93,19 @@ export default function DeliveryOrdersPage() {
   const [customers, setCustomers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [dbLocations, setDbLocations] = useState<LocationOption[]>([]);
+  const [warehouseLots, setWarehouseLots] = useState<WarehouseLotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+
+  // Quick lot creation modal state
+  const [quickLotModalOpen, setQuickLotModalOpen] = useState(false);
+  const [quickLotLineIndex, setQuickLotLineIndex] = useState<number | null>(null);
+  const [quickLotNumber, setQuickLotNumber] = useState("");
+  const [quickLotDesc, setQuickLotDesc] = useState("");
+  const [submittingQuickLot, setSubmittingQuickLot] = useState(false);
 
   // Form state
   const [orderType, setOrderType] = useState<"CUSTOMER" | "INTERNAL_TRANSFER">("CUSTOMER");
@@ -97,7 +118,7 @@ export default function DeliveryOrdersPage() {
   const [deliveredTo, setDeliveredTo] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<LineItem[]>([
-    { productId: "", quantity: 1, unit: Unit.PACKET },
+    { productId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET },
   ]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -105,11 +126,12 @@ export default function DeliveryOrdersPage() {
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const [doRes, partyRes, prodRes, locRes] = await Promise.all([
+      const [doRes, partyRes, prodRes, locRes, lotRes] = await Promise.all([
         listDeliveryOrdersAction(),
         listPartiesAction(),
         listProductsAction(),
         listLocationsAction(),
+        listWarehouseLotsAction(undefined, false),
       ]);
 
       if (doRes.success && doRes.data) {
@@ -125,6 +147,9 @@ export default function DeliveryOrdersPage() {
       if (locRes.success && locRes.data) {
         setDbLocations(locRes.data as LocationOption[]);
       }
+      if (lotRes.success && lotRes.data) {
+        setWarehouseLots(lotRes.data as WarehouseLotOption[]);
+      }
     } finally {
       if (!isBackground) setLoading(false);
     }
@@ -134,20 +159,38 @@ export default function DeliveryOrdersPage() {
     void loadData();
   }, []);
 
-  useRealtimeListener(["delivery-orders", "sales", "inventory"], () => {
+  useRealtimeListener(["delivery-orders", "sales", "inventory", "warehouse-lots"], () => {
     void loadData(true);
   });
 
   const locations = useMemo(() => {
     if (dbLocations.length > 0) return dbLocations;
-    const map = new Map<string, string>();
-    orders.forEach((o) => map.set(o.location.id, o.location.name));
-    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+    const map = new Map<string, LocationOption>();
+    orders.forEach((o) =>
+      map.set(o.location.id, { id: o.location.id, name: o.location.name, type: "WAREHOUSE" }),
+    );
+    return Array.from(map.values());
   }, [dbLocations, orders]);
+
+  const selectedSourceLocation = useMemo(
+    () => locations.find((l) => l.id === locationId),
+    [locations, locationId],
+  );
+
+  const sourceLocationLots = useMemo(
+    () => warehouseLots.filter((lot) => lot.locationId === locationId),
+    [warehouseLots, locationId],
+  );
+
+  const showLotSelector = selectedSourceLocation?.type === "WAREHOUSE" || sourceLocationLots.length > 0;
 
   const filteredOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
     return orders.filter((order) => {
+      // Financial year filter
+      if (yearFilter === "CURRENT" && order.financialYear && order.financialYear.isActive === false) {
+        return false;
+      }
       const matchesQuery =
         !q ||
         order.doNo.toLowerCase().includes(q) ||
@@ -158,7 +201,19 @@ export default function DeliveryOrdersPage() {
       const matchesStatus = statusFilter === "ALL" || order.status === statusFilter;
       return matchesQuery && matchesStatus;
     });
-  }, [orders, query, statusFilter]);
+  }, [orders, query, statusFilter, yearFilter]);
+
+  function handleLocationChange(newLocId: string) {
+    setLocationId(newLocId);
+    setItems((prev) =>
+      prev.map((it) => {
+        const lotMatches = warehouseLots.some(
+          (l) => l.id === it.warehouseLotId && l.locationId === newLocId,
+        );
+        return lotMatches ? it : { ...it, warehouseLotId: "" };
+      }),
+    );
+  }
 
   function handleProductChange(index: number, pId: string) {
     const prod = products.find((p) => p.id === pId);
@@ -167,6 +222,12 @@ export default function DeliveryOrdersPage() {
     if (prod && Object.values(Unit).includes(prod.unit as Unit)) {
       updated[index].unit = prod.unit as Unit;
     }
+    setItems(updated);
+  }
+
+  function handleLotChange(index: number, lotId: string) {
+    const updated = [...items];
+    updated[index].warehouseLotId = lotId;
     setItems(updated);
   }
 
@@ -183,7 +244,7 @@ export default function DeliveryOrdersPage() {
   }
 
   function addItem() {
-    setItems([...items, { productId: "", quantity: 1, unit: Unit.PACKET }]);
+    setItems([...items, { productId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET }]);
   }
 
   function removeItem(index: number) {
@@ -191,15 +252,51 @@ export default function DeliveryOrdersPage() {
     setItems(items.filter((_, idx) => idx !== index));
   }
 
+  async function handleCreateQuickLot(e: React.FormEvent) {
+    e.preventDefault();
+    if (!locationId || !quickLotNumber.trim()) return;
+    setSubmittingQuickLot(true);
+    try {
+      const res = await createWarehouseLotAction({
+        locationId,
+        lotNumber: quickLotNumber.trim(),
+        description: quickLotDesc.trim() || undefined,
+      });
+      if (res.success && res.data) {
+        const newLot = res.data as WarehouseLotOption;
+        setWarehouseLots((prev) => [...prev, newLot]);
+        if (quickLotLineIndex !== null) {
+          handleLotChange(quickLotLineIndex, newLot.id);
+        }
+        setQuickLotModalOpen(false);
+        setQuickLotNumber("");
+        setQuickLotDesc("");
+        setQuickLotLineIndex(null);
+      } else {
+        alert(!res.success ? res.error : "Failed to create lot");
+      }
+    } catch (err: any) {
+      alert(err.message || "Failed to create lot");
+    } finally {
+      setSubmittingQuickLot(false);
+    }
+  }
+
   async function handleStatusChange(id: string, status: DeliveryOrderStatus) {
     const actionLabel = status === DeliveryOrderStatus.DISPATCHED ? "dispatch goods and update stock" : "update status";
-    if (!window.confirm(`Are you sure you want to ${actionLabel}?`)) return;
+    if (!window.confirm(`Are you sure you want to ${actionLabel} for this Delivery Order?`)) {
+      return;
+    }
 
-    const res = await updateDeliveryOrderStatusAction({ id, status });
-    if (res.success) {
-      await loadData();
-    } else {
-      alert(res.error || "Failed to update delivery order status.");
+    try {
+      const res = await updateDeliveryOrderStatusAction({ id, status });
+      if (!res.success) {
+        alert(res.error || "Failed to update status");
+      } else {
+        await loadData();
+      }
+    } catch (err: any) {
+      alert(err.message || "An error occurred");
     }
   }
 
@@ -212,16 +309,16 @@ export default function DeliveryOrdersPage() {
       return;
     }
     if (!locationId) {
-      setFormError("Please select a dispatch/source location.");
+      setFormError("Please select a source/dispatch location.");
       return;
     }
     if (orderType === "INTERNAL_TRANSFER") {
       if (!destinationLocationId) {
-        setFormError("Please select a destination location for the internal transfer.");
+        setFormError("Please select a destination location.");
         return;
       }
       if (destinationLocationId === locationId) {
-        setFormError("Source and destination locations cannot be the same.");
+        setFormError("Destination location must be different from source location.");
         return;
       }
     }
@@ -253,6 +350,7 @@ export default function DeliveryOrdersPage() {
         notes,
         items: items.map((i) => ({
           productId: i.productId,
+          warehouseLotId: i.warehouseLotId || undefined,
           quantity: i.quantity,
           unit: i.unit,
         })),
@@ -267,11 +365,11 @@ export default function DeliveryOrdersPage() {
         setLocationId("");
         setDestinationLocationId("");
         setOrderDate(new Date().toISOString().slice(0, 10));
-        setItems([{ productId: "", quantity: 1, unit: Unit.PACKET }]);
         setVehicleNo("");
         setDriverName("");
         setDeliveredTo("");
         setNotes("");
+        setItems([{ productId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET }]);
         await loadData();
       }
     } finally {
@@ -333,27 +431,55 @@ export default function DeliveryOrdersPage() {
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
+      <div className="flex flex-col sm:flex-row gap-2 items-center justify-between">
+        <div className="relative flex-1 w-full">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search by DO number, customer, vehicle, or driver..."
-            className="pl-9 bg-white"
+            className="pl-9 bg-white text-xs h-9 w-full"
           />
         </div>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700"
-        >
-          <option value="ALL">All Statuses</option>
-          <option value="DRAFT">Draft</option>
-          <option value="DISPATCHED">Dispatched</option>
-          <option value="DELIVERED">Delivered</option>
-          <option value="CANCELLED">Cancelled</option>
-        </select>
+
+        <div className="flex items-center gap-2 self-end sm:self-auto text-xs shrink-0">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 h-8"
+          >
+            <option value="ALL">All Statuses</option>
+            <option value="DRAFT">Draft</option>
+            <option value="DISPATCHED">Dispatched</option>
+            <option value="DELIVERED">Delivered</option>
+            <option value="CANCELLED">Cancelled</option>
+          </select>
+
+          <div className="inline-flex rounded-md border border-slate-300 p-0.5 bg-slate-100">
+            <button
+              type="button"
+              onClick={() => setYearFilter("CURRENT")}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                yearFilter === "CURRENT"
+                  ? "bg-white text-amber-950 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Current Year
+            </button>
+            <button
+              type="button"
+              onClick={() => setYearFilter("ALL")}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                yearFilter === "ALL"
+                  ? "bg-white text-slate-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              All Years (Archive)
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* DO Cards */}
@@ -376,7 +502,14 @@ export default function DeliveryOrdersPage() {
               <CardHeader className="pb-3 border-b border-slate-100">
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <CardTitle className="text-base font-bold text-slate-900">{order.doNo}</CardTitle>
+                    <div className="flex items-center gap-1.5">
+                      <CardTitle className="text-base font-bold text-slate-900">{order.doNo}</CardTitle>
+                      {order.financialYear && (
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">
+                          {order.financialYear.label}
+                        </span>
+                      )}
+                    </div>
                     {order.customer ? (
                       <>
                         <p className="text-xs font-medium text-amber-900">{order.customer.name}</p>
@@ -427,9 +560,16 @@ export default function DeliveryOrdersPage() {
                     <span className="truncate max-w-[150px]">{order.deliveredTo}</span>
                   </div>
                 )}
-                <div className="flex justify-between border-t border-slate-100 pt-2 text-slate-700 font-semibold">
+                <div className="flex justify-between items-center border-t border-slate-100 pt-2 text-slate-700 font-semibold">
                   <span>Packages:</span>
-                  <span>{order.items.length} item line(s)</span>
+                  <div className="text-right">
+                    <span>{order.items.length} item line(s)</span>
+                    {order.items.some((it) => it.warehouseLot) && (
+                      <span className="ml-1.5 inline-block text-[10px] font-semibold text-sky-800 bg-sky-50 border border-sky-200 rounded px-1.5 py-0.5">
+                        Lot: {Array.from(new Set(order.items.filter((it) => it.warehouseLot).map((it) => it.warehouseLot!.lotNumber))).join(", ")}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </CardContent>
 
@@ -584,14 +724,14 @@ export default function DeliveryOrdersPage() {
                       <select
                         id="dolocation"
                         value={locationId}
-                        onChange={(e) => setLocationId(e.target.value)}
+                        onChange={(e) => handleLocationChange(e.target.value)}
                         className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
                         required
                       >
                         <option value="">Select location</option>
                         {locations.map((loc) => (
                           <option key={loc.id} value={loc.id}>
-                            {loc.name}
+                            {loc.name} {loc.type === "WAREHOUSE" ? "(Warehouse)" : ""}
                           </option>
                         ))}
                       </select>
@@ -606,14 +746,14 @@ export default function DeliveryOrdersPage() {
                       <select
                         id="dofromlocation"
                         value={locationId}
-                        onChange={(e) => setLocationId(e.target.value)}
+                        onChange={(e) => handleLocationChange(e.target.value)}
                         className="w-full rounded-md border border-rose-200 bg-rose-50/30 px-3 py-2 text-xs font-medium"
                         required
                       >
                         <option value="">Select source</option>
                         {locations.map((loc) => (
                           <option key={loc.id} value={loc.id}>
-                            {loc.name}
+                            {loc.name} {loc.type === "WAREHOUSE" ? "(Warehouse)" : ""}
                           </option>
                         ))}
                       </select>
@@ -699,7 +839,14 @@ export default function DeliveryOrdersPage() {
               {/* Line items */}
               <div className="space-y-2 border-t border-slate-100 pt-3">
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">Consignment Items</Label>
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">Consignment Items</Label>
+                    {showLotSelector && (
+                      <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-900">
+                        Lot Tracking Active
+                      </span>
+                    )}
+                  </div>
                   <Button type="button" variant="outline" size="sm" onClick={addItem} className="h-7 text-xs">
                     <Plus className="mr-1 h-3 w-3" /> Add Item
                   </Button>
@@ -709,7 +856,12 @@ export default function DeliveryOrdersPage() {
                   {items.map((item, idx) => (
                     <div
                       key={idx}
-                      className="grid gap-2 sm:grid-cols-[1fr_120px_120px_36px] items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50"
+                      className={cn(
+                        "grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50",
+                        showLotSelector
+                          ? "sm:grid-cols-[1fr_150px_100px_110px_36px]"
+                          : "sm:grid-cols-[1fr_120px_120px_36px]"
+                      )}
                     >
                       <div>
                         <select
@@ -726,6 +878,36 @@ export default function DeliveryOrdersPage() {
                           ))}
                         </select>
                       </div>
+
+                      {showLotSelector && (
+                        <div className="flex items-center gap-1">
+                          <select
+                            value={item.warehouseLotId || ""}
+                            onChange={(e) => handleLotChange(idx, e.target.value)}
+                            className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs"
+                          >
+                            <option value="">No Lot</option>
+                            {sourceLocationLots.map((lot) => (
+                              <option key={lot.id} value={lot.id}>
+                                {lot.lotNumber} {lot.description ? `(${lot.description})` : ""}
+                              </option>
+                            ))}
+                          </select>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            title="Quick create new lot for this warehouse"
+                            onClick={() => {
+                              setQuickLotLineIndex(idx);
+                              setQuickLotModalOpen(true);
+                            }}
+                            className="h-7 w-7 shrink-0 p-0 text-sky-800 hover:bg-sky-100"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      )}
 
                       <div>
                         <Input
@@ -788,6 +970,85 @@ export default function DeliveryOrdersPage() {
                 </Button>
                 <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs">
                   {submitting ? "Saving..." : "Create Delivery Order"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Create Lot Modal */}
+      {quickLotModalOpen && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Add Warehouse Lot</h3>
+                <p className="text-[11px] text-slate-500">
+                  Quick-create lot for <strong className="text-slate-700">{selectedSourceLocation?.name || "Selected Location"}</strong>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setQuickLotModalOpen(false);
+                  setQuickLotLineIndex(null);
+                }}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateQuickLot} className="mt-4 space-y-3">
+              <div className="space-y-1">
+                <Label htmlFor="doQuickLotNo" className="text-xs font-medium text-slate-700">
+                  Lot Number / Tag <span className="text-rose-500">*</span>
+                </Label>
+                <Input
+                  id="doQuickLotNo"
+                  placeholder="e.g. Lot-12, Bin-4, Reel-01"
+                  value={quickLotNumber}
+                  onChange={(e) => setQuickLotNumber(e.target.value)}
+                  className="text-xs h-8"
+                  required
+                  autoFocus
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="doQuickLotDesc" className="text-xs font-medium text-slate-700">
+                  Description / Sub-batch <span className="text-slate-400 font-normal">(Optional)</span>
+                </Label>
+                <Input
+                  id="doQuickLotDesc"
+                  placeholder="e.g. 80 GSM imported paper consignment"
+                  value={quickLotDesc}
+                  onChange={(e) => setQuickLotDesc(e.target.value)}
+                  className="text-xs h-8"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setQuickLotModalOpen(false);
+                    setQuickLotLineIndex(null);
+                  }}
+                  className="text-xs h-8"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={submittingQuickLot || !quickLotNumber.trim()}
+                  className="bg-sky-800 text-white hover:bg-sky-700 text-xs h-8"
+                >
+                  {submittingQuickLot ? "Adding..." : "Save Lot"}
                 </Button>
               </div>
             </form>

@@ -217,7 +217,7 @@ export default function PartiesPage() {
                       {/* Card Header */}
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <Link href={`/parties/${party.id}/edit`} className="font-bold text-sm text-slate-900 hover:text-emerald-800 transition-colors">
+                          <Link href={`/parties/${party.id}`} className="font-bold text-sm text-slate-900 hover:text-emerald-800 transition-colors">
                             {party.name}
                           </Link>
                           <div className="flex items-center gap-1.5 mt-1">
