@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Truck,
   Plus,
@@ -13,6 +14,9 @@ import {
   Send,
   CheckCircle,
   Clock,
+  Eye,
+  Printer,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,6 +35,7 @@ import { DeliveryOrderStatus, Unit } from "@prisma/client";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useConfirm } from "@/components/providers/confirm-provider";
 
 type DORow = {
   id: string;
@@ -89,6 +94,7 @@ type LineItem = {
 };
 
 export default function DeliveryOrdersPage() {
+  const confirm = useConfirm();
   const [orders, setOrders] = useState<DORow[]>([]);
   const [customers, setCustomers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
@@ -99,6 +105,21 @@ export default function DeliveryOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "F2" || e.key === "Insert") {
+        e.preventDefault();
+        setIsDialogOpen(true);
+      } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Quick lot creation modal state
   const [quickLotModalOpen, setQuickLotModalOpen] = useState(false);
@@ -122,6 +143,106 @@ export default function DeliveryOrdersPage() {
   ]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [saleInvoiceId, setSaleInvoiceId] = useState<string | null>(null);
+  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (searchParams.get("action") === "new") {
+      setIsDialogOpen(true);
+    }
+    const invId = searchParams.get("saleInvoiceId");
+    if (invId) {
+      setSaleInvoiceId(invId);
+    }
+    const custId = searchParams.get("customerId");
+    if (custId) {
+      setCustomerId(custId);
+    }
+
+    if (searchParams.get("fromInvoice") === "1") {
+      try {
+        const stored = sessionStorage.getItem("draft_from_invoice");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.saleInvoiceId) setSaleInvoiceId(parsed.saleInvoiceId);
+          if (parsed.customerId) setCustomerId(parsed.customerId);
+          if (parsed.locationId) setLocationId(parsed.locationId);
+          if (Array.isArray(parsed.items) && parsed.items.length > 0) {
+            setItems(
+              parsed.items.map((item: any) => ({
+                productId: item.productId || "",
+                quantity: Number(item.quantity) || 1,
+                unit: item.unit && Object.values(Unit).includes(item.unit) ? item.unit : Unit.PACKET,
+                warehouseLotId: item.warehouseLotId || "",
+              }))
+            );
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load draft_from_invoice in delivery orders", e);
+      }
+    }
+  }, [searchParams]);
+
+  // Pre-posting PDF preview
+  async function handlePreviewPdf() {
+    if (items.length === 0 || items.some((i) => !i.productId || i.quantity <= 0)) {
+      setFormError("Please select valid items with quantities > 0 before previewing.");
+      return;
+    }
+    setPreviewLoading(true);
+    try {
+      const selectedCustomer = customers.find((c) => c.id === customerId);
+      const selectedLoc = dbLocations.find((l) => l.id === locationId);
+      const payload = {
+        type: "delivery-order",
+        docNumber: "DO-PREVIEW",
+        date: orderDate,
+        partyName: orderType === "CUSTOMER" ? selectedCustomer?.name || "Customer" : "Internal Stock Transfer",
+        partyPhone: selectedCustomer ? (selectedCustomer as any).phone || null : null,
+        locationName: selectedLoc?.name || "Warehouse",
+        referenceNo: vehicleNo ? `Vehicle: ${vehicleNo}` : null,
+        notes: notes || null,
+        items: items.map((item) => {
+          const prod = products.find((p) => p.id === item.productId);
+          const foundLot = warehouseLots.find((l) => l.id === item.warehouseLotId);
+          return {
+            name: prod ? `${prod.productNo} - ${prod.name}` : "Product",
+            specs: item.unit || "Standard",
+            lot: foundLot ? foundLot.lotNumber : null,
+            quantity: item.quantity,
+            unit: item.unit,
+            unitPrice: 0,
+            lineTotal: 0,
+          };
+        }),
+      };
+
+      const res = await fetch("/api/pdf/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || "Failed to generate preview PDF");
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setPdfPreviewUrl(url);
+      setShowPdfPreviewModal(true);
+    } catch (err: any) {
+      await confirm.alert(err.message || "Failed to preview DO PDF", { variant: "destructive" });
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
 
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
@@ -273,10 +394,10 @@ export default function DeliveryOrdersPage() {
         setQuickLotDesc("");
         setQuickLotLineIndex(null);
       } else {
-        alert(!res.success ? res.error : "Failed to create lot");
+        await confirm.alert(!res.success ? res.error : "Failed to create lot", { variant: "destructive" });
       }
     } catch (err: any) {
-      alert(err.message || "Failed to create lot");
+      await confirm.alert(err.message || "Failed to create lot", { variant: "destructive" });
     } finally {
       setSubmittingQuickLot(false);
     }
@@ -284,19 +405,25 @@ export default function DeliveryOrdersPage() {
 
   async function handleStatusChange(id: string, status: DeliveryOrderStatus) {
     const actionLabel = status === DeliveryOrderStatus.DISPATCHED ? "dispatch goods and update stock" : "update status";
-    if (!window.confirm(`Are you sure you want to ${actionLabel} for this Delivery Order?`)) {
+    const ok = await confirm({
+      title: "Delivery Order Status",
+      description: `Are you sure you want to ${actionLabel} for this Delivery Order?`,
+      confirmText: status === DeliveryOrderStatus.DISPATCHED ? "Dispatch Goods" : "Update Status",
+      variant: status === DeliveryOrderStatus.DISPATCHED ? "primary" : "default",
+    });
+    if (!ok) {
       return;
     }
 
     try {
       const res = await updateDeliveryOrderStatusAction({ id, status });
       if (!res.success) {
-        alert(res.error || "Failed to update status");
+        await confirm.alert(res.error || "Failed to update status", { variant: "destructive" });
       } else {
         await loadData();
       }
     } catch (err: any) {
-      alert(err.message || "An error occurred");
+      await confirm.alert(err.message || "An error occurred", { variant: "destructive" });
     }
   }
 
@@ -329,9 +456,15 @@ export default function DeliveryOrdersPage() {
 
     const confirmMsg =
       orderType === "INTERNAL_TRANSFER"
-        ? "Confirm: create internal stock transfer between locations?"
-        : "Confirm: create this delivery order?";
-    if (!window.confirm(confirmMsg)) return;
+        ? "Are you sure you want to create this internal stock transfer between locations?"
+        : "Are you sure you want to create this delivery order?";
+    const ok = await confirm({
+      title: orderType === "INTERNAL_TRANSFER" ? "Confirm Stock Transfer" : "Confirm Delivery Order",
+      description: confirmMsg,
+      confirmText: "Create Order",
+      variant: "primary",
+    });
+    if (!ok) return;
 
     setSubmitting(true);
     try {
@@ -340,6 +473,7 @@ export default function DeliveryOrdersPage() {
         customerId: orderType === "CUSTOMER" ? customerId : null,
         locationId,
         destinationLocationId: orderType === "INTERNAL_TRANSFER" ? destinationLocationId : null,
+        saleInvoiceId: saleInvoiceId || undefined,
         date: new Date(orderDate),
         status: DeliveryOrderStatus.DRAFT,
         vehicleNo,
@@ -384,10 +518,10 @@ export default function DeliveryOrdersPage() {
       if (json.success && json.url) {
         window.open(json.url, "_blank");
       } else {
-        alert("Failed to create WhatsApp share link.");
+        await confirm.alert("Failed to create WhatsApp share link.", { variant: "destructive" });
       }
     } catch {
-      alert("Error generating WhatsApp share link.");
+      await confirm.alert("Error generating WhatsApp share link.", { variant: "destructive" });
     }
   }
 
@@ -405,41 +539,63 @@ export default function DeliveryOrdersPage() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <Truck className="h-5 w-5 text-amber-800" />
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Delivery Orders</h1>
+    <div className="flex flex-col gap-3 p-4">
+      {/* Top Banner: Title, Counters, and Action Button */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-md shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-400 rounded-md">
+            <Truck className="h-5 w-5" />
           </div>
-          <p className="text-sm text-slate-600">
-            Issue gate passes and delivery slips for paper transport, with vehicle and driver assignment.
-          </p>
+          <div>
+            <h1 className="text-base font-bold tracking-tight text-slate-900 dark:text-slate-100">
+              Delivery Orders
+            </h1>
+            <p className="text-[11px] text-slate-500">
+              Issue gate passes and delivery slips for paper transport, with vehicle and driver assignment
+            </p>
+          </div>
         </div>
 
-        <Button
-          onClick={() => {
-            if (!locationId && locations.length > 0) setLocationId(locations[0].id);
-            setIsDialogOpen(true);
-          }}
-          className="bg-amber-800 text-white hover:bg-amber-700 shadow-sm"
-        >
-          <Plus className="mr-1.5 h-4 w-4" />
-          Create Delivery Order
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Counters */}
+          <div className="hidden sm:flex items-center gap-2 text-xs font-mono">
+            <span className="bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2 py-1 rounded">
+              Orders: <strong>{filteredOrders.length}</strong>
+            </span>
+          </div>
+
+          <Button
+            onClick={() => {
+              if (!locationId && locations.length > 0) setLocationId(locations[0].id);
+              setIsDialogOpen(true);
+            }}
+            className="h-8 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold shadow-xs px-3"
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            Create Delivery Order <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+          </Button>
+        </div>
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="flex flex-col sm:flex-row gap-2 items-center justify-between">
+      <div className="flex flex-col sm:flex-row gap-2 items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs">
         <div className="relative flex-1 w-full">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <Input
+            ref={searchInputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by DO number, customer, vehicle, or driver..."
-            className="pl-9 bg-white text-xs h-9 w-full"
+            placeholder="Search by DO number, customer, vehicle, or driver... (Press / to focus)"
+            className="h-8 pl-8 pr-8 text-xs bg-slate-50 dark:bg-slate-950/50 border-slate-300 dark:border-slate-700 font-medium"
           />
+          {query && (
+            <button
+              onClick={() => setQuery("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-2 self-end sm:self-auto text-xs shrink-0">
@@ -631,7 +787,33 @@ export default function DeliveryOrdersPage() {
       {/* New DO Modal */}
       {isDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs overflow-y-auto">
-          <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto">
+          <div className="w-[96vw] max-w-6xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
+            {/* Quick Navigation Strip */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold text-slate-500">Quick Jump:</span>
+                <a
+                  href="/sales"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  + Sales Invoice
+                </a>
+                <a
+                  href="/purchases"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  + Purchase Invoice
+                </a>
+                <a
+                  href="/purchase-orders"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  + Purchase Order
+                </a>
+              </div>
+              <span className="text-[11px] text-slate-400 font-mono">Press [Esc] to close</span>
+            </div>
+
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">New Delivery Order</h2>
@@ -912,9 +1094,10 @@ export default function DeliveryOrdersPage() {
                       <div>
                         <Input
                           type="number"
-                          min="1"
+                          min="0.0001"
+                          step="any"
                           value={item.quantity}
-                          onChange={(e) => handleQuantityChange(idx, Number(e.target.value) || 1)}
+                          onChange={(e) => handleQuantityChange(idx, parseFloat(e.target.value) || 0)}
                           className="h-8 text-xs text-right"
                           placeholder="Qty"
                           required
@@ -927,8 +1110,8 @@ export default function DeliveryOrdersPage() {
                           onChange={(e) => handleUnitChange(idx, e.target.value as Unit)}
                           className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
                         >
-                          <option value={Unit.PACKET}>PACKET (100 Sheets)</option>
-                          <option value={Unit.REAM}>REAM (500 Sheets)</option>
+                          <option value={Unit.PACKET}>PACKET (100 sheets)</option>
+                          <option value={Unit.REAM}>REAM (500 sheets)</option>
                           {Object.values(Unit).filter((u) => u !== Unit.PACKET && u !== Unit.REAM).map((u) => (
                             <option key={u} value={u}>
                               {u}
@@ -964,13 +1147,30 @@ export default function DeliveryOrdersPage() {
                 />
               </div>
 
-              <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
-                <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs">
-                  {submitting ? "Saving..." : "Create Delivery Order"}
-                </Button>
+              <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-4">
+                <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
+                  Preview official document layout before dispatch
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePreviewPdf}
+                    disabled={previewLoading || items.length === 0}
+                    className="text-xs border-amber-400 text-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 gap-1.5"
+                    title="Preview DO in PDF format"
+                  >
+                    <Eye className="h-3.5 w-3.5 text-amber-700" />
+                    {previewLoading ? "Rendering..." : "Preview PDF"}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs font-semibold">
+                    {submitting ? "Saving..." : "Create Delivery Order"}
+                  </Button>
+                </div>
               </div>
             </form>
           </div>
@@ -979,7 +1179,7 @@ export default function DeliveryOrdersPage() {
 
       {/* Quick Create Lot Modal */}
       {quickLotModalOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div>
@@ -1052,6 +1252,57 @@ export default function DeliveryOrdersPage() {
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Pre-Posting Live PDF Document Preview Modal */}
+      {showPdfPreviewModal && pdfPreviewUrl && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
+          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
+            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-amber-400" />
+                <span className="font-bold text-xs">Delivery Order Document Preview (Pre-Posting)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const iframe = document.getElementById("doPdfPreviewIframe") as HTMLIFrameElement;
+                    iframe?.contentWindow?.print();
+                  }}
+                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Print
+                </Button>
+                <a
+                  href={pdfPreviewUrl}
+                  download={`Delivery-Order-Preview-${new Date().toISOString().slice(0, 10)}.pdf`}
+                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-amber-700 hover:bg-amber-800 text-white rounded font-medium"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download
+                </a>
+                <button
+                  onClick={() => setShowPdfPreviewModal(false)}
+                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
+                  title="Close Preview"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
+              <iframe
+                id="doPdfPreviewIframe"
+                src={pdfPreviewUrl}
+                className="w-full h-full rounded border border-slate-300 dark:border-slate-800 bg-white"
+                title="Delivery Order Preview"
+              />
+            </div>
           </div>
         </div>
       )}

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   RotateCcw,
   Plus,
@@ -10,6 +11,9 @@ import {
   X,
   ArrowDownLeft,
   ArrowUpRight,
+  Eye,
+  Printer,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +27,7 @@ import {
 import { listSaleInvoicesAction, listPurchaseInvoicesAction } from "@/actions/invoices";
 import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useConfirm } from "@/components/providers/confirm-provider";
 
 type SaleReturnRow = {
   id: string;
@@ -67,6 +72,9 @@ type InvoiceOption = {
   invoiceNo: string;
   customerId?: string;
   supplierId?: string;
+  customer?: { id: string; name: string; phone?: string | null };
+  supplier?: { id: string; name: string; phone?: string | null };
+  location?: { id: string; name: string };
   items: Array<{
     productId: string;
     quantity: number;
@@ -77,6 +85,7 @@ type InvoiceOption = {
 };
 
 export default function ReturnsPage() {
+  const confirm = useConfirm();
   const [tab, setTab] = useState<"SALES" | "PURCHASES">("SALES");
   const [saleReturns, setSaleReturns] = useState<SaleReturnRow[]>([]);
   const [purchaseReturns, setPurchaseReturns] = useState<PurchaseReturnRow[]>([]);
@@ -85,6 +94,24 @@ export default function ReturnsPage() {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "F2" || e.key === "Insert") {
+        e.preventDefault();
+        setSelectedInvoiceId("");
+        setReturnItems([]);
+        setReason("");
+        setIsDialogOpen(true);
+      } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const displayedSaleReturns = useMemo(() => {
     return saleReturns.filter((r) => {
@@ -126,6 +153,77 @@ export default function ReturnsPage() {
   >([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (searchParams.get("action") === "new") {
+      setIsDialogOpen(true);
+    }
+  }, [searchParams]);
+
+  // Pre-posting PDF preview
+  async function handlePreviewPdf() {
+    if (!selectedInvoiceId) {
+      setFormError("Please select the original invoice before previewing.");
+      return;
+    }
+    const itemsToReturn = returnItems.filter((i) => i.quantity > 0);
+    if (itemsToReturn.length === 0) {
+      setFormError("Enter at least one return quantity > 0 before previewing.");
+      return;
+    }
+    setPreviewLoading(true);
+    try {
+      const invList = tab === "SALES" ? saleInvoices : purchaseInvoices;
+      const originalInv = invList.find((i) => i.id === selectedInvoiceId);
+      const totalAmount = itemsToReturn.reduce((sum, i) => sum + i.quantity * i.unitRate, 0);
+
+      const payload = {
+        type: tab === "SALES" ? "sale-return" : "purchase-return",
+        docNumber: tab === "SALES" ? "CR-NOTE-PREVIEW" : "DB-NOTE-PREVIEW",
+        date: returnDate,
+        partyName: originalInv?.customer?.name || originalInv?.supplier?.name || "Party",
+        partyPhone: originalInv?.customer?.phone || originalInv?.supplier?.phone || null,
+        locationName: originalInv?.location?.name || "Shop",
+        referenceNo: originalInv ? `Original Invoice: ${originalInv.invoiceNo}` : null,
+        totalAmount,
+        amountPaid: 0,
+        notes: reason || null,
+        items: itemsToReturn.map((item) => ({
+          name: item.name,
+          specs: item.unit,
+          quantity: item.quantity,
+          unit: item.unit,
+          unitPrice: item.unitRate,
+          lineTotal: item.quantity * item.unitRate,
+        })),
+      };
+
+      const res = await fetch("/api/pdf/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || "Failed to generate preview PDF");
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setPdfPreviewUrl(url);
+      setShowPdfPreviewModal(true);
+    } catch (err: any) {
+      await confirm.alert(err.message || "Failed to preview return PDF", { variant: "destructive" });
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
 
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
@@ -227,7 +325,13 @@ export default function ReturnsPage() {
       return;
     }
 
-    if (!window.confirm(`Confirm: create this ${tab === "SALES" ? "customer return" : "supplier return"}?`)) return;
+    const ok = await confirm({
+      title: tab === "SALES" ? "Create Customer Return" : "Create Supplier Return",
+      description: `Are you sure you want to create this ${tab === "SALES" ? "customer return note" : "supplier return debit note"}?`,
+      confirmText: "Create Return",
+      variant: "primary",
+    });
+    if (!ok) return;
 
     setSubmitting(true);
     try {
@@ -280,65 +384,90 @@ export default function ReturnsPage() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <RotateCcw className="h-5 w-5 text-rose-700" />
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Returns & Credit/Debit Notes</h1>
+    <div className="flex flex-col gap-3 p-4">
+      {/* Top Banner: Title, Counters, and Action Button */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-md shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-400 rounded-md">
+            <RotateCcw className="h-5 w-5" />
           </div>
-          <p className="text-sm text-slate-600">
-            Process customer returns and supplier rejections with automatic stock restocking/debiting and ledger reversals.
-          </p>
+          <div>
+            <h1 className="text-base font-bold tracking-tight text-slate-900 dark:text-slate-100">
+              Returns & Credit/Debit Notes
+            </h1>
+            <p className="text-[11px] text-slate-500">
+              Process customer returns and supplier rejections with automatic stock restocking and ledger reversals
+            </p>
+          </div>
         </div>
 
-        <Button
-          onClick={() => {
-            setSelectedInvoiceId("");
-            setReturnItems([]);
-            setReason("");
-            setIsDialogOpen(true);
-          }}
-          className="bg-rose-800 text-white hover:bg-rose-700 shadow-sm"
-        >
-          <Plus className="mr-1.5 h-4 w-4" />
-          {tab === "SALES" ? "New Customer Return" : "New Supplier Return"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Counters */}
+          <div className="hidden sm:flex items-center gap-2 text-xs font-mono">
+            <span className="bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800 px-2 py-1 rounded">
+              Credit Notes: <strong>{saleReturns.length}</strong>
+            </span>
+            <span className="bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2 py-1 rounded">
+              Debit Notes: <strong>{purchaseReturns.length}</strong>
+            </span>
+          </div>
+
+          <Button
+            onClick={() => {
+              setSelectedInvoiceId("");
+              setReturnItems([]);
+              setReason("");
+              setIsDialogOpen(true);
+            }}
+            className="h-8 bg-rose-800 hover:bg-rose-900 text-white text-xs font-bold shadow-xs px-3"
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            {tab === "SALES" ? "New Sale Return" : "New Purchase Return"} <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+          </Button>
+        </div>
       </div>
 
       {/* Tabs & Search / Filter Row */}
-      <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
-        <div className="flex rounded-lg border border-slate-200 bg-white p-1 w-full sm:w-auto">
+      <div className="flex flex-col sm:flex-row gap-3 items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs">
+        <div className="flex rounded-md border border-slate-200 p-0.5 bg-slate-50 text-xs w-full sm:w-auto">
           <button
             onClick={() => setTab("SALES")}
-            className={`flex-1 sm:flex-none px-3 rounded-md py-1.5 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
-              tab === "SALES" ? "bg-rose-100 text-rose-900 shadow-2xs" : "text-slate-600 hover:text-slate-900"
+            className={`flex-1 sm:flex-none px-3 rounded py-1 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+              tab === "SALES" ? "bg-white text-rose-900 shadow-2xs" : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            <ArrowDownLeft className="h-4 w-4 text-rose-700" />
+            <ArrowDownLeft className="h-3.5 w-3.5 text-rose-700" />
             Sale Returns (Credit Notes)
           </button>
           <button
             onClick={() => setTab("PURCHASES")}
-            className={`flex-1 sm:flex-none px-3 rounded-md py-1.5 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
-              tab === "PURCHASES" ? "bg-amber-100 text-amber-900 shadow-2xs" : "text-slate-600 hover:text-slate-900"
+            className={`flex-1 sm:flex-none px-3 rounded py-1 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+              tab === "PURCHASES" ? "bg-white text-amber-900 shadow-2xs" : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            <ArrowUpRight className="h-4 w-4 text-amber-700" />
+            <ArrowUpRight className="h-3.5 w-3.5 text-amber-700" />
             Purchase Returns (Debit Notes)
           </button>
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto self-end">
-          <div className="relative flex-1 sm:w-64">
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="relative flex-1 sm:w-72">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
             <Input
+              ref={searchInputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search returns..."
-              className="h-8 pl-8 pr-3 text-xs bg-white"
+              placeholder="Search returns... (Press / to focus)"
+              className="h-8 pl-8 pr-8 text-xs bg-slate-50 dark:bg-slate-950/50 border-slate-300 dark:border-slate-700 font-medium"
             />
+            {query && (
+              <button
+                onClick={() => setQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
 
           <div className="inline-flex rounded-md border border-slate-300 p-0.5 bg-slate-100 shrink-0">
@@ -494,7 +623,33 @@ export default function ReturnsPage() {
       {/* Return Dialog Modal */}
       {isDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs overflow-y-auto">
-          <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto">
+          <div className="w-[96vw] max-w-5xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
+            {/* Quick Navigation Strip */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold text-slate-500">Quick Jump:</span>
+                <a
+                  href="/sales"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  + Sales Invoice
+                </a>
+                <a
+                  href="/purchases"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  + Purchase Invoice
+                </a>
+                <a
+                  href="/delivery-orders"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  + Delivery Order
+                </a>
+              </div>
+              <span className="text-[11px] text-slate-400 font-mono">Press [Esc] to close</span>
+            </div>
+
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">
@@ -598,15 +753,16 @@ export default function ReturnsPage() {
                           <Input
                             type="number"
                             min="0"
+                            step="any"
                             max={item.maxQty}
                             value={item.quantity}
-                            onChange={(e) => handleReturnQtyChange(idx, Number(e.target.value) || 0)}
+                            onChange={(e) => handleReturnQtyChange(idx, parseFloat(e.target.value) || 0)}
                             className="h-8 text-xs text-right"
                             placeholder="Qty to return"
                           />
                         </div>
                         <div className="text-right font-bold text-slate-900">
-                          PKR {(item.quantity * item.unitRate).toFixed(2)}
+                          PKR {(((item.quantity || 0) * (item.unitRate || 0))).toFixed(2)}
                         </div>
                       </div>
                     ))}
@@ -619,15 +775,85 @@ export default function ReturnsPage() {
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
-                <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={submitting} className="bg-rose-800 text-white hover:bg-rose-700 text-xs">
-                  {submitting ? "Processing..." : "Confirm Return"}
-                </Button>
+              <div className="flex items-center justify-between border-t border-slate-100 pt-4">
+                <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
+                  Preview debit/credit note PDF before finalizing
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePreviewPdf}
+                    disabled={previewLoading || !selectedInvoiceId || returnItems.filter((i) => i.quantity > 0).length === 0}
+                    className="text-xs border-rose-300 text-rose-800 hover:bg-rose-50 dark:hover:bg-rose-950/40 gap-1.5"
+                    title="Preview Credit/Debit Note in PDF"
+                  >
+                    <Eye className="h-3.5 w-3.5 text-rose-700" />
+                    {previewLoading ? "Rendering..." : "Preview PDF"}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={submitting} className="bg-rose-800 text-white hover:bg-rose-700 text-xs font-semibold">
+                    {submitting ? "Processing..." : "Confirm Return"}
+                  </Button>
+                </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Pre-Posting Live PDF Document Preview Modal */}
+      {showPdfPreviewModal && pdfPreviewUrl && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
+          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
+            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-rose-400" />
+                <span className="font-bold text-xs">
+                  {tab === "SALES" ? "Credit Note" : "Debit Note"} Document Preview (Pre-Posting)
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const iframe = document.getElementById("returnPdfPreviewIframe") as HTMLIFrameElement;
+                    iframe?.contentWindow?.print();
+                  }}
+                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Print
+                </Button>
+                <a
+                  href={pdfPreviewUrl}
+                  download={`${tab === "SALES" ? "Credit-Note" : "Debit-Note"}-Preview-${new Date().toISOString().slice(0, 10)}.pdf`}
+                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-rose-700 hover:bg-rose-800 text-white rounded font-medium"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download
+                </a>
+                <button
+                  onClick={() => setShowPdfPreviewModal(false)}
+                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
+                  title="Close Preview"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
+              <iframe
+                id="returnPdfPreviewIframe"
+                src={pdfPreviewUrl}
+                className="w-full h-full rounded border border-slate-200 dark:border-slate-800 bg-white"
+                title="Return Document PDF Preview"
+              />
+            </div>
           </div>
         </div>
       )}

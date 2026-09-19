@@ -39,6 +39,7 @@ import {
 } from "@/actions/products";
 import { calculateWeights } from "@/lib/weights";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useConfirm } from "@/components/providers/confirm-provider";
 
 type ProductRecord = {
   id: string;
@@ -212,6 +213,7 @@ function detectProductSequence(
 
 function ProductsPageContent() {
   const router = useRouter();
+  const confirm = useConfirm();
   const searchParams = useSearchParams();
   const editIdParam = searchParams.get("id") || searchParams.get("edit");
   const actionParam = searchParams.get("action");
@@ -281,15 +283,23 @@ function ProductsPageContent() {
     void loadInitialData(true);
   });
 
+  // Window action refs for effects
+  const openNewWindowRef = useRef(openNewWindow);
+  openNewWindowRef.current = openNewWindow;
+  const openEditWindowRef = useRef(openEditWindow);
+  openEditWindowRef.current = openEditWindow;
+  const closeWindowRef = useRef(closeWindow);
+  closeWindowRef.current = closeWindow;
+
   // Handle URL query parameters to open window
   useEffect(() => {
     if (editIdParam && products.length > 0) {
       const found = products.find((p) => p.id === editIdParam);
       if (found) {
-        openEditWindow(found);
+        openEditWindowRef.current(found);
       }
     } else if (actionParam === "new") {
-      openNewWindow();
+      openNewWindowRef.current();
     }
   }, [editIdParam, actionParam, products]);
 
@@ -299,7 +309,7 @@ function ProductsPageContent() {
       // F2 or Insert opens New Product window
       if (e.key === "F2" || e.key === "Insert") {
         e.preventDefault();
-        openNewWindow();
+        openNewWindowRef.current();
         return;
       }
       // Pressing "/" focuses the universal search bar if not in an input
@@ -316,7 +326,7 @@ function ProductsPageContent() {
       // Escape closes window if open
       if (e.key === "Escape" && isWindowOpen) {
         e.preventDefault();
-        closeWindow();
+        closeWindowRef.current();
       }
     }
     window.addEventListener("keydown", handleGlobalKeyDown);
@@ -518,7 +528,13 @@ function ProductsPageContent() {
   // Delete Product Handler
   async function handleDeleteProduct() {
     if (!selectedProductId) return;
-    if (!confirm("Are you sure you want to delete this product? It will be removed from the catalog.")) {
+    const ok = await confirm({
+      title: "Delete Product",
+      description: "Are you sure you want to delete this product? It will be removed from the catalog.",
+      confirmText: "Delete Product",
+      variant: "destructive",
+    });
+    if (!ok) {
       return;
     }
 
@@ -529,7 +545,7 @@ function ProductsPageContent() {
         await loadInitialData(true);
         closeWindow();
       } else {
-        alert(res.error || "Failed to delete product.");
+        await confirm.alert(res.error || "Failed to delete product.", { variant: "destructive" });
       }
     } finally {
       setSaving(false);
@@ -548,7 +564,7 @@ function ProductsPageContent() {
         setNewCategoryName("");
         setShowAddCategoryModal(false);
       } else {
-        alert(res.error || "Failed to create category");
+        await confirm.alert(res.error || "Failed to create category", { variant: "destructive" });
       }
     } finally {
       setCategorySaving(false);
@@ -567,7 +583,7 @@ function ProductsPageContent() {
         setNewQualityName("");
         setShowAddQualityModal(false);
       } else {
-        alert(res.error || "Failed to create quality");
+        await confirm.alert(res.error || "Failed to create quality", { variant: "destructive" });
       }
     } finally {
       setQualitySaving(false);
@@ -1153,7 +1169,7 @@ function ProductsPageContent() {
                     onKeyDown={(e) => handleNavKeyDown(e, 5)}
                     className="w-full h-8 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-semibold"
                   >
-                    <option value={Unit.PACKET}>PACKET (Standard 100 or 500 sheets)</option>
+                    <option value={Unit.PACKET}>PACKET (100 sheets)</option>
                     <option value={Unit.REAM}>REAM (500 sheets)</option>
                   </select>
                 </div>
@@ -1427,7 +1443,7 @@ function ProductsPageContent() {
 
       {/* Inline Quick Add Category Modal */}
       {showAddCategoryModal && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/60 p-4">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 shadow-xl space-y-3">
             <h3 className="font-bold text-xs text-slate-900 dark:text-slate-100">Add New Category</h3>
             <Input
@@ -1469,7 +1485,7 @@ function ProductsPageContent() {
 
       {/* Inline Quick Add Quality Modal */}
       {showAddQualityModal && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/60 p-4">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 shadow-xl space-y-3">
             <h3 className="font-bold text-xs text-slate-900 dark:text-slate-100">Add New Quality</h3>
             <Input

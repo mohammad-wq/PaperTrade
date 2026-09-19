@@ -22,13 +22,13 @@ export const DOC_TYPE_PREFIXES: Record<DocumentTypeKey, string> = {
 };
 
 /**
- * Formats document number as: {yearLabel}-{sequenceNo padded to 4 digits} (e.g. 2026-0001)
+ * Formats document number as: {yearLabel}-{sequenceNo padded to 3+ digits starting at 001} (e.g. 2026-001, Q1-2026-001)
  */
 export function formatDocumentNumber(
   yearLabel: string,
   sequenceNo: number
 ): string {
-  const paddedSeq = String(sequenceNo).padStart(4, "0");
+  const paddedSeq = String(sequenceNo).padStart(3, "0");
   return `${yearLabel}-${paddedSeq}`;
 }
 

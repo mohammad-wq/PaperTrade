@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   BarChart3,
   Calendar,
@@ -179,7 +181,15 @@ type PartyStatementData = {
 };
 
 export default function ReportsPage() {
+  const searchParams = useSearchParams();
   const [tab, setTab] = useState<"PL" | "CASH" | "BS" | "PARTY">("PL");
+
+  useEffect(() => {
+    const tabParam = searchParams.get("tab");
+    if (tabParam === "BS" || tabParam === "PL" || tabParam === "CASH" || tabParam === "PARTY") {
+      setTab(tabParam);
+    }
+  }, [searchParams]);
 
   // P&L State
   const [plStart, setPlStart] = useState("");
@@ -296,26 +306,51 @@ export default function ReportsPage() {
   }, [tab, plStart, plEnd, cfStart, cfEnd, bsDate, selectedPartyId, selectedProductId, partyStart, partyEnd]);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <BarChart3 className="h-5 w-5 text-emerald-800" />
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Financial Reports & Accounts</h1>
+    <div className="space-y-3">
+      {/* Top Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-md shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-emerald-50 dark:bg-emerald-950/40 rounded-md border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+            <BarChart3 className="h-5 w-5" />
           </div>
-          <p className="text-sm text-slate-600">
-            Income Statement, Cash Flow, Balance Sheet, and Party Statements directly from transactional ledger records.
-          </p>
+          <div>
+            <h1 className="text-base font-bold text-slate-900 dark:text-slate-100 tracking-tight">
+              Financial Reports & Statements
+            </h1>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              P&L, Cash Flow, Balance Sheet, and Party Statements directly from transactional ledger records
+            </p>
+          </div>
+        </div>
+
+        {/* Quick Jump Navigation */}
+        <div className="flex items-center gap-2">
+          <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300">
+            <Link href="/ledger">
+              General Ledger
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300">
+            <Link href="/receivables-payables">
+              Receivables / Payables
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300">
+            <Link href="/payments">
+              Payments
+            </Link>
+          </Button>
         </div>
       </div>
 
-      {/* Report Tabs */}
-      <div className="flex flex-wrap rounded-lg border border-slate-200 bg-white p-1 max-w-xl shadow-2xs">
+      {/* Segmented Report Tabs */}
+      <div className="flex flex-wrap gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 p-1 shadow-2xs">
         <button
           onClick={() => setTab("PL")}
-          className={`flex-1 min-w-[120px] rounded-md py-1.5 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
-            tab === "PL" ? "bg-emerald-100 text-emerald-900 shadow-2xs font-bold" : "text-slate-600 hover:text-slate-900"
+          className={`flex-1 min-w-[130px] rounded px-3 py-1.5 text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+            tab === "PL"
+              ? "bg-white dark:bg-slate-800 text-emerald-800 dark:text-emerald-300 shadow-xs font-bold"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
           }`}
         >
           <TrendingUp className="h-3.5 w-3.5 text-emerald-700" />
@@ -323,8 +358,10 @@ export default function ReportsPage() {
         </button>
         <button
           onClick={() => setTab("CASH")}
-          className={`flex-1 min-w-[110px] rounded-md py-1.5 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
-            tab === "CASH" ? "bg-teal-100 text-teal-900 shadow-2xs font-bold" : "text-slate-600 hover:text-slate-900"
+          className={`flex-1 min-w-[110px] rounded px-3 py-1.5 text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+            tab === "CASH"
+              ? "bg-white dark:bg-slate-800 text-teal-800 dark:text-teal-300 shadow-xs font-bold"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
           }`}
         >
           <Wallet className="h-3.5 w-3.5 text-teal-700" />
@@ -332,8 +369,10 @@ export default function ReportsPage() {
         </button>
         <button
           onClick={() => setTab("BS")}
-          className={`flex-1 min-w-[110px] rounded-md py-1.5 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
-            tab === "BS" ? "bg-amber-100 text-amber-900 shadow-2xs font-bold" : "text-slate-600 hover:text-slate-900"
+          className={`flex-1 min-w-[110px] rounded px-3 py-1.5 text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+            tab === "BS"
+              ? "bg-white dark:bg-slate-800 text-amber-800 dark:text-amber-300 shadow-xs font-bold"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
           }`}
         >
           <FileSpreadsheet className="h-3.5 w-3.5 text-amber-700" />
@@ -341,8 +380,10 @@ export default function ReportsPage() {
         </button>
         <button
           onClick={() => setTab("PARTY")}
-          className={`flex-1 min-w-[120px] rounded-md py-1.5 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
-            tab === "PARTY" ? "bg-sky-100 text-sky-900 shadow-2xs font-bold" : "text-slate-600 hover:text-slate-900"
+          className={`flex-1 min-w-[120px] rounded px-3 py-1.5 text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+            tab === "PARTY"
+              ? "bg-white dark:bg-slate-800 text-sky-800 dark:text-sky-300 shadow-xs font-bold"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
           }`}
         >
           <Users className="h-3.5 w-3.5 text-sky-700" />

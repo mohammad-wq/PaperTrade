@@ -13,6 +13,12 @@ import {
   Copy,
   Layers,
   HelpCircle,
+  Plus,
+  Trash2,
+  Scissors,
+  AlertTriangle,
+  CheckCircle,
+  BookmarkCheck,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   STANDARD_SIZES,
+  COMMON_CONVERTING_PRESETS,
   calculatePacketWeight,
   calculateReamWeight,
   calculateGsmFromPacketWeight,
@@ -33,6 +40,8 @@ import {
   calculateQuantityFromTargetTonnes,
   calculateQuantityFromTargetKg,
   calculateRollToSheetYield,
+  calculateMultiSlitRollYield,
+  type SlitPatternInput,
   inchesToMm,
   mmToInches,
 } from "@/lib/paper-math";
@@ -60,11 +69,68 @@ export default function PaperCalculatorPage() {
   const [targetTonnes, setTargetTonnes] = useState<number>(10);
   const [itemPacketWeight, setItemPacketWeight] = useState<number>(4.0);
 
-  // Tab 4: Roll to Sheet Yield
-  const [rollWeightKg, setRollWeightKg] = useState<number>(650);
-  const [rollWidthInches, setRollWidthInches] = useState<number>(25);
-  const [cutLengthInches, setCutLengthInches] = useState<number>(36);
-  const [rollGsm, setRollGsm] = useState<number>(80);
+  // Tab 4: Industrial Multi-Slit & Reel Sheeting Engine
+  const [reelName, setReelName] = useState<string>("PINDO BLEACH BOARD");
+  const [reelsCount, setReelsCount] = useState<number>(3);
+  const [totalReelWeightKg, setTotalReelWeightKg] = useState<number>(4647);
+  const [reelWidthInches, setReelWidthInches] = useState<number>(56.0);
+  const [reelGsm, setReelGsm] = useState<number>(350);
+  const [ratePerKg, setRatePerKg] = useState<number>(272);
+  const [patterns, setPatterns] = useState<SlitPatternInput[]>([
+    {
+      id: "p1",
+      label: 'Main Sheeting Cut (28" × 22")',
+      slitWidth: 28.0,
+      slitsCount: 2,
+      cutLength: 22.0,
+      sheetsPerPack: 100,
+    },
+  ]);
+
+  function loadBenchmarkExample() {
+    setReelName("PINDO BLEACH BOARD");
+    setReelsCount(3);
+    setTotalReelWeightKg(4647);
+    setReelWidthInches(56.0);
+    setReelGsm(350);
+    setRatePerKg(272);
+    setPatterns([
+      {
+        id: "p1",
+        label: '28.00" × 22.00" (2 Slits across 56" Reel)',
+        slitWidth: 28.0,
+        slitsCount: 2,
+        cutLength: 22.0,
+        sheetsPerPack: 100,
+      },
+    ]);
+  }
+
+  function addCutDimension(preset?: { width: number; length: number; label: string }) {
+    const newId = "p_" + Date.now();
+    setPatterns((prev) => [
+      ...prev,
+      {
+        id: newId,
+        label: preset ? preset.label : `Cut #${prev.length + 1}`,
+        slitWidth: preset ? preset.width : 22.0,
+        slitsCount: 1,
+        cutLength: preset ? preset.length : 28.0,
+        sheetsPerPack: 100,
+      },
+    ]);
+  }
+
+  function updateCutDimension(id: string, field: keyof SlitPatternInput, val: any) {
+    setPatterns((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, [field]: val } : item))
+    );
+  }
+
+  function removeCutDimension(id: string) {
+    if (patterns.length <= 1) return;
+    setPatterns((prev) => prev.filter((item) => item.id !== id));
+  }
 
   // Copy feedback state
   const [copied, setCopied] = useState<string | null>(null);
@@ -94,12 +160,14 @@ export default function PaperCalculatorPage() {
   const orderWeight = calculateTotalWeightFromPackets(orderPackets, itemPacketWeight);
   const tonnesRequirement = calculateQuantityFromTargetTonnes(targetTonnes, itemPacketWeight);
 
-  // Derived Roll Yield
-  const rollYield = calculateRollToSheetYield({
-    rollWeightKg,
-    rollWidthInches,
-    cutLengthInches,
-    gsm: rollGsm,
+  // Derived Multi-Slit Roll Sheeting Yield
+  const multiSlitYield = calculateMultiSlitRollYield({
+    reelWidthInches,
+    totalReelWeightKg,
+    gsm: reelGsm,
+    reelsCount,
+    ratePerKg,
+    patterns,
   });
 
   return (
@@ -590,9 +658,10 @@ export default function PaperCalculatorPage() {
                     <Input
                       id="pqty"
                       type="number"
-                      step="1"
+                      min="0.0001"
+                      step="any"
                       value={orderPackets || ""}
-                      onChange={(e) => setOrderPackets(parseInt(e.target.value, 10) || 0)}
+                      onChange={(e) => setOrderPackets(parseFloat(e.target.value) || 0)}
                     />
                   </div>
                 ) : (
@@ -668,93 +737,483 @@ export default function PaperCalculatorPage() {
         </div>
       )}
 
-      {/* TAB 4: REEL / ROLL TO SHEETS */}
+      {/* TAB 4: REEL / ROLL TO SHEETS MULTI-SLIT ENGINE */}
       {activeTab === "reel" && (
-        <div className="grid gap-6 lg:grid-cols-3">
-          <Card className="lg:col-span-2 shadow-sm border-slate-200">
-            <CardHeader>
-              <CardTitle className="text-base text-slate-900">Paper Roll / Reel Yield Calculator</CardTitle>
-              <CardDescription>
-                Calculate how many cut sheets and packets a paper reel will yield for sheeting orders.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label htmlFor="rwk" className="text-xs font-semibold">Roll Weight (kg)</Label>
-                  <Input
-                    id="rwk"
-                    type="number"
-                    step="1"
-                    value={rollWeightKg || ""}
-                    onChange={(e) => setRollWeightKg(parseFloat(e.target.value) || 0)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="rgsm" className="text-xs font-semibold">Paper GSM</Label>
-                  <Input
-                    id="rgsm"
-                    type="number"
-                    step="1"
-                    value={rollGsm || ""}
-                    onChange={(e) => setRollGsm(parseFloat(e.target.value) || 0)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="rwi" className="text-xs font-semibold">Roll / Deckle Width (Inches)</Label>
-                  <Input
-                    id="rwi"
-                    type="number"
-                    step="0.1"
-                    value={rollWidthInches || ""}
-                    onChange={(e) => setRollWidthInches(parseFloat(e.target.value) || 0)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="cli" className="text-xs font-semibold">Sheet Cut Length (Inches)</Label>
-                  <Input
-                    id="cli"
-                    type="number"
-                    step="0.1"
-                    value={cutLengthInches || ""}
-                    onChange={(e) => setCutLengthInches(parseFloat(e.target.value) || 0)}
-                  />
-                </div>
+        <div className="space-y-6">
+          {/* Benchmark Load Banner */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-amber-50 p-4 shadow-sm">
+            <div>
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-emerald-700" />
+                <h3 className="text-sm font-bold text-emerald-950">
+                  Industrial Roll Converting & Multi-Dimension Sheeting Engine
+                </h3>
               </div>
-            </CardContent>
-          </Card>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Support multiple slits across reel width, multiple sheet lengths, deckle trim calculations, and exact real-number packet yields.
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={loadBenchmarkExample}
+              className="shrink-0 bg-emerald-800 hover:bg-emerald-900 text-white font-semibold text-xs shadow-sm flex items-center gap-1.5"
+            >
+              <BookmarkCheck className="h-4 w-4 text-amber-300" />
+              Load Benchmark (PINDO BLEACH BOARD 56&quot; → 28×22)
+            </Button>
+          </div>
 
-          {/* Reel Yield Results */}
-          <Card className="shadow-sm border-emerald-200 bg-gradient-to-br from-emerald-50/70 via-white to-amber-50/40">
-            <CardHeader>
-              <CardTitle className="text-base text-emerald-950 flex items-center gap-2">
-                <Layers className="h-4 w-4 text-emerald-700" />
-                Reel Sheeting Yield
-              </CardTitle>
-              <CardDescription>Calculated output from {rollWeightKg} kg roll</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="rounded-xl border border-emerald-200 bg-white p-4">
-                <p className="text-xs font-semibold uppercase text-slate-500">Total Packets Yield (100s)</p>
-                <p className="text-3xl font-extrabold text-emerald-900 mt-1">
-                  {rollYield.totalPackets.toLocaleString()} <span className="text-sm font-semibold">Packets</span>
-                </p>
-                <p className="text-xs text-slate-600 mt-1">
-                  ≈ {rollYield.totalReams.toLocaleString()} Reams ({rollYield.totalSheets.toLocaleString()} Sheets)
-                </p>
-              </div>
+          <div className="grid gap-6 lg:grid-cols-3">
+            {/* Master Reel Input Column */}
+            <div className="lg:col-span-2 space-y-6">
+              {/* Master Reel Parameters */}
+              <Card className="shadow-sm border-slate-200">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base text-slate-900 flex items-center gap-2">
+                    <Layers className="h-4 w-4 text-emerald-700" />
+                    Master Paper Reel Specifications
+                  </CardTitle>
+                  <CardDescription>
+                    Enter the master roll dimensions, reel count, gross weight, and pricing.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div className="sm:col-span-2 space-y-1.5">
+                      <Label htmlFor="rname" className="text-xs font-semibold">
+                        Reel Paper Quality / Description
+                      </Label>
+                      <Input
+                        id="rname"
+                        value={reelName}
+                        onChange={(e) => setReelName(e.target.value)}
+                        placeholder="e.g. PINDO BLEACH BOARD, ART CARD..."
+                        className="h-8 text-xs font-medium"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="rcount" className="text-xs font-semibold">
+                        Number of Reels
+                      </Label>
+                      <Input
+                        id="rcount"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={reelsCount || ""}
+                        onChange={(e) => setReelsCount(parseInt(e.target.value, 10) || 1)}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                  </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-3.5">
-                <p className="text-xs font-semibold uppercase text-slate-500">Per Packet Weight</p>
-                <p className="text-base font-bold text-slate-800 mt-1">
-                  {rollYield.packetWeightKg.toFixed(3)} kg (100 sheets)
+                  <div className="grid gap-4 sm:grid-cols-4">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="rweight" className="text-xs font-semibold">
+                        Total Weight (kg)
+                      </Label>
+                      <Input
+                        id="rweight"
+                        type="number"
+                        min="0.1"
+                        step="any"
+                        value={totalReelWeightKg || ""}
+                        onChange={(e) => setTotalReelWeightKg(parseFloat(e.target.value) || 0)}
+                        className="h-8 text-xs font-mono font-bold text-slate-900"
+                      />
+                      <p className="text-[10px] text-slate-500">
+                        ≈ {(totalReelWeightKg / Math.max(1, reelsCount)).toFixed(1)} kg / reel
+                      </p>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label htmlFor="rgsm_val" className="text-xs font-semibold">
+                        Paper GSM
+                      </Label>
+                      <Input
+                        id="rgsm_val"
+                        type="number"
+                        min="1"
+                        step="any"
+                        value={reelGsm || ""}
+                        onChange={(e) => setReelGsm(parseFloat(e.target.value) || 0)}
+                        className="h-8 text-xs font-mono font-bold"
+                      />
+                      <p className="text-[10px] text-slate-500">Substance (g/m²)</p>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label htmlFor="rwidth_val" className="text-xs font-semibold">
+                        Reel Deckle Width (Inches)
+                      </Label>
+                      <Input
+                        id="rwidth_val"
+                        type="number"
+                        min="1"
+                        step="any"
+                        value={reelWidthInches || ""}
+                        onChange={(e) => setReelWidthInches(parseFloat(e.target.value) || 0)}
+                        className="h-8 text-xs font-mono font-bold text-emerald-800"
+                      />
+                      <p className="text-[10px] text-slate-500">Master roll width</p>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label htmlFor="rrate" className="text-xs font-semibold">
+                        Paper Rate (PKR / kg)
+                      </Label>
+                      <Input
+                        id="rrate"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={ratePerKg || ""}
+                        onChange={(e) => setRatePerKg(parseFloat(e.target.value) || 0)}
+                        className="h-8 text-xs font-mono font-bold text-emerald-700"
+                      />
+                      <p className="text-[10px] text-slate-500">Price per kg</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Standard Size Presets (1-Click) */}
+              <Card className="shadow-sm border-slate-200">
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-xs font-bold uppercase text-slate-700">
+                        Standard Size Presets (1-Click Add / Convert)
+                      </CardTitle>
+                      <CardDescription className="text-xs">
+                        Click any standard market size to append it to your roll cutting plan:
+                      </CardDescription>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <div className="flex flex-wrap gap-2">
+                    {COMMON_CONVERTING_PRESETS.map((preset) => (
+                      <Button
+                        key={preset.label}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          addCutDimension({
+                            width: preset.width,
+                            length: preset.length,
+                            label: `${preset.label} (${preset.description})`,
+                          })
+                        }
+                        className="h-7 text-xs border-slate-300 hover:border-emerald-600 hover:bg-emerald-50 hover:text-emerald-900 font-mono"
+                      >
+                        + {preset.label}
+                        <span className="text-[10px] text-slate-500 font-sans ml-1">
+                          ({preset.description})
+                        </span>
+                      </Button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Slitting & Cutting Plan Table */}
+              <Card className="shadow-sm border-slate-200">
+                <CardHeader className="pb-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <CardTitle className="text-base text-slate-900 flex items-center gap-2">
+                        <Scissors className="h-4 w-4 text-emerald-700" />
+                        Slit & Cut Dimensions Plan
+                      </CardTitle>
+                      <CardDescription>
+                        Define multiple cuts across deckle width and unwind cut lengths.
+                      </CardDescription>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => addCutDimension()}
+                      className="h-8 text-xs bg-emerald-700 hover:bg-emerald-800 text-white font-medium"
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1" />
+                      Add Slit / Cut Dimension
+                    </Button>
+                  </div>
+
+                  {/* Deckle Utilization Meter */}
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+                    <div className="flex flex-wrap items-center justify-between text-xs gap-2 font-medium">
+                      <div>
+                        Deckle Utilization:{" "}
+                        <strong className="font-mono text-slate-900">
+                          {multiSlitYield.totalUtilizedDeckle.toFixed(2)}&quot;
+                        </strong>{" "}
+                        /{" "}
+                        <span className="font-mono text-slate-600">{multiSlitYield.reelWidthInches.toFixed(2)}&quot;</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {multiSlitYield.isOverDeckle ? (
+                          <span className="flex items-center gap-1 text-rose-700 font-bold">
+                            <AlertTriangle className="h-3.5 w-3.5" />
+                            Over Deckle by +{multiSlitYield.excessDeckle.toFixed(2)}&quot;
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">
+                            Trim Waste:{" "}
+                            <strong className="font-mono text-slate-900">
+                              {multiSlitYield.trimWasteWidth.toFixed(2)}&quot;
+                            </strong>{" "}
+                            ({multiSlitYield.trimWastePercent.toFixed(1)}% /{" "}
+                            <span className="font-mono font-bold text-slate-900">
+                              {multiSlitYield.trimWasteKg.toFixed(1)} kg
+                            </span>
+                            )
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Visual Progress Bar */}
+                    <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className={`h-full transition-all ${
+                          multiSlitYield.isOverDeckle ? "bg-rose-600" : "bg-emerald-600"
+                        }`}
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            multiSlitYield.reelWidthInches > 0
+                              ? (multiSlitYield.totalUtilizedDeckle / multiSlitYield.reelWidthInches) * 100
+                              : 0
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                </CardHeader>
+
+                <CardContent className="pt-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="bg-slate-100 text-slate-700 text-[10px] font-bold uppercase border-b border-slate-200">
+                        <tr>
+                          <th className="py-2 px-2.5 w-8 text-center border-r border-slate-200">#</th>
+                          <th className="py-2 px-2.5 border-r border-slate-200 min-w-[160px]">Cut Label</th>
+                          <th className="py-2 px-2.5 border-r border-slate-200 w-28 text-right">Slit Width (Inches)</th>
+                          <th className="py-2 px-2.5 border-r border-slate-200 w-24 text-center">Slits Qty</th>
+                          <th className="py-2 px-2.5 border-r border-slate-200 w-28 text-right">Cut Length (Inches)</th>
+                          <th className="py-2 px-2.5 border-r border-slate-200 w-24 text-center">Sheets / Pack</th>
+                          <th className="py-2 px-2.5 border-r border-slate-200 w-24 text-right">Deckle Used</th>
+                          <th className="py-2 px-2 w-10 text-center">Del</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-mono">
+                        {patterns.map((item, idx) => {
+                          const usedWidth = (item.slitWidth || 0) * (item.slitsCount || 1);
+                          return (
+                            <tr key={item.id} className="hover:bg-slate-50">
+                              <td className="py-1.5 px-2.5 text-center text-slate-400 border-r border-slate-100">
+                                {idx + 1}
+                              </td>
+                              <td className="py-1.5 px-2.5 border-r border-slate-100 font-sans">
+                                <Input
+                                  value={item.label || ""}
+                                  onChange={(e) => updateCutDimension(item.id, "label", e.target.value)}
+                                  className="h-7 text-xs font-sans"
+                                  placeholder="e.g. Size A"
+                                />
+                              </td>
+                              <td className="py-1.5 px-2.5 border-r border-slate-100">
+                                <Input
+                                  type="number"
+                                  min="0.1"
+                                  step="any"
+                                  value={item.slitWidth || ""}
+                                  onChange={(e) =>
+                                    updateCutDimension(item.id, "slitWidth", parseFloat(e.target.value) || 0)
+                                  }
+                                  className="h-7 text-xs text-right font-bold"
+                                />
+                              </td>
+                              <td className="py-1.5 px-2.5 border-r border-slate-100">
+                                <Input
+                                  type="number"
+                                  min="1"
+                                  step="1"
+                                  value={item.slitsCount || ""}
+                                  onChange={(e) =>
+                                    updateCutDimension(item.id, "slitsCount", parseInt(e.target.value, 10) || 1)
+                                  }
+                                  className="h-7 text-xs text-center font-bold"
+                                />
+                              </td>
+                              <td className="py-1.5 px-2.5 border-r border-slate-100">
+                                <Input
+                                  type="number"
+                                  min="0.1"
+                                  step="any"
+                                  value={item.cutLength || ""}
+                                  onChange={(e) =>
+                                    updateCutDimension(item.id, "cutLength", parseFloat(e.target.value) || 0)
+                                  }
+                                  className="h-7 text-xs text-right font-bold"
+                                />
+                              </td>
+                              <td className="py-1.5 px-2.5 border-r border-slate-100">
+                                <select
+                                  value={item.sheetsPerPack || 100}
+                                  onChange={(e) =>
+                                    updateCutDimension(item.id, "sheetsPerPack", parseInt(e.target.value, 10) || 100)
+                                  }
+                                  className="h-7 w-full rounded border border-slate-300 bg-white px-1 text-xs font-mono font-medium"
+                                >
+                                  <option value={100}>100s (Pack)</option>
+                                  <option value={500}>500s (Ream)</option>
+                                </select>
+                              </td>
+                              <td className="py-1.5 px-2.5 border-r border-slate-100 text-right font-bold text-slate-800">
+                                {usedWidth.toFixed(2)}&quot;
+                              </td>
+                              <td className="py-1.5 px-2 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => removeCutDimension(item.id)}
+                                  disabled={patterns.length <= 1}
+                                  className="text-slate-400 hover:text-rose-600 p-1 disabled:opacity-30"
+                                  title="Remove Cut"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Sheeting Yield Results Column */}
+            <div className="space-y-4">
+              {/* Main Total Sheeting Yield */}
+              <Card className="shadow-sm border-emerald-200 bg-gradient-to-br from-emerald-50/80 via-white to-amber-50/50">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base text-emerald-950 flex items-center gap-2">
+                      <Layers className="h-4 w-4 text-emerald-700" />
+                      Total Sheeting Yield
+                    </CardTitle>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-200/80 text-emerald-900 font-mono">
+                      {reelName || "Paper Roll"}
+                    </span>
+                  </div>
+                  <CardDescription>
+                    Exact output from {totalReelWeightKg.toLocaleString()} kg reel stock
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="rounded-xl border border-emerald-200 bg-white p-4">
+                    <p className="text-xs font-semibold uppercase text-slate-500">
+                      Total Packet Yield (Exact Decimal)
+                    </p>
+                    <p className="text-3xl font-black text-emerald-950 mt-1">
+                      {multiSlitYield.totalPacketsDecimal.toFixed(2)}{" "}
+                      <span className="text-sm font-semibold">Packets</span>
+                    </p>
+                    <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600 font-medium">
+                      <span>≈ {multiSlitYield.totalPacketsInt.toLocaleString()} Approx Packets</span>
+                      <span>≈ {multiSlitYield.totalReamsDecimal.toFixed(2)} Reams</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-1 font-mono">
+                      = {multiSlitYield.totalSheets.toLocaleString()} Total Sheeting Sheets
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-slate-600 font-medium">Gross Commercial Value:</span>
+                      <span className="font-mono font-bold text-slate-900 text-sm">
+                        PKR {Math.round(multiSlitYield.totalCommercialValue).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-slate-600 font-medium">Net Converted Paper:</span>
+                      <span className="font-mono font-bold text-emerald-800">
+                        {multiSlitYield.convertedWeightKg.toFixed(2)} kg
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-slate-600 font-medium">Trim / Side Scrap Waste:</span>
+                      <span className="font-mono text-slate-700">
+                        {multiSlitYield.trimWasteKg.toFixed(2)} kg ({multiSlitYield.trimWastePercent.toFixed(1)}%)
+                      </span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Itemized Yield Per Slit Dimension */}
+              <div className="space-y-3">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-600 px-1">
+                  Itemized Dimension Breakdown ({multiSlitYield.items.length})
                 </p>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {(rollYield.singleSheetWeightKg * 1000).toFixed(2)} grams per sheet
-                </p>
+                {multiSlitYield.items.map((item, idx) => (
+                  <Card key={item.id} className="shadow-sm border-slate-200 bg-white">
+                    <CardContent className="p-3.5 space-y-2.5">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                        <div className="font-sans font-bold text-xs text-slate-900">
+                          {item.label}
+                        </div>
+                        <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
+                          {item.deckleSharePercent.toFixed(1)}% of Reel
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded bg-slate-50 p-2">
+                          <p className="text-[10px] text-slate-500 font-semibold uppercase">Packet Weight</p>
+                          <p className="font-mono font-bold text-slate-900 text-sm mt-0.5">
+                            {item.packetWeightKg.toFixed(3)} kg
+                          </p>
+                          <p className="text-[10px] text-slate-500 font-mono">
+                            {item.singleSheetWeightGrams.toFixed(2)} g / sheet
+                          </p>
+                        </div>
+
+                        <div className="rounded bg-emerald-50/70 p-2">
+                          <p className="text-[10px] text-emerald-800 font-semibold uppercase">Yield Output</p>
+                          <p className="font-mono font-black text-emerald-950 text-sm mt-0.5">
+                            {item.packetsYieldDecimal.toFixed(2)} Packs
+                          </p>
+                          <p className="text-[10px] text-emerald-800 font-mono">
+                            ≈ {item.packetsYieldInt} Approx ({item.reamsYieldDecimal.toFixed(2)} Reams)
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="pt-1 border-t border-slate-100 text-xs flex justify-between items-center text-slate-700">
+                        <span>
+                          Rate:{" "}
+                          <strong className="font-mono text-emerald-900">
+                            PKR {item.ratePerPack.toFixed(2)}
+                          </strong>{" "}
+                          / pack
+                        </span>
+                        <span className="font-mono font-bold text-slate-900">
+                          PKR {Math.round(item.totalAmount).toLocaleString()}
+                        </span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -8,7 +8,7 @@ import { getStockOnHand } from "@/lib/stock";
 import { getPartyBalance } from "@/lib/ledger";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
-import { saleInvoiceSchema } from "@/schemas/sale-invoice";
+import { saleInvoiceSchema, updateSaleInvoiceSchema } from "@/schemas/sale-invoice";
 import { purchaseInvoiceSchema } from "@/schemas/purchase-invoice";
 import { AccountType, InvoiceStatus, PartyType, PaymentMethod, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
@@ -232,6 +232,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
             data: {
               productId: item.productId,
               locationId: input.locationId,
+              warehouseLotId: item.warehouseLotId || null,
               type: StockMovementType.SALE_OUT,
               quantity: item.quantity,
               referenceType: "SALE_INVOICE",
@@ -330,6 +331,318 @@ export async function createSaleInvoiceAction(raw: unknown) {
     });
 
     emitRealtimeEvent(["sales", "inventory", "parties", "ledger", "dashboard"], "create", "SaleInvoice", {
+      invoiceId: res.invoiceId,
+      invoiceNo: res.invoiceNo,
+    });
+
+    return res;
+  });
+}
+
+export async function updateSaleInvoiceAction(raw: unknown) {
+  return runAction("sales.update", async () => {
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "sales", "update", (session.user as any).permissions)) {
+      throw userError("You do not have permission to edit sales invoices.");
+    }
+    const input = parseInput(updateSaleInvoiceSchema, raw);
+
+    const stockKeys = input.items.map((i) => `stock:${i.productId}:${input.locationId}`);
+    const partyKey = input.customerId ? `party:${input.customerId}` : "party:walkin";
+    const docKey = "doc:sale_invoice";
+    const invoiceKey = `invoice:${input.id}`;
+    const lockKeys = [invoiceKey, ...stockKeys, partyKey, docKey];
+
+    const res = await withResourceQueue(lockKeys, async (tx) => {
+      // 1. Fetch existing invoice
+      const existing = await tx.saleInvoice.findUnique({
+        where: { id: input.id },
+        include: { items: true, deliveryOrder: true },
+      });
+      if (!existing) {
+        throw userError("Sale invoice not found.");
+      }
+
+      // 2. Resolve Customer (Walk-in vs Registered Party)
+      let targetCustomerId: string;
+      let customerName = "";
+      let customerCreditLimit: number | null = null;
+      let customerBalance = 0;
+
+      if (input.customerType === "WALK_IN") {
+        const rawName = input.walkInName?.trim();
+        const isGeneric =
+          !rawName ||
+          rawName.toLowerCase() === "walk-in customer" ||
+          rawName.toLowerCase() === "walk in" ||
+          rawName.toLowerCase() === "cash customer";
+        const finalName = isGeneric ? "Walk-in Customer" : rawName;
+
+        if (isGeneric) {
+          let walkInParty = await tx.party.findFirst({
+            where: { name: "Walk-in Customer", type: PartyType.CUSTOMER },
+          });
+          if (!walkInParty) {
+            walkInParty = await tx.party.create({
+              data: {
+                name: "Walk-in Customer",
+                type: PartyType.CUSTOMER,
+                email: "walkin@internal.local",
+                phone: input.walkInPhone?.trim() || null,
+                address: input.walkInAddress?.trim() || null,
+                isActive: true,
+              },
+            });
+          }
+          targetCustomerId = walkInParty.id;
+          customerName = walkInParty.name;
+        } else {
+          let existingParty = await tx.party.findFirst({
+            where: {
+              name: { equals: finalName, mode: "insensitive" },
+              type: PartyType.CUSTOMER,
+            },
+          });
+          if (existingParty) {
+            targetCustomerId = existingParty.id;
+            customerName = existingParty.name;
+            customerCreditLimit = existingParty.creditLimit ? Number(existingParty.creditLimit) : null;
+            customerBalance = await getPartyBalance(existingParty.id, tx);
+          } else {
+            const newParty = await tx.party.create({
+              data: {
+                name: finalName,
+                type: PartyType.CUSTOMER,
+                phone: input.walkInPhone?.trim() || null,
+                address: input.walkInAddress?.trim() || null,
+                isActive: true,
+              },
+            });
+            targetCustomerId = newParty.id;
+            customerName = newParty.name;
+          }
+        }
+      } else {
+        if (!input.customerId) {
+          throw userError("Please select a registered customer.");
+        }
+        const customer = await tx.party.findUnique({
+          where: { id: input.customerId },
+          select: { id: true, name: true, creditLimit: true, email: true },
+        });
+        if (!customer) {
+          throw userError("Customer not found.");
+        }
+        targetCustomerId = customer.id;
+        customerName = customer.name;
+        customerCreditLimit = customer.creditLimit !== null ? Number(customer.creditLimit) : null;
+        customerBalance = await getPartyBalance(customer.id, tx);
+      }
+
+      // Calculate total amount
+      const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+
+      // Revert previous side effects safely before re-checking stock and re-posting
+      // A. Delete old stock movements generated by this invoice
+      await tx.stockMovement.deleteMany({
+        where: {
+          referenceType: "SALE_INVOICE",
+          referenceId: existing.id,
+        },
+      });
+
+      // B. Delete old ledger entries generated directly by this invoice
+      await tx.ledgerEntry.deleteMany({
+        where: {
+          referenceType: "SALE_INVOICE",
+          referenceId: existing.id,
+        },
+      });
+
+      // C. Delete old auto-created payment & its ledger entries if created at invoice time
+      const oldAutoPayments = await tx.payment.findMany({
+        where: {
+          saleInvoiceId: existing.id,
+          notes: { contains: "Settlement for invoice" },
+        },
+        select: { id: true },
+      });
+      for (const op of oldAutoPayments) {
+        await tx.ledgerEntry.deleteMany({
+          where: { referenceType: "PAYMENT", referenceId: op.id },
+        });
+        await tx.payment.delete({ where: { id: op.id } });
+      }
+
+      // 3. Verify stock availability for each item (now that old stock movements are cleared)
+      for (const item of input.items) {
+        const available = await getStockOnHand(item.productId, input.locationId, tx);
+        if (available < item.quantity) {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+            select: { name: true, productNo: true, unit: true },
+          });
+          throw userError(
+            `Insufficient stock for "${product?.productNo} - ${product?.name}". Available: ${available} ${product?.unit || "Packets"}, Requested: ${item.quantity}.`,
+          );
+        }
+      }
+
+      // Resolve payment amount
+      const rawPaid = typeof input.amountPaid === "number" ? input.amountPaid : 0;
+      const paidAmount = input.paidImmediately
+        ? Math.min(totalAmount, rawPaid > 0 ? rawPaid : totalAmount)
+        : Math.min(totalAmount, Math.max(0, rawPaid));
+
+      const walkInContactDetails =
+        input.customerType === "WALK_IN" && (input.walkInPhone || input.walkInAddress)
+          ? `Walk-in: ${[input.walkInName || "Walk-in Customer", input.walkInPhone, input.walkInAddress].filter(Boolean).join(" | ")}`
+          : null;
+      const finalNotes = [input.notes?.trim(), walkInContactDetails].filter(Boolean).join(" — ");
+      const isSettled = paidAmount >= totalAmount;
+
+      // Update invoice record
+      const updatedInvoice = await tx.saleInvoice.update({
+        where: { id: existing.id },
+        data: {
+          customerId: targetCustomerId,
+          locationId: input.locationId,
+          date: input.date,
+          status: isSettled ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
+          totalAmount,
+          amountPaid: paidAmount,
+          notes: finalNotes || null,
+        },
+      });
+
+      // Re-create items
+      await tx.saleInvoiceItem.deleteMany({
+        where: { invoiceId: existing.id },
+      });
+      await tx.saleInvoiceItem.createMany({
+        data: input.items.map((item) => ({
+          invoiceId: existing.id,
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          lineTotal: item.quantity * item.unitPrice,
+        })),
+      });
+
+      // Re-create stock movements (unless DO already deducted)
+      let alreadyDeductedByDO = false;
+      if (existing.deliveryOrderId) {
+        const linkedDO = await tx.deliveryOrder.findUnique({
+          where: { id: existing.deliveryOrderId },
+          select: { status: true },
+        });
+        if (linkedDO && (linkedDO.status === "DISPATCHED" || linkedDO.status === "DELIVERED")) {
+          alreadyDeductedByDO = true;
+        }
+      }
+
+      if (!alreadyDeductedByDO) {
+        for (const item of input.items) {
+          await tx.stockMovement.create({
+            data: {
+              productId: item.productId,
+              locationId: input.locationId,
+              warehouseLotId: item.warehouseLotId || null,
+              type: StockMovementType.SALE_OUT,
+              quantity: item.quantity,
+              referenceType: "SALE_INVOICE",
+              referenceId: existing.id,
+              createdById: session.user.id,
+              notes: `Sale Invoice ${existing.invoiceNo} (${customerName}) [Edited]`,
+            },
+          });
+        }
+      }
+
+      // Re-create ledger entries
+      // Customer Receivable (Debit)
+      await tx.ledgerEntry.create({
+        data: {
+          partyId: targetCustomerId,
+          accountType: AccountType.RECEIVABLE,
+          debit: totalAmount,
+          credit: 0,
+          referenceType: "SALE_INVOICE",
+          referenceId: existing.id,
+          date: input.date,
+          description: `Sale Invoice ${existing.invoiceNo} (${customerName})`,
+          createdById: session.user.id,
+        },
+      });
+
+      // Sales Revenue (Credit)
+      await tx.ledgerEntry.create({
+        data: {
+          partyId: null,
+          accountType: AccountType.SALES,
+          debit: 0,
+          credit: totalAmount,
+          referenceType: "SALE_INVOICE",
+          referenceId: existing.id,
+          date: input.date,
+          description: `Sale Revenue from ${existing.invoiceNo}`,
+          createdById: session.user.id,
+        },
+      });
+
+      // If immediate payment
+      if (paidAmount > 0) {
+        const payment = await tx.payment.create({
+          data: {
+            partyId: targetCustomerId,
+            saleInvoiceId: existing.id,
+            amount: paidAmount,
+            method: input.paymentMethod || PaymentMethod.CASH,
+            date: input.date,
+            notes: `Settlement for invoice ${existing.invoiceNo} (${input.customerType === "WALK_IN" ? "Walk-in Sale" : "Registered Customer"})`,
+            createdById: session.user.id,
+          },
+        });
+
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.CASH,
+            debit: paidAmount,
+            credit: 0,
+            referenceType: "PAYMENT",
+            referenceId: payment.id,
+            date: input.date,
+            description: `Payment received for ${existing.invoiceNo} (${input.paymentMethod || PaymentMethod.CASH})`,
+            createdById: session.user.id,
+          },
+        });
+
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetCustomerId,
+            accountType: AccountType.RECEIVABLE,
+            debit: 0,
+            credit: paidAmount,
+            referenceType: "PAYMENT",
+            referenceId: payment.id,
+            date: input.date,
+            description: `Payment cleared for ${existing.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      return {
+        invoiceId: existing.id,
+        invoiceNo: existing.invoiceNo,
+        totalAmount,
+        amountPaid: paidAmount,
+        balanceDue: totalAmount - paidAmount,
+      };
+    });
+
+    emitRealtimeEvent(["sales", "inventory", "parties", "ledger", "dashboard"], "update", "SaleInvoice", {
       invoiceId: res.invoiceId,
       invoiceNo: res.invoiceNo,
     });

@@ -196,12 +196,12 @@ export async function GET(
         notes: doRecord.notes,
         signatures: { leftLabel: "Dispatched / Delivered By", rightLabel: "Received By (Customer Stamp)" },
         items: doRecord.items.map((item) => {
-          const lotLabel = item.warehouseLot ? `Lot: ${item.warehouseLot.lotNumber}` : null;
+          const lotLabel = item.warehouseLot ? item.warehouseLot.lotNumber : null;
           const baseSpecs = formatSpecs(item.product);
-          const specs = [baseSpecs !== "—" ? baseSpecs : null, lotLabel].filter(Boolean).join(" | ") || "—";
           return {
             name: formatProductName(item.product),
-            specs,
+            specs: baseSpecs,
+            lot: lotLabel,
             quantity: Number(item.quantity || 0),
             unit: item.unit,
           };

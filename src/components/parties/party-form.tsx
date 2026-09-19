@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { partySchema, type PartyInput } from "@/schemas/party";
+import { useConfirm } from "@/components/providers/confirm-provider";
 
 const EMPTY_VALUES: PartyInput = {
   name: "",
@@ -39,6 +40,7 @@ export function PartyForm({
   deleteLabel = "Delete",
   submitting = false,
 }: PartyFormProps) {
+  const confirm = useConfirm();
   const [serverError, setServerError] = useState<string | null>(null);
 
   const defaultValues = useMemo(
@@ -74,8 +76,15 @@ export function PartyForm({
 
   async function handleFormSubmit(values: PartyInput) {
     setServerError(null);
-    const action = initialValues?.name ? "update this party" : "create this party";
-    if (!window.confirm(`Confirm: ${action}?`)) return;
+    const action = initialValues?.name ? "save changes to this party" : "create this party";
+    const ok = await confirm({
+      title: initialValues?.name ? "Update Party" : "Create Party",
+      description: `Are you sure you want to ${action}?`,
+      confirmText: initialValues?.name ? "Save Changes" : "Create Party",
+      variant: "primary",
+    });
+    if (!ok) return;
+
     try {
       const sanitized: PartyInput = {
         ...values,
@@ -176,9 +185,20 @@ export function PartyForm({
 
           <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:justify-end">
             {onDelete ? (
-              <Button type="button" variant="destructive" onClick={() => {
-                if (window.confirm("Confirm: delete this party? It will be removed from your contact directory.")) void onDelete();
-              }} disabled={submitting || isSubmitting}>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: "Delete Party",
+                    description: "Are you sure you want to delete this party? It will be removed from your contact directory.",
+                    confirmText: "Delete Party",
+                    variant: "destructive",
+                  });
+                  if (ok) void onDelete();
+                }}
+                disabled={submitting || isSubmitting}
+              >
                 <Trash2 className="mr-2 h-4 w-4" />
                 {deleteLabel}
               </Button>

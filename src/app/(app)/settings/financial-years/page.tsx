@@ -27,6 +27,8 @@ import {
   listFinancialYearsAction,
   createFinancialYearAction,
   closeFinancialYearAction,
+  activateFinancialYearAction,
+  resetDocumentSequenceAction,
 } from "@/actions/financial-years";
 
 type FinancialYearItem = {
@@ -37,6 +39,7 @@ type FinancialYearItem = {
   isActive: boolean;
   isClosed: boolean;
   createdAt: string;
+  sequences?: Array<{ documentType: string; lastSequence: number }>;
   documentCounts: {
     sales: number;
     purchases: number;
@@ -56,12 +59,14 @@ export default function FinancialYearsPage() {
   const [loading, setLoading] = useState(true);
   const [statusMessage, setStatusMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  // New Year Modal state
+  // New Year / Period Modal state
   const [showNewYearModal, setShowNewYearModal] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [newStartDate, setNewStartDate] = useState("");
   const [newEndDate, setNewEndDate] = useState("");
+  const [makeActiveNow, setMakeActiveNow] = useState(true);
   const [creatingYear, setCreatingYear] = useState(false);
+  const [activatingYearId, setActivatingYearId] = useState<string | null>(null);
 
   // Close Year Modal state
   const [showCloseModal, setShowCloseModal] = useState(false);
@@ -126,12 +131,13 @@ export default function FinancialYearsPage() {
         label: newLabel.trim(),
         startDate: newStartDate,
         endDate: newEndDate,
+        makeActive: makeActiveNow,
       });
 
       if (res.success) {
         setStatusMessage({
           type: "success",
-          text: `Financial Year "${newLabel}" has been created successfully.`,
+          text: `Financial Period "${newLabel}" created successfully.${makeActiveNow ? " It is now the active accounting period." : ""}`,
         });
         setShowNewYearModal(false);
         await loadData();
@@ -142,6 +148,82 @@ export default function FinancialYearsPage() {
       setStatusMessage({ type: "error", text: err.message || "Failed to create financial year." });
     } finally {
       setCreatingYear(false);
+    }
+  }
+
+  async function handleActivateYear(fy: FinancialYearItem) {
+    setActivatingYearId(fy.id);
+    setStatusMessage(null);
+    try {
+      const res = await activateFinancialYearAction(fy.id);
+      if (res.success) {
+        setStatusMessage({
+          type: "success",
+          text: `Period "${fy.label}" is now ACTIVE. Subsequent documents will start with 001 for this period.`,
+        });
+        await loadData();
+      } else {
+        setStatusMessage({ type: "error", text: res.error || "Failed to activate period." });
+      }
+    } catch (err: any) {
+      setStatusMessage({ type: "error", text: err.message || "Failed to activate period." });
+    } finally {
+      setActivatingYearId(null);
+    }
+  }
+
+  async function handleResetSequence(docType: string, nextNo = 1) {
+    if (!activeYear) return;
+    try {
+      const res = await resetDocumentSequenceAction({
+        financialYearId: activeYear.id,
+        documentType: docType as any,
+        nextSequenceNo: nextNo,
+      });
+      if (res.success) {
+        setStatusMessage({
+          type: "success",
+          text: `Sequence for ${docType} reset to #${String(nextNo).padStart(3, "0")}.`,
+        });
+        await loadData();
+      } else {
+        setStatusMessage({ type: "error", text: res.error || "Failed to reset sequence." });
+      }
+    } catch (err: any) {
+      setStatusMessage({ type: "error", text: err.message || "Failed to reset sequence." });
+    }
+  }
+
+  function applyPeriodPreset(preset: "ANNUAL" | "Q1" | "Q2" | "Q3" | "Q4" | "H1" | "H2") {
+    const currentYear = new Date().getFullYear();
+    if (preset === "ANNUAL") {
+      setNewLabel(`${currentYear}`);
+      setNewStartDate(`${currentYear}-01-01`);
+      setNewEndDate(`${currentYear}-12-31`);
+    } else if (preset === "Q1") {
+      setNewLabel(`Q1-${currentYear}`);
+      setNewStartDate(`${currentYear}-01-01`);
+      setNewEndDate(`${currentYear}-03-31`);
+    } else if (preset === "Q2") {
+      setNewLabel(`Q2-${currentYear}`);
+      setNewStartDate(`${currentYear}-04-01`);
+      setNewEndDate(`${currentYear}-06-30`);
+    } else if (preset === "Q3") {
+      setNewLabel(`Q3-${currentYear}`);
+      setNewStartDate(`${currentYear}-07-01`);
+      setNewEndDate(`${currentYear}-09-30`);
+    } else if (preset === "Q4") {
+      setNewLabel(`Q4-${currentYear}`);
+      setNewStartDate(`${currentYear}-10-01`);
+      setNewEndDate(`${currentYear}-12-31`);
+    } else if (preset === "H1") {
+      setNewLabel(`H1-${currentYear}`);
+      setNewStartDate(`${currentYear}-01-01`);
+      setNewEndDate(`${currentYear}-06-30`);
+    } else if (preset === "H2") {
+      setNewLabel(`H2-${currentYear}`);
+      setNewStartDate(`${currentYear}-07-01`);
+      setNewEndDate(`${currentYear}-12-31`);
     }
   }
 
@@ -313,6 +395,30 @@ export default function FinancialYearsPage() {
                 <span>•</span>
                 <span><strong>{activeYear.documentCounts.saleReturns + activeYear.documentCounts.purchaseReturns}</strong> Returns</span>
               </div>
+
+              {/* Document Sequence Status */}
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-emerald-200 text-xs font-mono">
+                <span className="text-[11px] font-sans font-bold text-slate-700">Next Document Sequences:</span>
+                {[
+                  { key: "SALE_INVOICE", label: "Sales Inv" },
+                  { key: "PURCHASE_INVOICE", label: "Pur Inv" },
+                  { key: "DELIVERY_ORDER", label: "DO" },
+                  { key: "PURCHASE_ORDER", label: "PO" },
+                ].map((dt) => {
+                  const seqRec = activeYear.sequences?.find((s) => s.documentType === dt.key);
+                  const lastSeq = seqRec ? seqRec.lastSequence : 0;
+                  const nextPadded = String(lastSeq + 1).padStart(3, "0");
+                  return (
+                    <span
+                      key={dt.key}
+                      className="inline-flex items-center gap-1.5 bg-white border border-emerald-300 px-2 py-0.5 rounded text-[11px]"
+                    >
+                      <span className="text-slate-600">{dt.label}:</span>
+                      <strong className="text-emerald-900">#{nextPadded}</strong>
+                    </span>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -434,9 +540,18 @@ export default function FinancialYearsPage() {
                               <Lock className="h-3 w-3 mr-1" />
                               Close Year
                             </Button>
+                          ) : !isYearClosed ? (
+                            <Button
+                              size="sm"
+                              disabled={activatingYearId === fy.id}
+                              onClick={() => handleActivateYear(fy)}
+                              className="h-7 text-xs px-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-medium"
+                            >
+                              {activatingYearId === fy.id ? "Activating..." : "Activate Period"}
+                            </Button>
                           ) : (
                             <span className="text-[11px] text-slate-400 italic">
-                              {isYearClosed ? "Locked" : "Pending"}
+                              Locked
                             </span>
                           )}
                         </td>
@@ -469,18 +584,43 @@ export default function FinancialYearsPage() {
             </div>
 
             <form onSubmit={handleCreateYear} className="p-5 space-y-4 text-xs">
+              {/* Quick Period Presets */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-slate-700">Quick Period Presets</Label>
+                <div className="flex flex-wrap gap-1">
+                  {[
+                    { key: "ANNUAL", label: "Annual / Full Year" },
+                    { key: "Q1", label: "Q1 (Jan-Mar)" },
+                    { key: "Q2", label: "Q2 (Apr-Jun)" },
+                    { key: "Q3", label: "Q3 (Jul-Sep)" },
+                    { key: "Q4", label: "Q4 (Oct-Dec)" },
+                    { key: "H1", label: "H1 (Jan-Jun)" },
+                    { key: "H2", label: "H2 (Jul-Dec)" },
+                  ].map((preset) => (
+                    <button
+                      key={preset.key}
+                      type="button"
+                      onClick={() => applyPeriodPreset(preset.key as any)}
+                      className="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-[11px] font-medium text-slate-700"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="space-y-1">
-                <Label htmlFor="yearLabel" className="text-xs font-semibold">Year Label *</Label>
+                <Label htmlFor="yearLabel" className="text-xs font-semibold">Period / Year Label *</Label>
                 <Input
                   id="yearLabel"
                   value={newLabel}
                   onChange={(e) => setNewLabel(e.target.value)}
-                  placeholder="e.g. 2027-2028"
-                  className="h-8 text-xs"
+                  placeholder="e.g. 2026, Q1-2026, H1-2026"
+                  className="h-8 text-xs font-medium"
                   required
                 />
                 <p className="text-[10px] text-slate-500">
-                  Document numbers will be prefixed with this label (e.g. {newLabel || "YYYY"}-0001).
+                  Document numbers will be prefixed with this label (e.g. {newLabel || "PERIOD"}-001).
                 </p>
               </div>
 
@@ -507,6 +647,19 @@ export default function FinancialYearsPage() {
                     required
                   />
                 </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="makeActiveNow"
+                  checked={makeActiveNow}
+                  onChange={(e) => setMakeActiveNow(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                />
+                <Label htmlFor="makeActiveNow" className="text-xs font-medium text-slate-700 cursor-pointer">
+                  Activate this accounting period immediately (starts document numbers from 001)
+                </Label>
               </div>
 
               <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-[11px] text-slate-600 space-y-1">

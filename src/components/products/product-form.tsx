@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useConfirm } from "@/components/providers/confirm-provider";
 
 export type ProductFormValues = ProductInput;
 
@@ -60,6 +61,7 @@ export function ProductForm({
   submitLabel = "Save product",
   deleteLabel = "Delete",
 }: ProductFormProps) {
+  const confirm = useConfirm();
   const [serverError, setServerError] = useState<string | null>(null);
   const [showGsmHelper, setShowGsmHelper] = useState(false);
   const [weighedPacketInput, setWeighedPacketInput] = useState("");
@@ -154,8 +156,15 @@ export function ProductForm({
 
   async function handleFormSubmit(values: ProductFormValues) {
     setServerError(null);
-    const action = initialValues?.productNo ? "update this product" : "create this product";
-    if (!window.confirm(`Confirm: ${action}?`)) return;
+    const action = initialValues?.productNo ? "save changes to this product" : "create this product";
+    const ok = await confirm({
+      title: initialValues?.productNo ? "Update Product" : "Create Product",
+      description: `Are you sure you want to ${action}?`,
+      confirmText: initialValues?.productNo ? "Save Changes" : "Create Product",
+      variant: "primary",
+    });
+    if (!ok) return;
+
     try {
       await onSubmit(values);
     } catch (error) {
@@ -366,8 +375,8 @@ export function ProductForm({
                 className="flex min-h-11 w-full rounded-md border border-emerald-100 bg-white/80 px-3 py-2 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-200 font-medium"
                 {...register("unit")}
               >
-                <option value={Unit.PACKET}>PACKET (100 Sheets) — Primary Dealing Default</option>
-                <option value={Unit.REAM}>REAM (500 Sheets) — Bulk Mill Packaging</option>
+                <option value={Unit.PACKET}>PACKET (100 sheets)</option>
+                <option value={Unit.REAM}>REAM (500 sheets)</option>
               </select>
               <p className="text-[11px] text-slate-500">All local customer dealing defaults to packets.</p>
             </div>
@@ -665,9 +674,21 @@ export function ProductForm({
 
           <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:justify-end">
             {onDelete ? (
-              <Button type="button" variant="destructive" onClick={() => {
-                if (window.confirm("Confirm: delete this product? It will be removed from your catalog and inventory.")) void onDelete();
-              }} disabled={submitting || isSubmitting} className="shadow-sm">
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: "Delete Product",
+                    description: "Are you sure you want to delete this product? It will be removed from your catalog and inventory.",
+                    confirmText: "Delete Product",
+                    variant: "destructive",
+                  });
+                  if (ok) void onDelete();
+                }}
+                disabled={submitting || isSubmitting}
+                className="shadow-sm"
+              >
                 <Trash2 className="mr-2 h-4 w-4" />
                 {deleteLabel}
               </Button>

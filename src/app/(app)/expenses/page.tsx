@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import {
   Receipt,
   Plus,
@@ -22,6 +22,7 @@ import { listExpensesAction, createExpenseAction } from "@/actions/expenses";
 import { ExpenseCategory, PaymentMethod } from "@prisma/client";
 import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useConfirm } from "@/components/providers/confirm-provider";
 
 type ExpenseRow = {
   id: string;
@@ -48,11 +49,27 @@ const CATEGORY_LABELS: Record<ExpenseCategory, string> = {
 };
 
 export default function ExpensesPage() {
+  const confirm = useConfirm();
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "F2" || e.key === "Insert") {
+        e.preventDefault();
+        setIsDialogOpen(true);
+      } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Form State
   const [category, setCategory] = useState<ExpenseCategory>(ExpenseCategory.OTHER);
@@ -125,7 +142,13 @@ export default function ExpensesPage() {
       return;
     }
 
-    if (!window.confirm("Confirm: record this business expense in the general ledger?")) {
+    const ok = await confirm({
+      title: "Record Expense",
+      description: "Are you sure you want to record this business expense in the general ledger?",
+      confirmText: "Record Expense",
+      variant: "primary",
+    });
+    if (!ok) {
       return;
     }
 
@@ -159,79 +182,87 @@ export default function ExpensesPage() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <Receipt className="h-5 w-5 text-emerald-800" />
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Miscellaneous Expenses</h1>
+    <div className="flex flex-col gap-3 p-4">
+      {/* Top Banner: Title, Counters, and Action Button */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-md shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-400 rounded-md">
+            <Receipt className="h-5 w-5" />
           </div>
-          <p className="text-sm text-slate-600">
-            Track daily operating expenses, utilities, tea, transport, and shop maintenance directly posted to the ledger.
-          </p>
+          <div>
+            <h1 className="text-base font-bold tracking-tight text-slate-900 dark:text-slate-100">
+              Miscellaneous Expenses
+            </h1>
+            <p className="text-[11px] text-slate-500">
+              Track daily operating expenses, utilities, tea, transport, and shop maintenance
+            </p>
+          </div>
         </div>
-        <Button
-          onClick={() => setIsDialogOpen(true)}
-          className="bg-emerald-800 text-white hover:bg-emerald-700 shadow-sm sm:w-auto w-full"
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          Record New Expense
-        </Button>
+
+        <div className="flex items-center gap-2">
+          {/* Counters */}
+          <div className="hidden sm:flex items-center gap-2 text-xs font-mono">
+            <span className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded">
+              Total: <strong>PKR {totalExpenses.toLocaleString()}</strong>
+            </span>
+            <span className="bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2 py-1 rounded">
+              Cash: <strong>PKR {cashExpenses.toLocaleString()}</strong>
+            </span>
+            <span className="bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-800 px-2 py-1 rounded">
+              Bank: <strong>PKR {bankExpenses.toLocaleString()}</strong>
+            </span>
+            <span className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-300 px-2 py-1 rounded">
+              Vouchers: <strong>{expenses.length}</strong>
+            </span>
+          </div>
+
+          <Button
+            onClick={() => setIsDialogOpen(true)}
+            className="h-8 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold shadow-xs px-3"
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            Record Expense <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+          </Button>
+        </div>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Total Recorded Expenses</p>
-          <p className="mt-1 text-2xl font-extrabold text-slate-900">PKR {totalExpenses.toLocaleString()}</p>
-          <p className="text-[11px] text-slate-500 mt-0.5">{expenses.length} expense vouchers</p>
+      {/* Filter and Search Bar */}
+      <div className="flex flex-col sm:flex-row gap-2 items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs">
+        <div className="relative flex-1 w-full">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+          <Input
+            ref={searchInputRef}
+            placeholder="Search expenses by voucher, description, or notes... (Press / to focus)"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="h-8 pl-8 pr-8 text-xs bg-slate-50 dark:bg-slate-950/50 border-slate-300 dark:border-slate-700 font-medium"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
-        <div className="rounded-xl border border-amber-200/70 bg-gradient-to-br from-amber-50/50 to-white p-4 shadow-xs">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-amber-900">Cash Expenses</p>
-          <p className="mt-1 text-2xl font-extrabold text-amber-950">PKR {cashExpenses.toLocaleString()}</p>
-          <p className="text-[11px] text-amber-700 mt-0.5">Paid from cash drawer</p>
-        </div>
-        <div className="rounded-xl border border-sky-200/70 bg-gradient-to-br from-sky-50/50 to-white p-4 shadow-xs">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-sky-900">Bank / Cheque Expenses</p>
-          <p className="mt-1 text-2xl font-extrabold text-sky-950">PKR {bankExpenses.toLocaleString()}</p>
-          <p className="text-[11px] text-sky-700 mt-0.5">Paid via bank account</p>
-        </div>
+
+        <select
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+          className="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-700 dark:text-slate-200 h-8 font-medium"
+        >
+          <option value="ALL">All Categories</option>
+          {Object.entries(CATEGORY_LABELS).map(([k, label]) => (
+            <option key={k} value={k}>
+              {label}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* Expense List Card */}
       <Card className="border-slate-200/80 bg-white shadow-xs">
-        <CardHeader className="pb-3 border-b border-slate-100">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <CardTitle className="text-base font-bold text-slate-900">Expense Log</CardTitle>
-              <p className="text-xs text-slate-500 mt-0.5">Audit log of all operating business payments</p>
-            </div>
-            <div className="flex flex-col sm:flex-row gap-2">
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                <Input
-                  placeholder="Search expenses..."
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  className="pl-8 text-xs h-8 sm:w-48 bg-slate-50"
-                />
-              </div>
-              <select
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-                className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700"
-              >
-                <option value="ALL">All Categories</option>
-                {Object.entries(CATEGORY_LABELS).map(([k, label]) => (
-                  <option key={k} value={k}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </CardHeader>
         <CardContent className="p-0">
           {loading ? (
             <div className="p-8 text-center text-xs text-slate-400">Loading expenses...</div>

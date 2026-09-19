@@ -19,6 +19,7 @@ import {
   ShieldAlert,
   CheckCircle2,
   RefreshCw,
+  MessageSquare,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -122,236 +123,228 @@ export default function ReceivablesPayablesPage() {
 
   const netBalance = (data?.totalReceivables ?? 0) - (data?.totalPayables ?? 0);
 
+  // Keyboard shortcut '/' to search
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
+        e.preventDefault();
+        const searchInput = document.getElementById("search-receivables-payables");
+        searchInput?.focus();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  function exportToCSV() {
+    if (!data) return;
+    if (activeTab === "receivables") {
+      const headers = ["Customer Name", "Type", "Status", "Phone", "Email", "Address", "Credit Limit", "Amount Owed (PKR)", "Limit Utilized %"];
+      const rows = filteredReceivables.map((c) => [
+        `"${c.name.replace(/"/g, '""')}"`,
+        `"${c.type}"`,
+        `"${c.isActive ? "Active" : "Inactive"}"`,
+        `"${c.phone || ""}"`,
+        `"${c.email || ""}"`,
+        `"${(c.address || "").replace(/"/g, '""')}"`,
+        c.creditLimit ?? "Unlimited",
+        c.balance.toFixed(2),
+        c.creditLimitUsagePercent ?? "N/A",
+      ]);
+      const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `Receivables_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } else {
+      const headers = ["Supplier Name", "Type", "Status", "Phone", "Email", "Address", "Amount Owed (PKR)"];
+      const rows = filteredPayables.map((s) => [
+        `"${s.name.replace(/"/g, '""')}"`,
+        `"${s.type}"`,
+        `"${s.isActive ? "Active" : "Inactive"}"`,
+        `"${s.phone || ""}"`,
+        `"${s.email || ""}"`,
+        `"${(s.address || "").replace(/"/g, '""')}"`,
+        s.balanceDue.toFixed(2),
+      ]);
+      const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `Payables_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  }
+
   return (
-    <div className="space-y-6">
-      {/* Header Banner */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <div className="h-9 w-9 rounded-xl bg-sky-100 flex items-center justify-center text-sky-800 border border-sky-200">
-              <Wallet className="h-5 w-5" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-                Receivables & Payables Breakdown
-              </h1>
-              <p className="text-xs sm:text-sm text-slate-600">
-                Itemized account balances: see who owes you money and who you owe.
-              </p>
-            </div>
+    <div className="space-y-3">
+      {/* Top Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-md shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-sky-50 dark:bg-sky-950/40 rounded-md border border-sky-200 dark:border-sky-800 text-sky-800 dark:text-sky-300">
+            <Wallet className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-base font-bold text-slate-900 dark:text-slate-100 tracking-tight">
+              Receivables & Payables Breakdown
+            </h1>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Live balances, credit limits, and running exposure across all parties
+            </p>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Live Aggregate Metrics Chips */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs font-mono">
+          <span className="px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+            Receivables: <strong>PKR {data ? data.totalReceivables.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : "..."}</strong>
+            <span className="text-[10px] text-slate-400 font-sans ml-1">({data?.receivablesCount ?? 0})</span>
+          </span>
+          <span className="px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+            Payables: <strong>PKR {data ? data.totalPayables.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : "..."}</strong>
+            <span className="text-[10px] text-slate-400 font-sans ml-1">({data?.payablesCount ?? 0})</span>
+          </span>
+          <span className={`px-2 py-0.5 rounded-md border ${netBalance >= 0 ? "bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-300 border-sky-200 dark:border-sky-800" : "bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border-rose-200 dark:border-rose-800"}`}>
+            Net: <strong>PKR {Math.abs(netBalance).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</strong>
+            <span className="text-[10px] font-sans ml-1">({netBalance >= 0 ? "Surplus" : "Deficit"})</span>
+          </span>
+          {Boolean(data && data.totalOverCreditLimitCount > 0) && (
+            <span className="px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 flex items-center gap-1 animate-pulse">
+              <ShieldAlert className="h-3 w-3" />
+              <strong>{data?.totalOverCreditLimitCount}</strong> Over Limit
+            </span>
+          )}
+        </div>
+
+        {/* Action Controls */}
+        <div className="flex items-center gap-2">
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={() => loadData()}
-            className="text-xs border-slate-200"
+            className="h-8 text-xs border-slate-200 dark:border-slate-800"
           >
             <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
             Refresh
           </Button>
-          <Button asChild size="sm" className="bg-emerald-800 text-white hover:bg-emerald-700 text-xs shadow-sm">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={exportToCSV}
+            className="h-8 text-xs border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300"
+          >
+            Export CSV
+          </Button>
+          <Button asChild size="sm" className="h-8 bg-emerald-800 text-white hover:bg-emerald-700 text-xs shadow-xs">
             <Link href="/payments">
               <CreditCard className="mr-1.5 h-3.5 w-3.5" />
               Record Payment
             </Link>
           </Button>
-          <Button asChild size="sm" variant="outline" className="text-xs">
-            <Link href="/financial-reports">
+          <Button asChild size="sm" variant="outline" className="h-8 text-xs border-slate-200 dark:border-slate-800">
+            <Link href="/reports">
               <FileText className="mr-1.5 h-3.5 w-3.5" />
-              Balance Sheet
+              Financial Reports
             </Link>
           </Button>
         </div>
-      </div>
-
-      {/* KPI Summary Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {/* Receivables Card */}
-        <Card className="border-emerald-200/80 bg-gradient-to-br from-emerald-50/70 via-white to-white shadow-xs">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider text-emerald-800">
-              Total Receivables
-            </CardTitle>
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
-              <ArrowDownLeft className="h-4 w-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-extrabold text-emerald-900">
-              PKR {data ? data.totalReceivables.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "..."}
-            </div>
-            <p className="text-xs text-slate-600 mt-1 flex items-center justify-between">
-              <span>{data?.receivablesCount || 0} customer account{data?.receivablesCount === 1 ? "" : "s"}</span>
-              <span className="font-semibold text-emerald-700">Owed to you</span>
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Payables Card */}
-        <Card className="border-amber-200/80 bg-gradient-to-br from-amber-50/70 via-white to-white shadow-xs">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider text-amber-800">
-              Total Payables
-            </CardTitle>
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
-              <ArrowUpRight className="h-4 w-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-extrabold text-amber-900">
-              PKR {data ? data.totalPayables.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "..."}
-            </div>
-            <p className="text-xs text-slate-600 mt-1 flex items-center justify-between">
-              <span>{data?.payablesCount || 0} supplier account{data?.payablesCount === 1 ? "" : "s"}</span>
-              <span className="font-semibold text-amber-700">Owed by you</span>
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Net Outstanding Balance */}
-        <Card className="border-sky-200/80 bg-gradient-to-br from-sky-50/70 via-white to-white shadow-xs">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider text-sky-800">
-              Net Outstanding
-            </CardTitle>
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-100 text-sky-700">
-              <Wallet className="h-4 w-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div
-              className={`text-2xl font-extrabold ${
-                netBalance >= 0 ? "text-sky-900" : "text-rose-700"
-              }`}
-            >
-              PKR {Math.abs(netBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-            <p className="text-xs text-slate-600 mt-1">
-              {netBalance >= 0 ? "Net surplus receivable" : "Net deficit payable"}
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Credit Limit Warnings */}
-        <Card className="border-rose-200/80 bg-gradient-to-br from-rose-50/70 via-white to-white shadow-xs">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider text-rose-800">
-              Over Credit Limit
-            </CardTitle>
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-100 text-rose-700">
-              <ShieldAlert className="h-4 w-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-extrabold text-rose-900">
-              {data ? data.totalOverCreditLimitCount : "..."}
-            </div>
-            <p className="text-xs text-rose-700 mt-1">
-              {data?.totalOverCreditLimitCount
-                ? "Customers exceeding assigned limit"
-                : "All customers within credit bounds"}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Navigation Tabs & Search Toolbar */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 pb-3">
-          {/* Tab Buttons */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab("receivables");
-                setOnlyOverLimit(false);
-              }}
-              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+      {/* Search & Filter Toolbar */}
+      <div className="flex flex-col sm:flex-row gap-2 items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs">
+        {/* Tab Pills */}
+        <div className="flex items-center gap-1.5 w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab("receivables");
+              setOnlyOverLimit(false);
+            }}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-all ${
+              activeTab === "receivables"
+                ? "bg-emerald-800 text-white shadow-xs"
+                : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200"
+            }`}
+          >
+            <Users className="h-3.5 w-3.5" />
+            <span>Receivables (Customers)</span>
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] font-mono font-bold ${
                 activeTab === "receivables"
-                  ? "bg-emerald-800 text-white shadow-xs"
-                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                  ? "bg-emerald-700 text-white"
+                  : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700"
               }`}
             >
-              <Users className="h-3.5 w-3.5" />
-              <span>Receivables (Who Owes You)</span>
-              <span
-                className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${
-                  activeTab === "receivables"
-                    ? "bg-emerald-700 text-white"
-                    : "bg-white text-slate-700 border border-slate-200"
-                }`}
-              >
-                {data?.receivablesCount || 0}
-              </span>
-            </button>
+              {data?.receivablesCount || 0}
+            </span>
+          </button>
 
-            <button
-              type="button"
-              onClick={() => setActiveTab("payables")}
-              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+          <button
+            type="button"
+            onClick={() => setActiveTab("payables")}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-all ${
+              activeTab === "payables"
+                ? "bg-amber-800 text-white shadow-xs"
+                : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200"
+            }`}
+          >
+            <Building2 className="h-3.5 w-3.5" />
+            <span>Payables (Suppliers)</span>
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] font-mono font-bold ${
                 activeTab === "payables"
-                  ? "bg-amber-800 text-white shadow-xs"
-                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                  ? "bg-amber-700 text-white"
+                  : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700"
               }`}
             >
-              <Building2 className="h-3.5 w-3.5" />
-              <span>Payables (Who You Owe)</span>
-              <span
-                className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${
-                  activeTab === "payables"
-                    ? "bg-amber-700 text-white"
-                    : "bg-white text-slate-700 border border-slate-200"
-                }`}
-              >
-                {data?.payablesCount || 0}
-              </span>
-            </button>
-          </div>
+              {data?.payablesCount || 0}
+            </span>
+          </button>
 
-          {/* Quick Filter Badges */}
           {activeTab === "receivables" && data && data.totalOverCreditLimitCount > 0 && (
             <button
               type="button"
               onClick={() => setOnlyOverLimit(!onlyOverLimit)}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors border ${
+              className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold transition-colors border ${
                 onlyOverLimit
                   ? "bg-rose-600 text-white border-rose-700"
-                  : "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
+                  : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800 hover:bg-rose-100"
               }`}
             >
               <AlertTriangle className="h-3.5 w-3.5" />
-              {onlyOverLimit ? "Showing Over-Limit Only" : `Filter Over-Limit (${data.totalOverCreditLimitCount})`}
+              {onlyOverLimit ? "Over-Limit Only" : `Over-Limit (${data.totalOverCreditLimitCount})`}
             </button>
           )}
         </div>
 
-        {/* Search Bar */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={`Search ${activeTab === "receivables" ? "customers" : "suppliers"} by name, phone, email, or address...`}
-              className="pl-9 h-9 text-xs"
-            />
-          </div>
+        {/* Search Field */}
+        <div className="relative flex-1 max-w-md w-full">
+          <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+          <Input
+            id="search-receivables-payables"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={`Search ${activeTab === "receivables" ? "customers" : "suppliers"} by name, phone, address (Press / to focus)...`}
+            className="pl-8 h-8 text-xs bg-slate-50 dark:bg-slate-950"
+          />
           {searchQuery && (
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={() => setSearchQuery("")}
-              className="text-xs text-slate-500 hover:text-slate-800"
+              className="absolute right-1 top-1 h-6 px-1.5 text-[10px] text-slate-500"
             >
-              Clear Search
+              Clear
             </Button>
           )}
         </div>
+      </div>
 
         {/* Breakdown Tables */}
         {loading ? (
@@ -493,18 +486,36 @@ export default function ReceivablesPayablesPage() {
                             asChild
                             variant="outline"
                             size="sm"
-                            className="h-7 px-2 text-[10px] text-slate-700 hover:text-emerald-800"
+                            className="h-7 px-2 text-[10px] text-slate-700 hover:text-emerald-800 border-slate-200 dark:border-slate-800"
                           >
                             <Link href={`/ledger?partyId=${customer.id}`}>
                               <FileText className="mr-1 h-3 w-3" />
                               Statement
                             </Link>
                           </Button>
+                          {customer.phone && (
+                            <Button
+                              asChild
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-[10px] text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800"
+                              title="Send WhatsApp payment reminder"
+                            >
+                              <a
+                                href={`https://wa.me/${customer.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(`Assalam-o-Alaikum / Hello ${customer.name},\nThis is a friendly reminder that your outstanding balance is PKR ${customer.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.\nPlease arrange settlement at your earliest convenience.\nThank you!`)}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                <MessageSquare className="mr-1 h-3 w-3 text-emerald-600" />
+                                WhatsApp
+                              </a>
+                            </Button>
+                          )}
                           <Button
                             asChild
                             variant="outline"
                             size="sm"
-                            className="h-7 px-2 text-[10px] text-emerald-700 hover:bg-emerald-50 border-emerald-200"
+                            className="h-7 px-2 text-[10px] text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800"
                           >
                             <Link href={`/payments?partyId=${customer.id}`}>
                               <CreditCard className="mr-1 h-3 w-3" />
@@ -602,18 +613,36 @@ export default function ReceivablesPayablesPage() {
                             asChild
                             variant="outline"
                             size="sm"
-                            className="h-7 px-2 text-[10px] text-slate-700 hover:text-amber-800"
+                            className="h-7 px-2 text-[10px] text-slate-700 hover:text-amber-800 border-slate-200 dark:border-slate-800"
                           >
                             <Link href={`/ledger?partyId=${supplier.id}`}>
                               <FileText className="mr-1 h-3 w-3" />
                               Statement
                             </Link>
                           </Button>
+                          {supplier.phone && (
+                            <Button
+                              asChild
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-[10px] text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800"
+                              title="Chat on WhatsApp"
+                            >
+                              <a
+                                href={`https://wa.me/${supplier.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(`Assalam-o-Alaikum / Hello ${supplier.name},\nRegarding our pending account balance of PKR ${supplier.balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`)}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                <MessageSquare className="mr-1 h-3 w-3 text-emerald-600" />
+                                WhatsApp
+                              </a>
+                            </Button>
+                          )}
                           <Button
                             asChild
                             variant="outline"
                             size="sm"
-                            className="h-7 px-2 text-[10px] text-amber-800 hover:bg-amber-50 border-amber-200"
+                            className="h-7 px-2 text-[10px] text-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 border-amber-200 dark:border-amber-800"
                           >
                             <Link href={`/payments?partyId=${supplier.id}`}>
                               <CreditCard className="mr-1 h-3 w-3" />

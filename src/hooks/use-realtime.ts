@@ -22,7 +22,7 @@ export function useRealtimeListener(
   const modulesKey = Array.isArray(modules) ? modules.slice().sort().join(",") : modules;
 
   useEffect(() => {
-    const moduleList = Array.isArray(modules) ? modules : [modules];
+    const moduleList = (modulesKey ? modulesKey.split(",") : []) as RealtimeModule[];
 
     const unsubscribe = subscribe(moduleList, (event) => {
       if (timerRef.current) clearTimeout(timerRef.current);

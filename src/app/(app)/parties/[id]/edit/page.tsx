@@ -1,5 +1,5 @@
-import { PartyEditor } from "@/components/parties/party-editor";
+import { redirect } from "next/navigation";
 
-export default async function EditPartyPage({ params }: { params: { id: string } }) {
-  return <PartyEditor partyId={params.id} />;
+export default function EditPartyPage({ params }: { params: { id: string } }) {
+  redirect(`/parties?id=${params.id}`);
 }

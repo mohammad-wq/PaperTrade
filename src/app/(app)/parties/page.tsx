@@ -1,14 +1,42 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { ArrowUpRight, Plus, Search, Users, Phone, Mail, MapPin, FileText, FileSpreadsheet, Filter, CheckCircle2, Trash2 } from "lucide-react";
-import { listPartiesAction, softDeletePartyAction } from "@/actions/parties";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { useEffect, useMemo, useState, useRef, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  Users,
+  Plus,
+  Search,
+  Phone,
+  Mail,
+  MapPin,
+  FileText,
+  FileSpreadsheet,
+  SlidersHorizontal,
+  ChevronDown,
+  ChevronUp,
+  X,
+  Trash2,
+  Printer,
+  Download,
+  LayoutGrid,
+  ListFilter,
+  AlertCircle,
+  Save,
+  ShieldAlert,
+  ArrowUpRight,
+  CreditCard,
+} from "lucide-react";
+import {
+  listPartiesAction,
+  upsertPartyAction,
+  softDeletePartyAction,
+} from "@/actions/parties";
 import { PartyType } from "@prisma/client";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useConfirm } from "@/components/providers/confirm-provider";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 type PartyRecord = {
   id: string;
@@ -22,19 +50,64 @@ type PartyRecord = {
   balance: number;
 };
 
-export default function PartiesPage() {
+type PartyFormData = {
+  id?: string;
+  name: string;
+  type: PartyType;
+  phone: string;
+  email: string;
+  address: string;
+  creditLimit: string;
+  isActive: boolean;
+};
+
+const EMPTY_PARTY_FORM: PartyFormData = {
+  name: "",
+  type: PartyType.CUSTOMER,
+  phone: "",
+  email: "",
+  address: "",
+  creditLimit: "",
+  isActive: true,
+};
+
+function PartiesPageContent() {
+  const router = useRouter();
+  const confirm = useConfirm();
+  const searchParams = useSearchParams();
+  const editIdParam = searchParams.get("id") || searchParams.get("edit");
+  const actionParam = searchParams.get("action");
+
+  // Main Data States
   const [parties, setParties] = useState<PartyRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [query, setQuery] = useState("");
-  const [selectedType, setSelectedType] = useState<"ALL" | PartyType>("ALL");
-  const [showActiveOnly, setShowActiveOnly] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  async function fetchParties(isBackground = false) {
+  // Dedicated Separate Window Dialog State (Pattern 2 - Windows Forms Style)
+  const [isWindowOpen, setIsWindowOpen] = useState(false);
+  const [selectedPartyId, setSelectedPartyId] = useState<string | null>(null);
+  const [formData, setFormData] = useState<PartyFormData>(EMPTY_PARTY_FORM);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  // Search & Filtering State (Pattern 1)
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [filterType, setFilterType] = useState<"ALL" | PartyType>("ALL");
+  const [filterStatus, setFilterStatus] = useState<"ALL" | "ACTIVE" | "INACTIVE">("ALL");
+  const [filterBalance, setFilterBalance] = useState<"ALL" | "RECEIVABLE" | "PAYABLE" | "ZERO">("ALL");
+  const [viewMode, setViewMode] = useState<"table" | "cards">("table");
+
+  // References
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const formModalRef = useRef<HTMLDivElement>(null);
+
+  // Fetch initial data
+  async function loadInitialData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const result = await listPartiesAction();
-      if (result.success) {
-        setParties(result.data as PartyRecord[]);
+      const res = await listPartiesAction();
+      if (res.success && res.data) {
+        setParties(res.data as PartyRecord[]);
       }
     } finally {
       if (!isBackground) setLoading(false);
@@ -42,25 +115,265 @@ export default function PartiesPage() {
   }
 
   useEffect(() => {
-    void fetchParties();
+    void loadInitialData();
   }, []);
 
-  useRealtimeListener(["parties", "sales", "purchases", "payments"], () => {
-    void fetchParties(true);
+  useRealtimeListener(["parties", "sales", "purchases", "payments", "ledger"], () => {
+    void loadInitialData(true);
   });
 
-  async function handleDeleteParty(id: string, name: string) {
-    if (!window.confirm(`Confirm: delete "${name}"? It will be removed from your contact directory.`)) return;
-    const res = await softDeletePartyAction({ id });
-    if (res.success) {
-      setParties((prev) => prev.filter((p) => p.id !== id));
-    } else {
-      alert(res.error || "Failed to delete party.");
+  // Window action refs for effects
+  const openNewWindowRef = useRef(openNewWindow);
+  openNewWindowRef.current = openNewWindow;
+  const openEditWindowRef = useRef(openEditWindow);
+  openEditWindowRef.current = openEditWindow;
+  const closeWindowRef = useRef(closeWindow);
+  closeWindowRef.current = closeWindow;
+
+  // Handle URL query parameters to open window
+  useEffect(() => {
+    if (editIdParam && parties.length > 0) {
+      const found = parties.find((p) => p.id === editIdParam);
+      if (found) {
+        openEditWindowRef.current(found);
+      }
+    } else if (actionParam === "new") {
+      openNewWindowRef.current();
+    }
+  }, [editIdParam, actionParam, parties]);
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    function handleGlobalKeyDown(e: KeyboardEvent) {
+      // F2 or Insert opens New Party window
+      if (e.key === "F2" || e.key === "Insert") {
+        e.preventDefault();
+        openNewWindowRef.current();
+        return;
+      }
+      // Pressing "/" focuses the universal search bar if not in an input
+      if (
+        e.key === "/" &&
+        !isWindowOpen &&
+        !(document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement)
+      ) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      // Escape closes window if open
+      if (e.key === "Escape" && isWindowOpen) {
+        e.preventDefault();
+        closeWindowRef.current();
+      }
+    }
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [isWindowOpen]);
+
+  // Open New Party Window
+  function openNewWindow() {
+    setSelectedPartyId(null);
+    setFormError(null);
+    setFormData({
+      ...EMPTY_PARTY_FORM,
+    });
+    setIsWindowOpen(true);
+
+    setTimeout(() => {
+      const firstField = formModalRef.current?.querySelector<HTMLElement>('[data-nav-index="0"]');
+      firstField?.focus();
+      if (firstField instanceof HTMLInputElement) firstField.select();
+    }, 50);
+  }
+
+  // Open Edit Party Window
+  function openEditWindow(party: PartyRecord) {
+    setSelectedPartyId(party.id);
+    setFormError(null);
+    setFormData({
+      id: party.id,
+      name: party.name,
+      type: party.type,
+      phone: party.phone || "",
+      email: party.email || "",
+      address: party.address || "",
+      creditLimit: party.creditLimit !== null ? String(party.creditLimit) : "",
+      isActive: party.isActive,
+    });
+    setIsWindowOpen(true);
+
+    setTimeout(() => {
+      const firstField = formModalRef.current?.querySelector<HTMLElement>('[data-nav-index="0"]');
+      firstField?.focus();
+      if (firstField instanceof HTMLInputElement) firstField.select();
+    }, 50);
+  }
+
+  function closeWindow() {
+    setIsWindowOpen(false);
+    setSelectedPartyId(null);
+    setFormError(null);
+    // Remove query params if present without reloading
+    if (editIdParam || actionParam) {
+      router.replace("/parties");
     }
   }
 
+  // Keyboard navigation within the Party Entry Form
+  function handleNavKeyDown(e: React.KeyboardEvent, currentIndex: number) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const next = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${currentIndex + 1}"]`);
+      if (next) {
+        next.focus();
+        if (next instanceof HTMLInputElement) next.select();
+      } else {
+        void handleSaveParty();
+      }
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${currentIndex + 1}"]`);
+      next?.focus();
+      if (next instanceof HTMLInputElement) next.select();
+    } else if (e.key === "ArrowUp" && currentIndex > 0) {
+      e.preventDefault();
+      const prev = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${currentIndex - 1}"]`);
+      prev?.focus();
+      if (prev instanceof HTMLInputElement) prev.select();
+    }
+  }
+
+  // Save Party Handler (Create or Update)
+  async function handleSaveParty() {
+    if (!formData.name.trim()) {
+      setFormError("Party Name is required.");
+      const nameInput = formModalRef.current?.querySelector<HTMLInputElement>('[data-nav-index="1"]');
+      nameInput?.focus();
+      return;
+    }
+
+    setSaving(true);
+    setFormError(null);
+
+    try {
+      const payload = {
+        id: selectedPartyId || undefined,
+        name: formData.name.trim(),
+        type: formData.type,
+        phone: formData.phone.trim() || null,
+        email: formData.email.trim() || null,
+        address: formData.address.trim() || null,
+        creditLimit: formData.type === PartyType.CUSTOMER && formData.creditLimit ? parseFloat(formData.creditLimit) || 0 : null,
+        isActive: formData.isActive,
+      };
+
+      const res = await upsertPartyAction(payload);
+      if (res.success) {
+        await loadInitialData(true);
+        closeWindow();
+      } else {
+        setFormError(res.error || "Failed to save party. Please check input values.");
+      }
+    } catch (err: any) {
+      setFormError(err.message || "An unexpected error occurred while saving.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Delete Party Handler
+  async function handleDeleteParty(party: PartyRecord, e?: React.MouseEvent) {
+    e?.stopPropagation();
+    const ok = await confirm({
+      title: "Delete Party",
+      description: `Are you sure you want to delete "${party.name}"? It will be removed from your active directory.`,
+      confirmText: "Delete Party",
+      variant: "destructive",
+    });
+    if (!ok) return;
+
+    const res = await softDeletePartyAction({ id: party.id });
+    if (res.success) {
+      setParties((prev) => prev.filter((p) => p.id !== party.id));
+      if (selectedPartyId === party.id) {
+        closeWindow();
+      }
+    } else {
+      await confirm.alert(res.error || "Failed to delete party.", { variant: "destructive" });
+    }
+  }
+
+  // Client-Side CSV Export
+  function handleExportCsv() {
+    const headers = ["Name", "Type", "Phone", "Email", "Address", "Credit Limit", "Ledger Balance", "Status"];
+    const rows = filteredParties.map((p) => [
+      `"${p.name.replace(/"/g, '""')}"`,
+      p.type,
+      `"${p.phone || ""}"`,
+      `"${p.email || ""}"`,
+      `"${(p.address || "").replace(/"/g, '""')}"`,
+      p.creditLimit ?? "",
+      p.balance,
+      p.isActive ? "Active" : "Inactive",
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `party_directory_${new Date().toISOString().split("T")[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  // Comprehensive Search & Filter Calculation
+  const filteredParties = useMemo(() => {
+    let result = parties;
+
+    if (filterType !== "ALL") {
+      result = result.filter((p) => p.type === filterType);
+    }
+    if (filterStatus === "ACTIVE") {
+      result = result.filter((p) => p.isActive);
+    } else if (filterStatus === "INACTIVE") {
+      result = result.filter((p) => !p.isActive);
+    }
+
+    if (filterBalance === "RECEIVABLE") {
+      result = result.filter((p) => p.balance > 0 && p.type === PartyType.CUSTOMER);
+    } else if (filterBalance === "PAYABLE") {
+      result = result.filter((p) => p.balance > 0 && p.type === PartyType.SUPPLIER);
+    } else if (filterBalance === "ZERO") {
+      result = result.filter((p) => p.balance === 0);
+    }
+
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return result;
+
+    return result.filter((p) => {
+      const name = p.name.toLowerCase();
+      const phone = (p.phone || "").toLowerCase();
+      const email = (p.email || "").toLowerCase();
+      const address = (p.address || "").toLowerCase();
+      const type = p.type.toLowerCase();
+
+      return (
+        name.includes(q) ||
+        phone.includes(q) ||
+        email.includes(q) ||
+        address.includes(q) ||
+        type.includes(q)
+      );
+    });
+  }, [parties, searchQuery, filterType, filterStatus, filterBalance]);
+
+  // Aggregate stats
   const customerCount = useMemo(() => parties.filter((p) => p.type === PartyType.CUSTOMER).length, [parties]);
   const supplierCount = useMemo(() => parties.filter((p) => p.type === PartyType.SUPPLIER).length, [parties]);
+  const activeCount = useMemo(() => parties.filter((p) => p.isActive).length, [parties]);
   const totalReceivable = useMemo(
     () => parties.filter((p) => p.type === PartyType.CUSTOMER && p.balance > 0).reduce((sum, p) => sum + p.balance, 0),
     [parties],
@@ -70,282 +383,782 @@ export default function PartiesPage() {
     [parties],
   );
 
-  const filteredParties = useMemo(() => {
-    const search = query.trim().toLowerCase();
-    return parties.filter((party) => {
-      const matchesType = selectedType === "ALL" || party.type === selectedType;
-      const matchesActive = !showActiveOnly || party.isActive;
-      const matchesSearch =
-        !search ||
-        [party.name, party.email ?? "", party.phone ?? "", party.address ?? ""]
-          .join(" ")
-          .toLowerCase()
-          .includes(search);
-      return matchesType && matchesActive && matchesSearch;
-    });
-  }, [parties, query, selectedType, showActiveOnly]);
+  const selectedParty = useMemo(
+    () => (selectedPartyId ? parties.find((p) => p.id === selectedPartyId) : null),
+    [parties, selectedPartyId]
+  );
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <Users className="h-5 w-5 text-emerald-800" />
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Party Management</h1>
+    <div className="flex flex-col gap-3 p-4">
+      {/* Printable Black & White Header (Only visible when printing) */}
+      <div className="hidden print:block mb-4 border-b-2 border-black pb-2 text-black">
+        <div className="flex justify-between items-start">
+          <div>
+            <h1 className="text-xl font-bold uppercase tracking-tight">Paper Trade Management</h1>
+            <p className="text-xs font-semibold uppercase">Parties & Accounts Directory Statement</p>
           </div>
-          <p className="text-sm text-slate-600">
-            Customers and suppliers directory, credit limit enforcement, running ledger balances, and statements.
-          </p>
+          <div className="text-right text-[10px] space-y-0.5">
+            <p>Printed: {new Date().toLocaleString()}</p>
+            <p>Type Filter: {filterType === "ALL" ? "All Parties" : filterType}</p>
+            <p>Status: {filterStatus === "ALL" ? "All Accounts" : filterStatus}</p>
+          </div>
         </div>
-        <Button asChild className="bg-emerald-800 text-white hover:bg-emerald-700 shadow-sm sm:w-auto w-full">
-          <Link href="/parties/new">
-            <Plus className="mr-2 h-4 w-4" />
-            Add New Party
-          </Link>
-        </Button>
-      </div>
-
-      {/* KPI Metrics */}
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-xl border border-emerald-100 bg-gradient-to-br from-emerald-50/60 to-white p-4 shadow-xs">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Total Customers</p>
-          <p className="mt-1 text-2xl font-extrabold text-emerald-900">{customerCount}</p>
-          <p className="text-[11px] text-emerald-700 mt-0.5">Active accounts</p>
-        </div>
-        <div className="rounded-xl border border-sky-100 bg-gradient-to-br from-sky-50/60 to-white p-4 shadow-xs">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Total Suppliers</p>
-          <p className="mt-1 text-2xl font-extrabold text-sky-900">{supplierCount}</p>
-          <p className="text-[11px] text-sky-700 mt-0.5">Trade vendors</p>
-        </div>
-        <div className="rounded-xl border border-amber-100 bg-gradient-to-br from-amber-50/60 to-white p-4 shadow-xs">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Receivables</p>
-          <p className="mt-1 text-xl font-extrabold text-amber-900">PKR {totalReceivable.toLocaleString()}</p>
-          <p className="text-[11px] text-amber-700 mt-0.5">Due from customers</p>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-4 shadow-xs">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Payables</p>
-          <p className="mt-1 text-xl font-extrabold text-slate-800">PKR {totalPayable.toLocaleString()}</p>
-          <p className="text-[11px] text-slate-500 mt-0.5">Due to suppliers</p>
+        <div className="mt-2 flex gap-4 text-xs font-mono border-t border-black pt-1">
+          <span>Total Records: <strong>{filteredParties.length}</strong></span>
+          <span>Customers: <strong>{customerCount}</strong></span>
+          <span>Suppliers: <strong>{supplierCount}</strong></span>
+          <span>Receivables: <strong>PKR {totalReceivable.toLocaleString()}</strong></span>
+          <span>Payables: <strong>PKR {totalPayable.toLocaleString()}</strong></span>
         </div>
       </div>
 
-      {/* Directory & Filters */}
-      <Card className="border-slate-200/80 bg-white shadow-xs">
-        <CardHeader className="pb-3 border-b border-slate-100">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <CardTitle className="text-base font-bold text-slate-900">Directory</CardTitle>
-            {/* Filter Tabs */}
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setSelectedType("ALL")}
-                className={`px-3 py-1 rounded-md font-semibold transition-colors ${
-                  selectedType === "ALL"
-                    ? "bg-slate-900 text-white"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                }`}
-              >
-                All ({parties.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedType(PartyType.CUSTOMER)}
-                className={`px-3 py-1 rounded-md font-semibold transition-colors ${
-                  selectedType === PartyType.CUSTOMER
-                    ? "bg-emerald-800 text-white"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                }`}
-              >
-                Customers ({customerCount})
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedType(PartyType.SUPPLIER)}
-                className={`px-3 py-1 rounded-md font-semibold transition-colors ${
-                  selectedType === PartyType.SUPPLIER
-                    ? "bg-sky-800 text-white"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                }`}
-              >
-                Suppliers ({supplierCount})
-              </button>
-              <label className="flex items-center gap-1.5 ml-2 cursor-pointer text-slate-600 text-xs select-none">
-                <input
-                  type="checkbox"
-                  checked={showActiveOnly}
-                  onChange={(e) => setShowActiveOnly(e.target.checked)}
-                  className="rounded border-slate-300 text-emerald-800 focus:ring-emerald-700 h-3.5 w-3.5"
-                />
-                Active only
-              </label>
-            </div>
+      {/* Top Banner: Title, Counters, and Primary Action Button */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-md shadow-xs print:hidden">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 rounded-md">
+            <Users className="h-5 w-5" />
           </div>
-        </CardHeader>
-        <CardContent className="space-y-4 p-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <div>
+            <h1 className="text-base font-bold tracking-tight text-slate-900 dark:text-slate-100">
+              Party Directory
+            </h1>
+            <p className="text-[11px] text-slate-500">
+              Customers and suppliers directory, credit limit enforcement, running balances, and statements
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Quick Metrics Bar */}
+          <div className="hidden sm:flex items-center gap-2 text-xs mr-2 font-mono">
+            <span className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded">
+              Receivables: <strong>PKR {totalReceivable.toLocaleString()}</strong>
+            </span>
+            <span className="bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2 py-1 rounded">
+              Payables: <strong>PKR {totalPayable.toLocaleString()}</strong>
+            </span>
+            <span className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-300 px-2 py-1 rounded">
+              Customers: <strong>{customerCount}</strong>
+            </span>
+            <span className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-300 px-2 py-1 rounded">
+              Suppliers: <strong>{supplierCount}</strong>
+            </span>
+          </div>
+
+          {/* Primary Action Button: Open Party Window */}
+          <Button
+            onClick={openNewWindow}
+            className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-3"
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            Add Party <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+          </Button>
+        </div>
+      </div>
+
+      {/* Universal Search Bar & Collapsible Detailed Filters */}
+      <div className="space-y-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs print:hidden">
+        <div className="flex items-center gap-2">
+          {/* Single Universal Search Bar */}
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
             <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="pl-9 text-xs h-9 border-slate-200 bg-white focus-visible:ring-emerald-200"
-              placeholder="Search by party name, phone number, email, or address..."
-              aria-label="Search parties"
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search across all fields: Name, Phone, Email, Address, City... (Press / to focus)"
+              className="h-8 pl-8 pr-8 text-xs bg-slate-50 dark:bg-slate-950/50 border-slate-300 dark:border-slate-700 font-medium"
             />
-          </div>
-
-          <div className="grid gap-3.5 md:grid-cols-2 xl:grid-cols-3">
-            {loading ? (
-              <p className="text-sm text-slate-500 py-12 text-center col-span-full">Loading directory…</p>
-            ) : filteredParties.length === 0 ? (
-              <p className="text-sm text-slate-500 py-12 text-center col-span-full">No matching parties found.</p>
-            ) : (
-              filteredParties.map((party) => {
-                const isCustomer = party.type === PartyType.CUSTOMER;
-                const isNearLimit =
-                  isCustomer &&
-                  party.creditLimit &&
-                  party.creditLimit > 0 &&
-                  party.balance >= party.creditLimit * 0.85;
-
-                return (
-                  <div
-                    key={party.id}
-                    className="group rounded-xl border border-slate-200/90 bg-white p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md flex flex-col justify-between"
-                  >
-                    <div>
-                      {/* Card Header */}
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <Link href={`/parties/${party.id}`} className="font-bold text-sm text-slate-900 hover:text-emerald-800 transition-colors">
-                            {party.name}
-                          </Link>
-                          <div className="flex items-center gap-1.5 mt-1">
-                            <span
-                              className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-                                isCustomer ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"
-                              }`}
-                            >
-                              {party.type}
-                            </span>
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                                party.isActive ? "bg-slate-100 text-slate-600" : "bg-rose-100 text-rose-700"
-                              }`}
-                            >
-                              {party.isActive ? "Active" : "Inactive"}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => void handleDeleteParty(party.id, party.name)}
-                            className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-colors"
-                            title="Delete Party"
-                            aria-label={`Delete ${party.name}`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                          <Link
-                            href={`/parties/${party.id}/edit`}
-                            className="text-slate-400 hover:text-emerald-700 transition-colors p-1"
-                            title="Edit Party"
-                          >
-                            <ArrowUpRight className="h-4 w-4" />
-                          </Link>
-                        </div>
-                      </div>
-
-                      {/* Contact Info */}
-                      <div className="mt-3 space-y-1 text-xs text-slate-600">
-                        {party.phone && (
-                          <div className="flex items-center gap-1.5">
-                            <Phone className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                            <span>{party.phone}</span>
-                          </div>
-                        )}
-                        {party.email && (
-                          <div className="flex items-center gap-1.5">
-                            <Mail className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                            <span className="truncate">{party.email}</span>
-                          </div>
-                        )}
-                        {party.address && (
-                          <div className="flex items-center gap-1.5">
-                            <MapPin className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                            <span className="truncate">{party.address}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Balance & Credit Limit */}
-                      <div className="mt-3.5 rounded-lg bg-slate-50/80 p-2.5 border border-slate-100 space-y-1.5 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-500 font-medium">Running Balance:</span>
-                          <span
-                            className={`font-bold ${
-                              party.balance > 0
-                                ? isCustomer
-                                  ? "text-amber-800"
-                                  : "text-slate-800"
-                                : party.balance < 0
-                                ? "text-rose-700"
-                                : "text-slate-600"
-                            }`}
-                          >
-                            PKR {Math.abs(party.balance).toLocaleString()} {party.balance >= 0 ? "Dr" : "Cr"}
-                          </span>
-                        </div>
-
-                        {isCustomer && (
-                          <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-200/60">
-                            <span className="text-slate-500">Credit Limit:</span>
-                            <span className={`font-semibold ${isNearLimit ? "text-rose-700" : "text-slate-700"}`}>
-                              {party.creditLimit ? `PKR ${party.creditLimit.toLocaleString()}` : "No Limit"}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Bottom Actions */}
-                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2">
-                      <Link
-                        href={`/parties/${party.id}/edit`}
-                        className="text-xs font-semibold text-emerald-800 hover:text-emerald-950 transition-colors"
-                      >
-                        Edit Details
-                      </Link>
-                      <div className="flex items-center gap-1.5">
-                        <a
-                          href={`/api/excel/reports/party-statement?partyId=${party.id}`}
-                          download
-                          className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-200 border border-slate-200 transition-colors"
-                          title="Download Excel Statement"
-                        >
-                          <FileSpreadsheet className="h-3 w-3 text-emerald-700" />
-                          Excel
-                        </a>
-                        <a
-                          href={`/api/pdf/reports/party-statement?download=true&partyId=${party.id}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-200 border border-slate-200 transition-colors"
-                        >
-                          <FileText className="h-3 w-3 text-rose-600" />
-                          PDF Statement
-                        </a>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             )}
           </div>
-        </CardContent>
-      </Card>
+
+          {/* Quick Party Type Pills */}
+          <div className="hidden sm:inline-flex rounded-md border border-slate-300 dark:border-slate-700 p-0.5 bg-slate-100 dark:bg-slate-800">
+            <button
+              type="button"
+              onClick={() => setFilterType("ALL")}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                filterType === "ALL"
+                  ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+              }`}
+            >
+              All ({parties.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterType(PartyType.CUSTOMER)}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                filterType === PartyType.CUSTOMER
+                  ? "bg-white dark:bg-slate-900 text-emerald-800 dark:text-emerald-400 shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+              }`}
+            >
+              Customers ({customerCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterType(PartyType.SUPPLIER)}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                filterType === PartyType.SUPPLIER
+                  ? "bg-white dark:bg-slate-900 text-amber-800 dark:text-amber-400 shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+              }`}
+            >
+              Suppliers ({supplierCount})
+            </button>
+          </div>
+
+          {/* Detailed Filters Toggle */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+            className={`h-8 text-xs gap-1.5 ${
+              showAdvancedFilters || filterStatus !== "ALL" || filterBalance !== "ALL"
+                ? "border-emerald-500 text-emerald-700 bg-emerald-50/50 dark:bg-emerald-950/20"
+                : "border-slate-300 dark:border-slate-700 text-slate-600"
+            }`}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Filters</span>
+            {showAdvancedFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </Button>
+
+          {/* View Toggle */}
+          <div className="inline-flex rounded-md border border-slate-300 dark:border-slate-700 p-0.5 bg-slate-100 dark:bg-slate-800">
+            <button
+              type="button"
+              onClick={() => setViewMode("table")}
+              className={`p-1 rounded transition-colors ${
+                viewMode === "table" ? "bg-white dark:bg-slate-900 shadow-xs text-slate-900 dark:text-slate-100" : "text-slate-400 hover:text-slate-700"
+              }`}
+              title="Table View"
+            >
+              <ListFilter className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("cards")}
+              className={`p-1 rounded transition-colors ${
+                viewMode === "cards" ? "bg-white dark:bg-slate-900 shadow-xs text-slate-900 dark:text-slate-100" : "text-slate-400 hover:text-slate-700"
+              }`}
+              title="Cards View"
+            >
+              <LayoutGrid className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          {/* Export CSV */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportCsv}
+            className="h-8 text-xs gap-1 border-slate-300 dark:border-slate-700 text-slate-600"
+            title="Export Directory to CSV"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">Export</span>
+          </Button>
+
+          {/* Print */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.print()}
+            className="h-8 text-xs gap-1 border-slate-300 dark:border-slate-700 text-slate-600"
+            title="Print Directory"
+          >
+            <Printer className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">Print</span>
+          </Button>
+        </div>
+
+        {/* Collapsible Secondary Filters Section */}
+        {showAdvancedFilters && (
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+            <div>
+              <Label className="text-[10px] uppercase font-bold text-slate-500">Party Type</Label>
+              <select
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value as any)}
+                className="w-full mt-1 h-7 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 text-xs font-medium"
+              >
+                <option value="ALL">All Types</option>
+                <option value={PartyType.CUSTOMER}>Customers Only</option>
+                <option value={PartyType.SUPPLIER}>Suppliers Only</option>
+              </select>
+            </div>
+
+            <div>
+              <Label className="text-[10px] uppercase font-bold text-slate-500">Balance Status</Label>
+              <select
+                value={filterBalance}
+                onChange={(e) => setFilterBalance(e.target.value as any)}
+                className="w-full mt-1 h-7 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 text-xs font-medium"
+              >
+                <option value="ALL">All Balances</option>
+                <option value="RECEIVABLE">Receivables (Debit &gt; 0)</option>
+                <option value="PAYABLE">Payables (Credit &gt; 0)</option>
+                <option value="ZERO">Zero Balance</option>
+              </select>
+            </div>
+
+            <div>
+              <Label className="text-[10px] uppercase font-bold text-slate-500">Directory Status</Label>
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value as any)}
+                className="w-full mt-1 h-7 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 text-xs font-medium"
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="ACTIVE">Active Only</option>
+                <option value="INACTIVE">Inactive Only</option>
+              </select>
+            </div>
+
+            <div className="flex items-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setFilterType("ALL");
+                  setFilterStatus("ALL");
+                  setFilterBalance("ALL");
+                  setSearchQuery("");
+                }}
+                className="h-7 text-xs text-slate-500 hover:text-slate-800"
+              >
+                Reset All Filters
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Main Content: High-Density Table or Card Grid */}
+      {viewMode === "table" ? (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
+          <div className="overflow-x-auto max-h-[calc(100vh-230px)]">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+                <tr>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Type</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px]">Party Name</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Phone / Contact</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Email</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[160px]">Address</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Credit Limit</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap font-bold">Ledger Balance</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Status</th>
+                  <th className="py-2 px-2 text-center whitespace-nowrap print:hidden">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {loading ? (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center text-slate-500 font-medium">
+                      Loading party directory...
+                    </td>
+                  </tr>
+                ) : filteredParties.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center text-slate-500 font-medium">
+                      No parties found matching your search. Press <kbd className="px-1.5 py-0.5 bg-slate-100 border rounded text-[10px]">F2</kbd> to add a new party.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredParties.map((p) => {
+                    const isReceivable = p.type === PartyType.CUSTOMER && p.balance > 0;
+                    const isPayable = p.type === PartyType.SUPPLIER && p.balance > 0;
+
+                    return (
+                      <tr
+                        key={p.id}
+                        onClick={() => openEditWindow(p)}
+                        className="hover:bg-amber-50/60 dark:hover:bg-slate-800/60 cursor-pointer transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40"
+                      >
+                        {/* Type Badge */}
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
+                              p.type === PartyType.CUSTOMER
+                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                                : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                            }`}
+                          >
+                            {p.type}
+                          </span>
+                        </td>
+
+                        {/* Name */}
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-900 dark:text-slate-100">
+                          <div className="flex items-center gap-1.5">
+                            <span>{p.name}</span>
+                            {!p.isActive && (
+                              <span className="rounded bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 text-[9px] px-1 font-sans">
+                                Inactive
+                              </span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Phone */}
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                          {p.phone || "—"}
+                        </td>
+
+                        {/* Email */}
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                          {p.email || "—"}
+                        </td>
+
+                        {/* Address */}
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-slate-600 dark:text-slate-400 truncate max-w-[220px]">
+                          {p.address || "—"}
+                        </td>
+
+                        {/* Credit Limit */}
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                          {p.creditLimit ? `PKR ${p.creditLimit.toLocaleString()}` : "No Limit"}
+                        </td>
+
+                        {/* Ledger Balance */}
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right font-mono font-bold whitespace-nowrap">
+                          <span
+                            className={
+                              isReceivable
+                                ? "text-emerald-700 dark:text-emerald-400"
+                                : isPayable
+                                ? "text-rose-700 dark:text-rose-400"
+                                : "text-slate-500"
+                            }
+                          >
+                            PKR {p.balance.toLocaleString()}
+                          </span>
+                        </td>
+
+                        {/* Active Status */}
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center whitespace-nowrap">
+                          <span
+                            className={`inline-block h-2 w-2 rounded-full ${
+                              p.isActive ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"
+                            }`}
+                            title={p.isActive ? "Active in Directory" : "Inactive"}
+                          />
+                        </td>
+
+                        {/* Actions */}
+                        <td className="py-1 px-2 text-center whitespace-nowrap print:hidden">
+                          <div className="flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
+                            {/* Statement PDF */}
+                            <a
+                              href={`/api/pdf/reports/party-statement?partyId=${p.id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded transition-colors"
+                              title="Download Statement PDF"
+                            >
+                              <FileText className="h-3.5 w-3.5" />
+                            </a>
+
+                            {/* Statement Excel */}
+                            <a
+                              href={`/api/excel/reports/party-statement?partyId=${p.id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded transition-colors"
+                              title="Download Statement Excel"
+                            >
+                              <FileSpreadsheet className="h-3.5 w-3.5" />
+                            </a>
+
+                            {/* Delete */}
+                            <button
+                              type="button"
+                              onClick={(e) => handleDeleteParty(p, e)}
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded transition-colors"
+                              title="Delete Party"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        /* Card Grid View */
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 print:hidden">
+          {filteredParties.map((p) => (
+            <div
+              key={p.id}
+              onClick={() => openEditWindow(p)}
+              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-3 hover:border-emerald-500 cursor-pointer shadow-xs transition-all space-y-2.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                        p.type === PartyType.CUSTOMER
+                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                      }`}
+                    >
+                      {p.type}
+                    </span>
+                    <h3 className="font-bold text-xs text-slate-900 dark:text-slate-100">{p.name}</h3>
+                  </div>
+                  {p.address && <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{p.address}</p>}
+                </div>
+                <span
+                  className={`text-xs font-mono font-bold ${
+                    p.balance > 0 ? "text-emerald-700 dark:text-emerald-400" : "text-slate-600"
+                  }`}
+                >
+                  PKR {p.balance.toLocaleString()}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-600 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-2 font-mono">
+                <div>
+                  <span className="text-[10px] text-slate-400 block font-sans uppercase">Phone:</span>
+                  {p.phone || "—"}
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block font-sans uppercase">Credit Limit:</span>
+                  {p.creditLimit ? `PKR ${p.creditLimit.toLocaleString()}` : "No Limit"}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-800" onClick={(e) => e.stopPropagation()}>
+                <span className="text-[10px] text-slate-400 font-sans">
+                  Status: <strong className={p.isActive ? "text-emerald-600" : "text-rose-600"}>{p.isActive ? "Active" : "Inactive"}</strong>
+                </span>
+                <div className="flex items-center gap-1">
+                  <a
+                    href={`/api/pdf/reports/party-statement?partyId=${p.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-1 text-slate-500 hover:text-emerald-700 rounded"
+                    title="PDF Statement"
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                  </a>
+                  <a
+                    href={`/api/excel/reports/party-statement?partyId=${p.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-1 text-slate-500 hover:text-emerald-700 rounded"
+                    title="Excel Statement"
+                  >
+                    <FileSpreadsheet className="h-3.5 w-3.5" />
+                  </a>
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteParty(p, e)}
+                    className="p-1 text-slate-400 hover:text-rose-600 rounded"
+                    title="Delete Party"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Pattern 2: Dedicated Separate Window for Party Entry (Windows Forms Style Dialog) */}
+      {isWindowOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
+          <div
+            ref={formModalRef}
+            className="w-full max-w-xl bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[92vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Window Title Bar (Windows Desktop Style) */}
+            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
+              <div className="flex items-center gap-2">
+                <Users className="h-4 w-4 text-emerald-400" />
+                <span className="font-bold text-xs">
+                  {selectedPartyId ? `Edit Party Form - [${formData.name}]` : "Party Entry Form - [New Party]"}
+                </span>
+              </div>
+              <button
+                onClick={closeWindow}
+                className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1 transition-colors"
+                title="Close Window (Esc)"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Keyboard Shortcut Banner */}
+            <div className="bg-slate-100 dark:bg-slate-800 px-4 py-1.5 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300 font-mono">
+              <span>↵ Enter / Tab: Next Field  •  Ctrl+Enter: Save  •  Esc: Close</span>
+              <span className="text-emerald-700 dark:text-emerald-400 font-sans font-bold text-[10px]">
+                ⚡ Rapid Keyboard Data Entry Mode
+              </span>
+            </div>
+
+            {/* Form Body with High-Density Windows Controls */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs bg-slate-50/50 dark:bg-slate-950/40">
+              {/* Error Alert Box */}
+              {formError && (
+                <div className="bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 p-2.5 rounded text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span>{formError}</span>
+                </div>
+              )}
+
+              {/* Row 0: Party Type Selection */}
+              <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
+                <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
+                  Party Type <span className="text-rose-500">*</span>:
+                </label>
+                <div className="col-span-8 flex items-center gap-2">
+                  <div className="inline-flex rounded-md border border-slate-300 dark:border-slate-700 p-0.5 bg-white dark:bg-slate-900 w-full">
+                    <button
+                      type="button"
+                      data-nav-index="0"
+                      onClick={() => setFormData((prev) => ({ ...prev, type: PartyType.CUSTOMER }))}
+                      onKeyDown={(e) => handleNavKeyDown(e, 0)}
+                      className={`flex-1 py-1 text-center rounded text-xs font-semibold transition-all ${
+                        formData.type === PartyType.CUSTOMER
+                          ? "bg-emerald-600 text-white shadow-xs"
+                          : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+                      }`}
+                    >
+                      Customer
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData((prev) => ({ ...prev, type: PartyType.SUPPLIER }))}
+                      className={`flex-1 py-1 text-center rounded text-xs font-semibold transition-all ${
+                        formData.type === PartyType.SUPPLIER
+                          ? "bg-amber-600 text-white shadow-xs"
+                          : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+                      }`}
+                    >
+                      Supplier
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 1: Party Name */}
+              <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
+                <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
+                  Party / Company Name <span className="text-rose-500">*</span>:
+                </label>
+                <div className="col-span-8">
+                  <Input
+                    data-nav-index="1"
+                    value={formData.name}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
+                    onKeyDown={(e) => handleNavKeyDown(e, 1)}
+                    placeholder="e.g. Al-Madina Packages or Bilal Traders"
+                    className="h-8 text-xs bg-white dark:bg-slate-900 font-medium"
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Row 2: Phone */}
+              <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
+                <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
+                  Phone / Mobile:
+                </label>
+                <div className="col-span-8">
+                  <Input
+                    data-nav-index="2"
+                    value={formData.phone}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, phone: e.target.value }))}
+                    onKeyDown={(e) => handleNavKeyDown(e, 2)}
+                    placeholder="0300-1234567"
+                    className="h-8 text-xs bg-white dark:bg-slate-900 font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Row 3: Email */}
+              <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
+                <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
+                  Email Address:
+                </label>
+                <div className="col-span-8">
+                  <Input
+                    data-nav-index="3"
+                    type="email"
+                    value={formData.email}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, email: e.target.value }))}
+                    onKeyDown={(e) => handleNavKeyDown(e, 3)}
+                    placeholder="info@example.com (Optional)"
+                    className="h-8 text-xs bg-white dark:bg-slate-900"
+                  />
+                </div>
+              </div>
+
+              {/* Row 4: Address */}
+              <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
+                <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
+                  Street Address & City:
+                </label>
+                <div className="col-span-8">
+                  <Input
+                    data-nav-index="4"
+                    value={formData.address}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, address: e.target.value }))}
+                    onKeyDown={(e) => handleNavKeyDown(e, 4)}
+                    placeholder="Shop # 12, Urdu Bazar, Lahore"
+                    className="h-8 text-xs bg-white dark:bg-slate-900"
+                  />
+                </div>
+              </div>
+
+              {/* Row 5: Credit Limit (Customers only) */}
+              {formData.type === PartyType.CUSTOMER && (
+                <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
+                  <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
+                    Credit Limit (PKR):
+                  </label>
+                  <div className="col-span-8">
+                    <Input
+                      data-nav-index="5"
+                      type="number"
+                      step="1000"
+                      value={formData.creditLimit}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, creditLimit: e.target.value }))}
+                      onKeyDown={(e) => handleNavKeyDown(e, 5)}
+                      placeholder="e.g. 500000 (Leave empty for unrestricted)"
+                      className="h-8 text-xs bg-white dark:bg-slate-900 font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Row 6: Active Status Toggle */}
+              <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
+                <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
+                  Directory Status:
+                </label>
+                <div className="col-span-8 flex items-center gap-3">
+                  <select
+                    data-nav-index="6"
+                    value={formData.isActive ? "true" : "false"}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, isActive: e.target.value === "true" }))}
+                    onKeyDown={(e) => handleNavKeyDown(e, 6)}
+                    className="h-8 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-semibold"
+                  >
+                    <option value="true">Active (Visible across Sales & Purchases)</option>
+                    <option value="false">Inactive / Archived</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Current Ledger Balance Display (If editing existing party) */}
+              {selectedParty && (
+                <div className="mt-3 p-3 rounded-md bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-emerald-800 dark:text-emerald-300 block">
+                      Running Ledger Balance
+                    </span>
+                    <span className="text-base font-bold font-mono text-emerald-900 dark:text-emerald-100">
+                      PKR {selectedParty.balance.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={`/api/pdf/reports/party-statement?partyId=${selectedParty.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 px-2 py-1 rounded hover:bg-emerald-50"
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                      PDF Statement
+                    </a>
+                    <a
+                      href={`/api/excel/reports/party-statement?partyId=${selectedParty.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 px-2 py-1 rounded hover:bg-emerald-50"
+                    >
+                      <FileSpreadsheet className="h-3.5 w-3.5" />
+                      Excel Statement
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Window Footer Action Bar */}
+            <div className="bg-slate-100 dark:bg-slate-800 px-4 py-2.5 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
+              <div>
+                {selectedPartyId ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => selectedParty && handleDeleteParty(selectedParty)}
+                    disabled={saving}
+                    className="h-8 text-xs border-rose-300 text-rose-600 hover:bg-rose-50 hover:text-rose-700 gap-1.5"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete Party
+                  </Button>
+                ) : (
+                  <span className="text-[11px] text-slate-500 font-mono">Creating New Contact Entry</span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={closeWindow}
+                  disabled={saving}
+                  className="h-8 text-xs"
+                >
+                  Cancel (Esc)
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleSaveParty}
+                  disabled={saving}
+                  className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-4"
+                >
+                  <Save className="h-3.5 w-3.5 mr-1.5" />
+                  {saving ? "Saving..." : selectedPartyId ? "Update Party (Enter)" : "Save Party (Enter)"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+export default function PartiesPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-xs text-slate-500 font-mono">Loading Party Directory...</div>}>
+      <PartiesPageContent />
+    </Suspense>
   );
 }

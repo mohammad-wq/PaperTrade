@@ -38,6 +38,7 @@ import {
   reactivateWarehouseLotAction,
 } from "@/actions/warehouse-lots";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useConfirm } from "@/components/providers/confirm-provider";
 import { LocationType } from "@prisma/client";
 
 type LocationItem = {
@@ -69,6 +70,7 @@ type LotItem = {
 
 export default function LocationsSettingsPage() {
   const { data: session } = useSession();
+  const confirm = useConfirm();
   const isOwner = session?.user?.role === "OWNER";
   const isManager = session?.user?.role === "MANAGER";
   const canDeactivateLots = isOwner || isManager;
@@ -227,7 +229,13 @@ export default function LocationsSettingsPage() {
   async function handleToggleLocationStatus(loc: LocationItem) {
     setStatusMessage(null);
     if (loc.isActive) {
-      if (!confirm(`Are you sure you want to deactivate "${loc.name}"? It will be hidden from new order entries but historical records remain intact.`)) {
+      const ok = await confirm({
+        title: "Deactivate Location",
+        description: `Are you sure you want to deactivate "${loc.name}"? It will be hidden from new order entries but historical records remain intact.`,
+        confirmText: "Deactivate Location",
+        variant: "destructive",
+      });
+      if (!ok) {
         return;
       }
       const res = await deactivateLocationAction({ id: loc.id });
@@ -302,7 +310,13 @@ export default function LocationsSettingsPage() {
   async function handleToggleLotStatus(lot: LotItem) {
     setStatusMessage(null);
     if (lot.isActive) {
-      if (!confirm(`Are you sure you want to deactivate Lot "${lot.lotNumber}" in ${lot.locationName}?`)) {
+      const ok = await confirm({
+        title: "Deactivate Warehouse Lot",
+        description: `Are you sure you want to deactivate Lot "${lot.lotNumber}" in ${lot.locationName}?`,
+        confirmText: "Deactivate Lot",
+        variant: "destructive",
+      });
+      if (!ok) {
         return;
       }
       const res = await deactivateWarehouseLotAction({ id: lot.id });

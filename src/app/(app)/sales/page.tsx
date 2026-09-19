@@ -20,16 +20,36 @@ import {
   ArrowRight,
   Sparkles,
   ShoppingBag,
+  Edit,
+  Eye,
+  Printer,
+  ExternalLink,
+  Download,
+  Truck,
+  ShoppingCart,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { listSaleInvoicesAction, createSaleInvoiceAction } from "@/actions/invoices";
+import {
+  listSaleInvoicesAction,
+  createSaleInvoiceAction,
+  updateSaleInvoiceAction,
+} from "@/actions/invoices";
 import { listPartiesAction, listInventoryAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { listLocationsAction } from "@/actions/orders";
+import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
 import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useConfirm } from "@/components/providers/confirm-provider";
+
+type WarehouseLotOption = {
+  id: string;
+  locationId: string;
+  lotNumber: string;
+  description?: string | null;
+};
 
 type SaleInvoiceRow = {
   id: string;
@@ -43,12 +63,13 @@ type SaleInvoiceRow = {
   location: { id: string; name: string };
   deliveryOrder?: { id: string; doNo: string } | null;
   financialYear?: { id: string; label: string; isActive?: boolean } | null;
+  notes?: string | null;
   items: Array<{
     id: string;
+    product: { id: string; productNo: string; name: string; unit: string };
     quantity: number;
     unitPrice: number;
     lineTotal: number;
-    product: { id: string; productNo: string; name: string; unit: string };
   }>;
 };
 
@@ -56,8 +77,10 @@ type PartyOption = {
   id: string;
   name: string;
   type: string;
-  creditLimit: number | null;
   balance: number;
+  creditLimit: number | null;
+  phone?: string | null;
+  address?: string | null;
 };
 
 type ProductOption = {
@@ -85,14 +108,18 @@ type CommittedLineItem = {
   quantity: number;
   unitPrice: number;
   availableStock: number;
+  warehouseLotId?: string | null;
+  lotNumber?: string | null;
 };
 
 export default function SalesPage() {
+  const confirm = useConfirm();
   const [invoices, setInvoices] = useState<SaleInvoiceRow[]>([]);
   const [parties, setParties] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [inventory, setInventory] = useState<StockInfo[]>([]);
   const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string }>>([]);
+  const [warehouseLots, setWarehouseLots] = useState<WarehouseLotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("OPEN");
@@ -116,6 +143,7 @@ export default function SalesPage() {
   // Pattern 3: Active Data Entry Row State
   const [activeCodeInput, setActiveCodeInput] = useState("");
   const [matchedProduct, setMatchedProduct] = useState<ProductOption | null>(null);
+  const [activeLotId, setActiveLotId] = useState<string>("");
   const [activeQty, setActiveQty] = useState<string>("1");
   const [activeRate, setActiveRate] = useState<string>("0");
   const [activeRowError, setActiveRowError] = useState<string | null>(null);
@@ -128,6 +156,12 @@ export default function SalesPage() {
   const [customAmountPaid, setCustomAmountPaid] = useState<string>("");
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Edit Invoice & Live PDF Preview States
+  const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   // References for Keyboard Navigation
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -144,12 +178,13 @@ export default function SalesPage() {
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const [invRes, partyRes, prodRes, stockRes, locRes] = await Promise.all([
+      const [invRes, partyRes, prodRes, stockRes, locRes, lotRes] = await Promise.all([
         listSaleInvoicesAction(),
         listPartiesAction(),
         listProductsAction(),
         listInventoryAction(),
         listLocationsAction(),
+        listWarehouseLotsAction(undefined, false),
       ]);
 
       if (invRes.success && invRes.data) {
@@ -174,6 +209,9 @@ export default function SalesPage() {
           setLocationId((prev) => prev || shop.id);
         }
       }
+      if (lotRes.success && lotRes.data) {
+        setWarehouseLots(lotRes.data as WarehouseLotOption[]);
+      }
     } finally {
       if (!isBackground) setLoading(false);
     }
@@ -183,16 +221,25 @@ export default function SalesPage() {
     void loadData();
   }, []);
 
-  useRealtimeListener(["sales", "inventory", "parties", "delivery-orders", "payments"], () => {
+  useRealtimeListener(["sales", "inventory", "parties", "delivery-orders", "payments", "warehouse-lots"], () => {
     void loadData(true);
   });
 
   // Global keyboard shortcuts
+  const handleSaveInvoiceRef = useRef(handleSaveInvoice);
+  handleSaveInvoiceRef.current = handleSaveInvoice;
+  const handlePreviewPdfRef = useRef(handlePreviewPdf);
+  handlePreviewPdfRef.current = handlePreviewPdf;
+  const openNewInvoiceDialogRef = useRef(openNewInvoiceDialog);
+  openNewInvoiceDialogRef.current = openNewInvoiceDialog;
+  const closeInvoiceDialogRef = useRef(closeInvoiceDialog);
+  closeInvoiceDialogRef.current = closeInvoiceDialog;
+
   useEffect(() => {
     function handleGlobalKeyDown(e: KeyboardEvent) {
       if (e.key === "F2" || e.key === "Insert") {
         e.preventDefault();
-        openNewInvoiceDialog();
+        openNewInvoiceDialogRef.current();
         return;
       }
       if (
@@ -207,23 +254,34 @@ export default function SalesPage() {
       }
       if (e.key === "Escape" && isDialogOpen) {
         e.preventDefault();
-        closeInvoiceDialog();
+        closeInvoiceDialogRef.current();
         return;
       }
       // Ctrl+Enter anywhere inside dialog saves the invoice
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && isDialogOpen) {
         e.preventDefault();
-        void handleSaveInvoice();
+        void handleSaveInvoiceRef.current();
+        return;
+      }
+      // Ctrl+P inside dialog triggers live PDF preview
+      if ((e.ctrlKey || e.metaKey) && (e.key === "p" || e.key === "P") && isDialogOpen) {
+        e.preventDefault();
+        void handlePreviewPdfRef.current();
       }
     }
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, [isDialogOpen, committedItems, customerId, locationId, paidImmediately, customAmountPaid]);
+  }, [isDialogOpen]);
 
   function getAvailableStock(prodId: string, locId: string) {
     const found = inventory.find((i) => i.productId === prodId && i.locationId === locId);
     return found ? found.available : 0;
   }
+
+  const locationLots = useMemo(
+    () => warehouseLots.filter((l) => l.locationId === locationId),
+    [warehouseLots, locationId]
+  );
 
   const selectedCustomer = useMemo(
     () => parties.find((p) => p.id === customerId),
@@ -300,9 +358,11 @@ export default function SalesPage() {
 
   // Open Invoice Dialog
   function openNewInvoiceDialog() {
+    setEditingInvoiceId(null);
     setCommittedItems([]);
     setActiveCodeInput("");
     setMatchedProduct(null);
+    setActiveLotId("");
     setActiveQty("1");
     setActiveRate("0");
     setActiveRowError(null);
@@ -310,20 +370,193 @@ export default function SalesPage() {
     setPaidImmediately(true);
     setCustomAmountPaid("");
     setCustomerType("REGISTERED");
+    setNotes("");
+    setInvoiceDate(new Date().toISOString().slice(0, 10));
     if (parties.length > 0 && !customerId) {
       setCustomerId(parties[0].id);
     }
     setIsDialogOpen(true);
 
-    // Focus product code input after brief mount delay
     setTimeout(() => {
       productInputRef.current?.focus();
     }, 100);
   }
 
+  // Open Edit Invoice Dialog
+  function openEditInvoiceDialog(inv: SaleInvoiceRow) {
+    setEditingInvoiceId(inv.id);
+    const isWalkIn = inv.customer.name.toLowerCase().includes("walk-in");
+    if (isWalkIn) {
+      setCustomerType("WALK_IN");
+      setWalkInName(inv.customer.name);
+      setWalkInPhone(inv.customer.phone || "");
+      setWalkInAddress("");
+    } else {
+      setCustomerType("REGISTERED");
+      setCustomerId(inv.customer.id);
+    }
+    setLocationId(inv.location.id);
+    setInvoiceDate(new Date(inv.date).toISOString().slice(0, 10));
+    setNotes(inv.notes || "");
+
+    const items: CommittedLineItem[] = inv.items.map((it) => {
+      const prod = products.find((p) => p.id === it.product.id);
+      const currStock = getAvailableStock(it.product.id, inv.location.id);
+      return {
+        productId: it.product.id,
+        productNo: it.product.productNo,
+        productName: it.product.name,
+        categoryName: prod?.category?.name || "",
+        unit: it.product.unit,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        availableStock: currStock + it.quantity,
+      };
+    });
+
+    setCommittedItems(items);
+    setActiveCodeInput("");
+    setMatchedProduct(null);
+    setActiveLotId("");
+    setActiveQty("1");
+    setActiveRate("0");
+    setActiveRowError(null);
+    setFormError(null);
+    setPaidImmediately(inv.amountPaid > 0);
+    setCustomAmountPaid(inv.amountPaid > 0 ? String(inv.amountPaid) : "");
+    setIsDialogOpen(true);
+  }
+
   function closeInvoiceDialog() {
     setIsDialogOpen(false);
+    setEditingInvoiceId(null);
     setFormError(null);
+  }
+
+  // Live pre-posting PDF preview
+  async function handlePreviewPdf() {
+    if (committedItems.length === 0) {
+      setFormError("Add at least one product before previewing.");
+      return;
+    }
+    setPreviewLoading(true);
+    try {
+      const selectedLocName = dbLocations.find((l) => l.id === locationId)?.name || "Shop";
+      let partyName = walkInName || "Customer";
+      let partyPhone = walkInPhone || null;
+      let partyAddress = walkInAddress || null;
+
+      if (customerType === "REGISTERED" && customerId) {
+        const foundCust = parties.find((p) => p.id === customerId);
+        if (foundCust) {
+          partyName = foundCust.name;
+          partyPhone = (foundCust as any).phone || null;
+          partyAddress = (foundCust as any).address || null;
+        }
+      }
+
+      const activeDocNo = editingInvoiceId
+        ? invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo || "INV-EDIT"
+        : "DRAFT-PREVIEW";
+
+      const payload = {
+        type: "sale-invoice",
+        docNumber: activeDocNo,
+        date: invoiceDate,
+        partyName,
+        partyPhone,
+        partyAddress,
+        locationName: selectedLocName,
+        totalAmount: invoiceSubtotal,
+        amountPaid: paidImmediately
+          ? customAmountPaid !== ""
+            ? Number(customAmountPaid)
+            : invoiceSubtotal
+          : 0,
+        notes: notes.trim() || null,
+        items: committedItems.map((item) => ({
+          name: `${item.productNo} - ${item.productName}`,
+          specs: item.unit,
+          quantity: item.quantity,
+          unit: item.unit,
+          unitPrice: item.unitPrice,
+          lineTotal: item.quantity * item.unitPrice,
+        })),
+      };
+
+      const res = await fetch("/api/pdf/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || "Failed to generate preview PDF");
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setPdfPreviewUrl(url);
+      setShowPdfPreviewModal(true);
+    } catch (err: any) {
+      await confirm.alert(err.message || "Failed to preview invoice PDF", { variant: "destructive" });
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  // Quick create related DO, PO, or Purchase Invoice with pre-filled items
+  function handleCreateRelated(type: "DO" | "PO" | "PURCHASE") {
+    const payload = {
+      saleInvoiceId: editingInvoiceId || null,
+      customerId: customerType === "REGISTERED" ? customerId : null,
+      customerName: customerType === "REGISTERED"
+        ? parties.find((p) => p.id === customerId)?.name || ""
+        : walkInName || "Walk-in Customer",
+      locationId: locationId || "",
+      items: committedItems.map((item) => ({
+        productId: item.productId,
+        warehouseLotId: item.warehouseLotId || undefined,
+        quantity: item.quantity,
+        unit: item.unit,
+        unitCost: item.unitPrice,
+      })),
+    };
+    try {
+      sessionStorage.setItem("draft_from_invoice", JSON.stringify(payload));
+    } catch (e) {
+      console.error("Failed to store draft_from_invoice in sessionStorage", e);
+    }
+
+    if (type === "DO") {
+      window.open("/delivery-orders?action=new&fromInvoice=1", "_blank");
+    } else if (type === "PO") {
+      window.open("/purchase-orders?action=new&fromInvoice=1", "_blank");
+    } else if (type === "PURCHASE") {
+      window.open("/purchases?action=new&fromInvoice=1", "_blank");
+    }
+  }
+
+  // Create Delivery Order directly from an already posted Sale Invoice in table
+  function handleCreateDOFromInvoice(inv: SaleInvoiceRow) {
+    const payload = {
+      saleInvoiceId: inv.id,
+      customerId: inv.customer?.id || null,
+      customerName: inv.customer?.name || "",
+      locationId: inv.location?.id || "",
+      items: inv.items.map((item) => ({
+        productId: item.product?.id || "",
+        quantity: item.quantity,
+        unit: item.product?.unit || "",
+      })),
+    };
+    try {
+      sessionStorage.setItem("draft_from_invoice", JSON.stringify(payload));
+    } catch (e) {
+      console.error("Failed to store draft_from_invoice in sessionStorage", e);
+    }
+    window.open("/delivery-orders?action=new&fromInvoice=1", "_blank");
   }
 
   // Select product into the active entry row
@@ -437,6 +670,7 @@ export default function SalesPage() {
     }
 
     const available = locationId ? getAvailableStock(matchedProduct.id, locationId) : 0;
+    const matchedLot = activeLotId ? locationLots.find((l) => l.id === activeLotId) : null;
 
     // Add to committed items list
     setCommittedItems((prev) => [
@@ -450,12 +684,15 @@ export default function SalesPage() {
         quantity: qtyNum,
         unitPrice: rateNum,
         availableStock: available,
+        warehouseLotId: activeLotId || null,
+        lotNumber: matchedLot ? matchedLot.lotNumber : null,
       },
     ]);
 
     // Reset active row state
     setActiveCodeInput("");
     setMatchedProduct(null);
+    setActiveLotId("");
     setActiveQty("1");
     setActiveRate("0");
     setActiveRowError(null);
@@ -508,6 +745,7 @@ export default function SalesPage() {
         notes: notes.trim() || undefined,
         items: committedItems.map((item) => ({
           productId: item.productId,
+          warehouseLotId: item.warehouseLotId || undefined,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
         })),
@@ -529,12 +767,19 @@ export default function SalesPage() {
         payload.saveCustomer = saveCustomer;
       }
 
-      const res = await createSaleInvoiceAction(payload);
+      let res: any;
+      if (editingInvoiceId) {
+        payload.id = editingInvoiceId;
+        res = await updateSaleInvoiceAction(payload);
+      } else {
+        res = await createSaleInvoiceAction(payload);
+      }
+
       if (res.success) {
         await loadData(true);
         closeInvoiceDialog();
       } else {
-        setFormError(res.error || "Failed to create sales invoice.");
+        setFormError(res.error || `Failed to ${editingInvoiceId ? "update" : "create"} sales invoice.`);
       }
     } catch (err: any) {
       setFormError(err?.message || "An unexpected error occurred.");
@@ -554,10 +799,10 @@ export default function SalesPage() {
       if (data.success && data.whatsappUrl) {
         window.open(data.whatsappUrl, "_blank");
       } else {
-        alert(data.error || "Could not generate WhatsApp share link");
+        await confirm.alert(data.error || "Could not generate WhatsApp share link", { variant: "destructive" });
       }
     } catch {
-      alert("Failed to communicate with WhatsApp service");
+      await confirm.alert("Failed to communicate with WhatsApp service", { variant: "destructive" });
     }
   }
 
@@ -814,6 +1059,26 @@ export default function SalesPage() {
                       <td className="py-1 px-2 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center gap-1">
                           <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openEditInvoiceDialog(inv)}
+                            className="h-6 px-1.5 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+                            title="Edit Invoice"
+                          >
+                            <Edit className="h-3 w-3 mr-1" />
+                            Edit
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleCreateDOFromInvoice(inv)}
+                            className="h-6 px-1.5 text-xs text-amber-700 hover:text-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/40"
+                            title="Generate Delivery Order for this Invoice"
+                          >
+                            <Truck className="h-3 w-3 mr-1" />
+                            DO
+                          </Button>
+                          <Button
                             asChild
                             variant="ghost"
                             size="sm"
@@ -850,14 +1115,18 @@ export default function SalesPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 overflow-y-auto">
           <div
             ref={dialogRef}
-            className="w-full max-w-4xl bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[95vh]"
+            className="w-[96vw] max-w-6xl bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[96vh]"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Title Bar (Desktop Style) */}
             <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
               <div className="flex items-center gap-2">
                 <Receipt className="h-4 w-4 text-emerald-400" />
-                <span className="font-bold text-xs">Sale Invoice Entry Form - [New Invoice]</span>
+                <span className="font-bold text-xs">
+                  {editingInvoiceId
+                    ? `Edit Sale Invoice Form - [${invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo || "Invoice"}]`
+                    : "Sale Invoice Entry Form - [New Invoice]"}
+                </span>
               </div>
               <button
                 onClick={closeInvoiceDialog}
@@ -868,12 +1137,48 @@ export default function SalesPage() {
               </button>
             </div>
 
-            {/* Keyboard Shortcuts Banner */}
-            <div className="bg-slate-100 dark:bg-slate-800 px-4 py-1.5 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300 font-mono">
-              <span>↵ Enter: Autofill & Advance Row  •  Ctrl+Enter: Save Invoice  •  Esc: Close</span>
-              <span className="text-emerald-700 dark:text-emerald-400 font-sans font-bold text-[10px]">
-                ⚡ Rapid Keyboard Data Entry Mode
-              </span>
+            {/* Keyboard Shortcuts & Quick Cross-Document Links Banner */}
+            <div className="bg-slate-100 dark:bg-slate-800 px-4 py-1.5 border-b border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+              <div className="flex items-center gap-3 font-mono text-[11px]">
+                <span>↵ Enter: Autofill & Advance</span>
+                <span>•</span>
+                <span>Ctrl+Enter: Save Invoice</span>
+                <span>•</span>
+                <span>Esc: Close</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] uppercase font-bold text-slate-400 mr-1 hidden sm:inline">Create Related:</span>
+                <button
+                  type="button"
+                  onClick={() => handleCreateRelated("DO")}
+                  className="px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-[10px] font-semibold text-slate-700 dark:text-slate-300 hover:text-emerald-700 hover:border-emerald-500 transition-colors inline-flex items-center gap-1"
+                  title="Open Delivery Order form with this invoice's items pre-loaded"
+                >
+                  <Truck className="h-2.5 w-2.5 text-amber-600" />
+                  + Delivery Order
+                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCreateRelated("PO")}
+                  className="px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-[10px] font-semibold text-slate-700 dark:text-slate-300 hover:text-emerald-700 hover:border-emerald-500 transition-colors inline-flex items-center gap-1"
+                  title="Open Purchase Order form with this invoice's items pre-loaded"
+                >
+                  <ShoppingCart className="h-2.5 w-2.5 text-sky-600" />
+                  + Purchase Order
+                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCreateRelated("PURCHASE")}
+                  className="px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-[10px] font-semibold text-slate-700 dark:text-slate-300 hover:text-emerald-700 hover:border-emerald-500 transition-colors inline-flex items-center gap-1"
+                  title="Open Purchase Invoice form with this invoice's items pre-loaded"
+                >
+                  <Receipt className="h-2.5 w-2.5 text-emerald-600" />
+                  + Purchase Invoice
+                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                </button>
+              </div>
             </div>
 
             {/* Validation Error Banner */}
@@ -1051,6 +1356,9 @@ export default function SalesPage() {
                       <tr>
                         <th className="py-1.5 px-2 w-8 text-center border-r border-slate-200 dark:border-slate-700">#</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 min-w-[200px]">Product Code / Name</th>
+                        {locationLots.length > 0 && (
+                          <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-28 whitespace-nowrap">Lot</th>
+                        )}
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Category</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap text-right">Available Stock</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Unit</th>
@@ -1074,6 +1382,17 @@ export default function SalesPage() {
                               </span>
                               <span>{item.productName}</span>
                             </td>
+                            {locationLots.length > 0 && (
+                              <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-mono text-[11px]">
+                                {item.lotNumber ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-semibold text-[10px]">
+                                    #{item.lotNumber}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">—</span>
+                                )}
+                              </td>
+                            )}
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-600 dark:text-slate-400 font-sans">
                               {item.categoryName}
                             </td>
@@ -1084,7 +1403,7 @@ export default function SalesPage() {
                               {item.unit}
                             </td>
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right font-bold text-slate-900 dark:text-slate-100">
-                              {item.quantity}
+                              {Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}
                             </td>
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right text-slate-700 dark:text-slate-300">
                               {item.unitPrice.toFixed(2)}
@@ -1165,6 +1484,24 @@ export default function SalesPage() {
                           )}
                         </td>
 
+                        {/* Lot Selector (if location has lots) */}
+                        {locationLots.length > 0 && (
+                          <td className="py-1 px-2 border-r border-slate-200 dark:border-slate-700">
+                            <select
+                              value={activeLotId}
+                              onChange={(e) => setActiveLotId(e.target.value)}
+                              className="h-7 w-full text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1 font-mono"
+                            >
+                              <option value="">No Lot</option>
+                              {locationLots.map((lot) => (
+                                <option key={lot.id} value={lot.id}>
+                                  #{lot.lotNumber}{lot.description ? ` (${lot.description})` : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                        )}
+
                         {/* Category (Auto-filled) */}
                         <td className="py-1 px-2 border-r border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-sans">
                           {matchedProduct?.category?.name || "—"}
@@ -1197,7 +1534,8 @@ export default function SalesPage() {
                           <Input
                             ref={qtyInputRef}
                             type="number"
-                            min="1"
+                            min="0.0001"
+                            step="any"
                             value={activeQty}
                             onChange={(e) => setActiveQty(e.target.value)}
                             onKeyDown={handleQtyKeyDown}
@@ -1345,12 +1683,24 @@ export default function SalesPage() {
             </div>
 
             {/* Window Footer Action Bar */}
-            <div className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
+            <div className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] text-slate-500 font-mono">
-                [Ctrl+Enter] to Complete Invoice  •  [Esc] to Cancel
+                [Ctrl+Enter] Save Invoice  •  [Ctrl+P] Preview PDF  •  [Esc] Cancel
               </span>
 
               <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePreviewPdf}
+                  disabled={previewLoading || committedItems.length === 0}
+                  className="h-8 text-xs border-emerald-400 text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 gap-1.5"
+                  title="Generate & View Live Document PDF"
+                >
+                  <Eye className="h-3.5 w-3.5 text-emerald-600" />
+                  {previewLoading ? "Rendering..." : "Preview PDF"}
+                </Button>
                 <Button
                   type="button"
                   variant="outline"
@@ -1369,9 +1719,60 @@ export default function SalesPage() {
                   className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-4"
                 >
                   <Check className="h-3.5 w-3.5 mr-1.5" />
-                  {submitting ? "Posting Invoice..." : "Save Sale Invoice (Ctrl+Enter)"}
+                  {submitting ? "Posting Invoice..." : editingInvoiceId ? "Update Sale Invoice (Ctrl+Enter)" : "Save Sale Invoice (Ctrl+Enter)"}
                 </Button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pre-Posting Live PDF Document Preview Modal */}
+      {showPdfPreviewModal && pdfPreviewUrl && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
+          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
+            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-emerald-400" />
+                <span className="font-bold text-xs">Official Document Preview (Pre-Posting)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const iframe = document.getElementById("pdfPreviewIframe") as HTMLIFrameElement;
+                    iframe?.contentWindow?.print();
+                  }}
+                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Print
+                </Button>
+                <a
+                  href={pdfPreviewUrl}
+                  download={`Invoice-Preview-${new Date().toISOString().slice(0, 10)}.pdf`}
+                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download
+                </a>
+                <button
+                  onClick={() => setShowPdfPreviewModal(false)}
+                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
+                  title="Close Preview"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
+              <iframe
+                id="pdfPreviewIframe"
+                src={pdfPreviewUrl}
+                className="w-full h-full rounded border border-slate-300 dark:border-slate-800 bg-white"
+                title="Invoice Preview"
+              />
             </div>
           </div>
         </div>

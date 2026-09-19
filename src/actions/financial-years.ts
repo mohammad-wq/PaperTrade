@@ -13,9 +13,10 @@ import { revalidatePath } from "next/cache";
 import { getActiveFinancialYear } from "@/lib/financial-year";
 
 const createFinancialYearSchema = z.object({
-  label: z.string().trim().min(2, "Year label must be at least 2 characters").max(20),
+  label: z.string().trim().min(2, "Year label must be at least 2 characters").max(30),
   startDate: z.string().min(10, "Start date is required"),
   endDate: z.string().min(10, "End date is required"),
+  makeActive: z.boolean().optional().default(false),
 });
 
 const closeFinancialYearSchema = z.object({
@@ -24,6 +25,12 @@ const closeFinancialYearSchema = z.object({
   targetYearLabel: z.string().optional(),
   targetYearStartDate: z.string().optional(),
   targetYearEndDate: z.string().optional(),
+});
+
+const resetSequenceSchema = z.object({
+  financialYearId: z.string().min(1, "Financial Year ID is required"),
+  documentType: z.string().min(1, "Document Type is required"),
+  nextSequenceNo: z.coerce.number().min(1).default(1),
 });
 
 export async function getCurrentFinancialYearAction() {
@@ -50,6 +57,7 @@ export async function listFinancialYearsAction() {
     const years = await prisma.financialYear.findMany({
       orderBy: { startDate: "desc" },
       include: {
+        sequences: { select: { documentType: true, lastSequence: true } },
         _count: {
           select: {
             saleInvoices: true,
@@ -72,6 +80,7 @@ export async function listFinancialYearsAction() {
       isActive: y.isActive,
       isClosed: y.isClosed,
       createdAt: y.createdAt.toISOString(),
+      sequences: y.sequences,
       documentCounts: {
         sales: y._count.saleInvoices,
         purchases: y._count.purchaseInvoices,
@@ -110,20 +119,90 @@ export async function createFinancialYearAction(raw: unknown) {
       throw userError(`A financial year with label "${input.label}" already exists.`);
     }
 
-    const created = await prisma.financialYear.create({
-      data: {
-        label: input.label,
-        startDate: start,
-        endDate: end,
-        isActive: false,
-        isClosed: false,
-      },
+    const created = await prisma.$transaction(async (tx) => {
+      if (input.makeActive) {
+        await tx.financialYear.updateMany({
+          where: { isActive: true },
+          data: { isActive: false },
+        });
+      }
+      return tx.financialYear.create({
+        data: {
+          label: input.label,
+          startDate: start,
+          endDate: end,
+          isActive: input.makeActive ?? false,
+          isClosed: false,
+        },
+      });
     });
 
     emitRealtimeEvent(["financial-years"], "create", "FinancialYear", { id: created.id });
     revalidatePath("/settings/financial-years");
 
     return created;
+  });
+}
+
+export async function activateFinancialYearAction(id: string) {
+  return runAction("financialYears.activate", async () => {
+    const session = await requireSession();
+    if (session.user.role !== Role.OWNER) {
+      throw userError("Only company owners can activate accounting periods.");
+    }
+
+    const fy = await prisma.financialYear.findUnique({ where: { id } });
+    if (!fy) throw userError("Accounting period not found.");
+    if (fy.isClosed) throw userError(`Accounting period "${fy.label}" is closed and cannot be re-activated.`);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.financialYear.updateMany({
+        where: { isActive: true },
+        data: { isActive: false },
+      });
+      await tx.financialYear.update({
+        where: { id },
+        data: { isActive: true },
+      });
+    });
+
+    emitRealtimeEvent(["financial-years"], "update", "FinancialYear", { id });
+    revalidatePath("/settings/financial-years");
+    return { success: true, activeYearLabel: fy.label };
+  });
+}
+
+export async function resetDocumentSequenceAction(raw: unknown) {
+  return runAction("financialYears.resetSequence", async () => {
+    const session = await requireSession();
+    if (session.user.role !== Role.OWNER) {
+      throw userError("Only company owners can reset document sequences.");
+    }
+
+    const input = parseInput(resetSequenceSchema, raw);
+    const nextSeq = input.nextSequenceNo ?? 1;
+    const lastSeq = Math.max(0, nextSeq - 1);
+
+    await prisma.documentSequence.upsert({
+      where: {
+        financialYearId_documentType: {
+          financialYearId: input.financialYearId,
+          documentType: input.documentType,
+        },
+      },
+      create: {
+        financialYearId: input.financialYearId,
+        documentType: input.documentType,
+        lastSequence: lastSeq,
+      },
+      update: {
+        lastSequence: lastSeq,
+      },
+    });
+
+    emitRealtimeEvent(["financial-years"], "update", "DocumentSequence", { financialYearId: input.financialYearId });
+    revalidatePath("/settings/financial-years");
+    return { success: true, nextSequenceNo: input.nextSequenceNo };
   });
 }
 

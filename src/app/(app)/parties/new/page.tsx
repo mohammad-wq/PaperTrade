@@ -1,5 +1,5 @@
-import { PartyEditor } from "@/components/parties/party-editor";
+import { redirect } from "next/navigation";
 
 export default function NewPartyPage() {
-  return <PartyEditor />;
+  redirect("/parties?action=new");
 }

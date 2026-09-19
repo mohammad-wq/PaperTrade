@@ -35,6 +35,7 @@ import {
 import { MODULE_DEFINITIONS, normalizeUserPermissions, type UserPermissions } from "@/lib/auth/permissions";
 import { Role } from "@prisma/client";
 import { format } from "date-fns";
+import { useConfirm } from "@/components/providers/confirm-provider";
 
 type UserRecord = {
   id: string;
@@ -252,6 +253,7 @@ function CategorizedPermissionEditor({
 }
 
 export default function UsersPage() {
+  const confirm = useConfirm();
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -388,12 +390,21 @@ export default function UsersPage() {
   }
 
   async function handleToggle(id: string) {
-    if (!window.confirm("Are you sure you want to change this user's active status?")) return;
+    const targetUser = users.find((u) => u.id === id);
+    const actionLabel = targetUser?.isActive ? "deactivate" : "activate";
+    const ok = await confirm({
+      title: `${targetUser?.isActive ? "Deactivate" : "Activate"} User`,
+      description: `Are you sure you want to ${actionLabel} "${targetUser?.name || "this user"}"?`,
+      confirmText: targetUser?.isActive ? "Deactivate User" : "Activate User",
+      variant: targetUser?.isActive ? "destructive" : "primary",
+    });
+    if (!ok) return;
+
     const res = await toggleUserActiveAction({ id });
     if (res.success) {
       await loadUsers();
     } else {
-      alert(res.error || "Failed to toggle user status.");
+      await confirm.alert(res.error || "Failed to toggle user status.", { variant: "destructive" });
     }
   }
 

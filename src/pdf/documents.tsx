@@ -184,6 +184,13 @@ const styles = StyleSheet.create({
   colSpecsFull: { width: "28%", paddingRight: 6 },
   colQtyFull: { width: "18%", textAlign: "right" },
 
+  // Column Widths for Delivery Order / Dispatch with Lot (sum = 100%)
+  colIndexDo: { width: "6%" },
+  colProductDo: { width: "38%", paddingRight: 6 },
+  colLotDo: { width: "20%", paddingRight: 4 },
+  colSpecsDo: { width: "20%", paddingRight: 4 },
+  colQtyDo: { width: "16%", textAlign: "right" },
+
   headerCell: {
     fontSize: 7.5,
     fontFamily: "Helvetica-Bold",
@@ -347,6 +354,7 @@ const styles = StyleSheet.create({
 type ItemRow = {
   name: string;
   specs?: string;
+  lot?: string | null;
   quantity: number;
   unit: string;
   unitPrice?: number;
@@ -393,6 +401,8 @@ export function DocumentPdfView({
   const companyPhone = process.env.BUSINESS_PHONE || "+92-300-1234567";
 
   const hasRates = items.some((i) => typeof i.unitPrice === "number" && !isNaN(i.unitPrice));
+  const isDeliveryOrder = docType.toLowerCase().includes("delivery") || docType.toLowerCase().includes("transfer");
+  const hasLots = isDeliveryOrder || items.some((i) => Boolean(i.lot));
 
   return (
     <Document>
@@ -473,6 +483,14 @@ export function DocumentPdfView({
               <Text style={[styles.colRate, styles.headerCellRight]}>Rate (PKR)</Text>
               <Text style={[styles.colTotal, styles.headerCellRight]}>Amount (PKR)</Text>
             </View>
+          ) : hasLots ? (
+            <View style={styles.tableHeader}>
+              <Text style={[styles.colIndexDo, styles.headerCell]}>#</Text>
+              <Text style={[styles.colProductDo, styles.headerCell]}>Description</Text>
+              <Text style={[styles.colLotDo, styles.headerCell]}>Warehouse Lot</Text>
+              <Text style={[styles.colSpecsDo, styles.headerCell]}>Specifications</Text>
+              <Text style={[styles.colQtyDo, styles.headerCellRight]}>Quantity</Text>
+            </View>
           ) : (
             <View style={styles.tableHeader}>
               <Text style={[styles.colIndexFull, styles.headerCell]}>#</Text>
@@ -499,11 +517,27 @@ export function DocumentPdfView({
                   <Text style={[styles.colProduct, styles.cellTextBold]}>{item.name || "—"}</Text>
                   <Text style={[styles.colSpecs, styles.cellText]}>{item.specs || "—"}</Text>
                   <Text style={[styles.colQty, styles.cellRight]}>
-                    {Number(item.quantity || 0).toLocaleString()}
+                    {Number(item.quantity || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}
                   </Text>
                   <Text style={[styles.colUnit, styles.cellCenter]}>{item.unit || "Unit"}</Text>
                   <Text style={[styles.colRate, styles.cellRight]}>{formatMoney(rateVal)}</Text>
                   <Text style={[styles.colTotal, styles.cellBoldRight]}>{formatMoney(lineVal)}</Text>
+                </View>
+              );
+            }
+
+            if (hasLots) {
+              return (
+                <View key={idx} style={isAlt ? styles.tableRowAlternate : styles.tableRow}>
+                  <Text style={[styles.colIndexDo, styles.cellIndex]}>{idx + 1}</Text>
+                  <Text style={[styles.colProductDo, styles.cellTextBold]}>{item.name || "—"}</Text>
+                  <Text style={[styles.colLotDo, styles.cellTextBold]}>
+                    {item.lot ? `Lot #${item.lot}` : "—"}
+                  </Text>
+                  <Text style={[styles.colSpecsDo, styles.cellText]}>{item.specs || "—"}</Text>
+                  <Text style={[styles.colQtyDo, styles.cellBoldRight]}>
+                    {Number(item.quantity || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })} {item.unit || ""}
+                  </Text>
                 </View>
               );
             }
@@ -514,7 +548,7 @@ export function DocumentPdfView({
                 <Text style={[styles.colProductFull, styles.cellTextBold]}>{item.name || "—"}</Text>
                 <Text style={[styles.colSpecsFull, styles.cellText]}>{item.specs || "—"}</Text>
                 <Text style={[styles.colQtyFull, styles.cellBoldRight]}>
-                  {Number(item.quantity || 0).toLocaleString()} {item.unit || ""}
+                  {Number(item.quantity || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })} {item.unit || ""}
                 </Text>
               </View>
             );

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ShoppingCart,
   Plus,
@@ -10,6 +11,9 @@ import {
   Trash2,
   X,
   Layers,
+  Eye,
+  Printer,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +28,7 @@ import { listWarehouseLotsAction, createWarehouseLotAction } from "@/actions/war
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useConfirm } from "@/components/providers/confirm-provider";
 
 type PurchaseInvoiceRow = {
   id: string;
@@ -90,6 +95,7 @@ type WarehouseLotOption = {
 };
 
 export default function PurchasesPage() {
+  const confirm = useConfirm();
   const [invoices, setInvoices] = useState<PurchaseInvoiceRow[]>([]);
   const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
@@ -101,6 +107,21 @@ export default function PurchasesPage() {
   const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("OPEN");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "F2" || e.key === "Insert") {
+        e.preventDefault();
+        setIsDialogOpen(true);
+      } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Quick lot creation modal state
   const [quickLotModalOpen, setQuickLotModalOpen] = useState(false);
@@ -118,6 +139,96 @@ export default function PurchasesPage() {
   const [items, setItems] = useState<LineItem[]>([{ productId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (searchParams.get("action") === "new") {
+      setIsDialogOpen(true);
+    }
+    if (searchParams.get("fromInvoice") === "1") {
+      try {
+        const stored = sessionStorage.getItem("draft_from_invoice");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.locationId) setLocationId(parsed.locationId);
+          if (Array.isArray(parsed.items) && parsed.items.length > 0) {
+            setItems(
+              parsed.items.map((item: any) => ({
+                productId: item.productId || "",
+                quantity: Number(item.quantity) || 1,
+                unitCost: Number(item.unitCost) || 0,
+                warehouseLotId: item.warehouseLotId || "",
+              }))
+            );
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load draft_from_invoice in purchases", e);
+      }
+    }
+  }, [searchParams]);
+
+  // Pre-posting PDF preview
+  async function handlePreviewPdf() {
+    if (items.length === 0 || items.some((i) => !i.productId || i.quantity <= 0)) {
+      setFormError("Please select valid items with quantities > 0 before previewing.");
+      return;
+    }
+    setPreviewLoading(true);
+    try {
+      const selectedSupplier = suppliers.find((s) => s.id === supplierId);
+      const selectedLoc = dbLocations.find((l) => l.id === locationId);
+      const totalCost = items.reduce((sum, i) => sum + (i.quantity || 0) * (i.unitCost || 0), 0);
+
+      const payload = {
+        type: "purchase-invoice",
+        docNumber: "PINV-PREVIEW",
+        date: invoiceDate,
+        partyName: selectedSupplier?.name || "Paper Mill / Supplier",
+        partyPhone: selectedSupplier ? (selectedSupplier as any).phone || null : null,
+        locationName: selectedLoc?.name || "Shop",
+        referenceNo: purchaseOrderId ? `PO: ${pos.find((p) => p.id === purchaseOrderId)?.orderNo}` : null,
+        totalAmount: totalCost,
+        amountPaid: 0,
+        notes: notes || null,
+        items: items.map((item) => {
+          const prod = products.find((p) => p.id === item.productId);
+          return {
+            name: prod ? `${prod.productNo} - ${prod.name}` : "Product",
+            specs: prod?.unit || "Unit",
+            quantity: item.quantity,
+            unit: prod?.unit || "Unit",
+            unitPrice: item.unitCost,
+            lineTotal: (item.quantity || 0) * (item.unitCost || 0),
+          };
+        }),
+      };
+
+      const res = await fetch("/api/pdf/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || "Failed to generate preview PDF");
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setPdfPreviewUrl(url);
+      setShowPdfPreviewModal(true);
+    } catch (err: any) {
+      await confirm.alert(err.message || "Failed to preview Purchase Invoice PDF", { variant: "destructive" });
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
 
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
@@ -300,10 +411,10 @@ export default function PurchasesPage() {
         setQuickLotDesc("");
         setQuickLotLineIndex(null);
       } else {
-        alert(!res.success ? res.error : "Failed to create lot");
+        await confirm.alert(!res.success ? res.error : "Failed to create lot", { variant: "destructive" });
       }
     } catch (err: any) {
-      alert(err.message || "Failed to create lot");
+      await confirm.alert(err.message || "Failed to create lot", { variant: "destructive" });
     } finally {
       setSubmittingQuickLot(false);
     }
@@ -326,7 +437,13 @@ export default function PurchasesPage() {
       return;
     }
 
-    if (!window.confirm("Confirm: record this purchase invoice?")) return;
+    const ok = await confirm({
+      title: "Confirm Purchase Invoice",
+      description: "Are you sure you want to record this purchase invoice and receive inventory?",
+      confirmText: "Record Invoice",
+      variant: "primary",
+    });
+    if (!ok) return;
 
     setSubmitting(true);
     try {
@@ -362,54 +479,66 @@ export default function PurchasesPage() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Page Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <ShoppingCart className="h-5 w-5 text-amber-700" />
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Purchase Invoices</h1>
+    <div className="flex flex-col gap-3 p-4">
+      {/* Top Banner: Title, Counters, and Action Button */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-md shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-400 rounded-md">
+            <ShoppingCart className="h-5 w-5" />
           </div>
-          <p className="text-sm text-slate-600">
-            Receive paper shipments from suppliers, credit payables, and increase warehouse/shop stock.
-          </p>
+          <div>
+            <h1 className="text-base font-bold tracking-tight text-slate-900 dark:text-slate-100">
+              Purchase Invoices
+            </h1>
+            <p className="text-[11px] text-slate-500">
+              Receive paper shipments from suppliers, credit payables, and increase warehouse stock
+            </p>
+          </div>
         </div>
 
-        <Button
-          onClick={() => {
-            if (!locationId && locations.length > 0) setLocationId(locations[0].id);
-            setIsDialogOpen(true);
-          }}
-          className="bg-amber-800 text-white hover:bg-amber-700 shadow-sm"
-        >
-          <Plus className="mr-1.5 h-4 w-4" />
-          Receive Purchase
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Counters */}
+          <div className="hidden sm:flex items-center gap-2 text-xs font-mono">
+            <span className="bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2 py-1 rounded">
+              Total: <strong>PKR {totalPurchases.toLocaleString()}</strong>
+            </span>
+            <span className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-300 px-2 py-1 rounded">
+              Invoices: <strong>{filteredInvoices.length}</strong>
+            </span>
+          </div>
+
+          <Button
+            onClick={() => {
+              if (!locationId && locations.length > 0) setLocationId(locations[0].id);
+              setIsDialogOpen(true);
+            }}
+            className="h-8 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold shadow-xs px-3"
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            Receive Purchase <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+          </Button>
+        </div>
       </div>
 
-      {/* Summary Banner */}
-      <Card className="border-amber-900/15 bg-white/80">
-        <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Purchases Amount</p>
-            <p className="text-2xl font-bold text-slate-900 mt-0.5">PKR {totalPurchases.toLocaleString()}</p>
-          </div>
-          <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900 self-start sm:self-auto">
-            {filteredInvoices.length} Supplier Invoices
-          </span>
-        </CardContent>
-      </Card>
-
       {/* Search Filter & Archive Toggles */}
-      <div className="flex flex-col md:flex-row gap-2 items-center justify-between">
+      <div className="flex flex-col md:flex-row gap-2 items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs">
         <div className="relative flex-1 w-full">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <Input
+            ref={searchInputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by invoice number, supplier, or location..."
-            className="pl-9 bg-white text-xs h-9 w-full"
+            placeholder="Search by invoice number, supplier, or location... (Press / to focus)"
+            className="h-8 pl-8 pr-8 text-xs bg-slate-50 dark:bg-slate-950/50 border-slate-300 dark:border-slate-700 font-medium"
           />
+          {query && (
+            <button
+              onClick={() => setQuery("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
 
         {/* Status & Year Toggles */}
@@ -566,7 +695,33 @@ export default function PurchasesPage() {
       {/* New Purchase Invoice Modal */}
       {isDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs overflow-y-auto">
-          <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto">
+          <div className="w-[96vw] max-w-6xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
+            {/* Quick Navigation Strip */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold text-slate-500">Quick Jump:</span>
+                <a
+                  href="/sales"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  + Sales Invoice
+                </a>
+                <a
+                  href="/purchase-orders"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  + Purchase Order
+                </a>
+                <a
+                  href="/delivery-orders"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  + Delivery Order
+                </a>
+              </div>
+              <span className="text-[11px] text-slate-400 font-mono">Press [Esc] to close</span>
+            </div>
+
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Record Purchase Invoice</h2>
@@ -746,9 +901,10 @@ export default function PurchasesPage() {
                       <div>
                         <Input
                           type="number"
-                          min="1"
+                          min="0.0001"
+                          step="any"
                           value={item.quantity}
-                          onChange={(e) => handleQuantityChange(idx, Number(e.target.value) || 1)}
+                          onChange={(e) => handleQuantityChange(idx, parseFloat(e.target.value) || 0)}
                           className="h-8 text-xs text-right"
                           placeholder="Qty"
                           required
@@ -769,7 +925,7 @@ export default function PurchasesPage() {
                       </div>
 
                       <div className="text-right text-xs font-semibold text-slate-800">
-                        PKR {(item.quantity * item.unitCost).toFixed(2)}
+                        PKR {(((item.quantity || 0) * (item.unitCost || 0))).toFixed(2)}
                       </div>
 
                       <button
@@ -806,13 +962,30 @@ export default function PurchasesPage() {
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
-                <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs">
-                  {submitting ? "Processing..." : "Save & Receive Stock"}
-                </Button>
+              <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-4">
+                <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
+                  Preview official purchase invoice before posting
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePreviewPdf}
+                    disabled={previewLoading || items.length === 0}
+                    className="text-xs border-amber-400 text-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 gap-1.5"
+                    title="Preview Purchase Invoice in PDF format"
+                  >
+                    <Eye className="h-3.5 w-3.5 text-amber-700" />
+                    {previewLoading ? "Rendering..." : "Preview PDF"}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs font-semibold">
+                    {submitting ? "Processing..." : "Save & Receive Stock"}
+                  </Button>
+                </div>
               </div>
             </form>
           </div>
@@ -821,7 +994,7 @@ export default function PurchasesPage() {
 
       {/* Quick Create Lot Modal */}
       {quickLotModalOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div>
@@ -894,6 +1067,57 @@ export default function PurchasesPage() {
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Pre-Posting Live PDF Document Preview Modal */}
+      {showPdfPreviewModal && pdfPreviewUrl && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
+          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
+            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-amber-400" />
+                <span className="font-bold text-xs">Purchase Invoice Document Preview (Pre-Posting)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const iframe = document.getElementById("purPdfPreviewIframe") as HTMLIFrameElement;
+                    iframe?.contentWindow?.print();
+                  }}
+                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Print
+                </Button>
+                <a
+                  href={pdfPreviewUrl}
+                  download={`Purchase-Invoice-Preview-${new Date().toISOString().slice(0, 10)}.pdf`}
+                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-amber-700 hover:bg-amber-800 text-white rounded font-medium"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download
+                </a>
+                <button
+                  onClick={() => setShowPdfPreviewModal(false)}
+                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
+                  title="Close Preview"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
+              <iframe
+                id="purPdfPreviewIframe"
+                src={pdfPreviewUrl}
+                className="w-full h-full rounded border border-slate-300 dark:border-slate-800 bg-white"
+                title="Purchase Invoice Preview"
+              />
+            </div>
           </div>
         </div>
       )}
