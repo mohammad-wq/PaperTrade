@@ -182,9 +182,17 @@ export default function ReturnsPage() {
       const originalInv = invList.find((i) => i.id === selectedInvoiceId);
       const totalAmount = itemsToReturn.reduce((sum, i) => sum + i.quantity * i.unitRate, 0);
 
+      const activeDocNo = tab === "SALES"
+        ? saleReturns[0]?.returnNo
+          ? saleReturns[0].returnNo.replace(/\d+$/, (n) => String(Number(n) + 1).padStart(n.length, "0"))
+          : `${new Date().getFullYear()}-001`
+        : purchaseReturns[0]?.returnNo
+        ? purchaseReturns[0].returnNo.replace(/\d+$/, (n) => String(Number(n) + 1).padStart(n.length, "0"))
+        : `${new Date().getFullYear()}-001`;
+
       const payload = {
         type: tab === "SALES" ? "sale-return" : "purchase-return",
-        docNumber: tab === "SALES" ? "CR-NOTE-PREVIEW" : "DB-NOTE-PREVIEW",
+        docNumber: activeDocNo,
         date: returnDate,
         partyName: originalInv?.customer?.name || originalInv?.supplier?.name || "Party",
         partyPhone: originalInv?.customer?.phone || originalInv?.supplier?.phone || null,
@@ -214,6 +222,9 @@ export default function ReturnsPage() {
         throw new Error(errText || "Failed to generate preview PDF");
       }
 
+      if (pdfPreviewUrl) {
+        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       setPdfPreviewUrl(url);
@@ -821,13 +832,16 @@ export default function ReturnsPage() {
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    const iframe = document.getElementById("returnPdfPreviewIframe") as HTMLIFrameElement;
-                    iframe?.contentWindow?.print();
+                    if (pdfPreviewUrl) {
+                      const win = window.open(pdfPreviewUrl, "_blank");
+                      win?.focus();
+                    }
                   }}
                   className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
+                  title="Open in dedicated tab for safe printing"
                 >
                   <Printer className="h-3.5 w-3.5" />
-                  Print
+                  Print / Open Tab
                 </Button>
                 <a
                   href={pdfPreviewUrl}
@@ -838,7 +852,13 @@ export default function ReturnsPage() {
                   Download
                 </a>
                 <button
-                  onClick={() => setShowPdfPreviewModal(false)}
+                  onClick={() => {
+                    setShowPdfPreviewModal(false);
+                    if (pdfPreviewUrl) {
+                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
+                      setPdfPreviewUrl(null);
+                    }
+                  }}
                   className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
                   title="Close Preview"
                 >

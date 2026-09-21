@@ -88,9 +88,9 @@ if exist ".next\static" if exist ".next\standalone" (
     )
 )
 
-REM 6. Start server.js in background window
-echo [2/3] Launching Node.js standalone server...
-start "Paper Trade Server" /min cmd /c "node %SERVER_JS%"
+REM 6. Start server.js in background window (capped at 1536MB to prevent OOM / swap thrashing)
+echo [2/3] Launching Node.js standalone server (memory-capped)...
+start "Paper Trade Server" /min cmd /c "node --max-old-space-size=1536 %SERVER_JS%"
 
 REM 6. Poll until application responds on http://localhost:3000
 echo.

@@ -29,8 +29,23 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const processedEventIdsRef = useRef<Set<string>>(new Set());
+  const retryAttemptRef = useRef<number>(0);
 
   const notifyListeners = useCallback((event: RealtimeEvent) => {
+    // 1. Deduplicate by event ID to prevent multi-event trigger storms
+    if (event.id) {
+      if (processedEventIdsRef.current.has(event.id)) {
+        return;
+      }
+      processedEventIdsRef.current.add(event.id);
+      // Keep memory bounded to latest 200 event IDs
+      if (processedEventIdsRef.current.size > 200) {
+        const first = processedEventIdsRef.current.values().next().value;
+        if (first) processedEventIdsRef.current.delete(first);
+      }
+    }
+
     setLastEvent(event);
     listenersRef.current.forEach(({ modules, callback }) => {
       // Check if any of the event's modules match the subscriber's modules
@@ -43,7 +58,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   const broadcastLocalChange = useCallback((modules: RealtimeModule[], action: RealtimeEvent["action"] = "update", entity = "local") => {
     const event: RealtimeEvent = {
-      id: `local-${Date.now()}`,
+      id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       modules,
       action,
       entity,
@@ -73,19 +88,15 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
       es.addEventListener("open", () => {
         setStatus("connected");
+        retryAttemptRef.current = 0;
       });
 
       es.addEventListener("change", (msg) => {
         try {
           const event: RealtimeEvent = JSON.parse(msg.data);
           notifyListeners(event);
-
-          // Relay to sibling tabs on the same device
-          if (broadcastChannelRef.current) {
-            try {
-              broadcastChannelRef.current.postMessage(event);
-            } catch {}
-          }
+          // Note: Server-Sent Events already arrive independently at all open tabs on this device.
+          // We intentionally DO NOT echo SSE events into BroadcastChannel to avoid compounding storms.
         } catch (err) {
           console.error("Failed to parse realtime event payload:", err);
         }
@@ -96,11 +107,14 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         es.close();
         eventSourceRef.current = null;
 
-        // Auto-reconnect with exponential backoff / 3-second delay
+        // Progressive backoff: 3s -> 4.5s -> 6.75s ... up to max 30s
+        const backoffDelay = Math.min(30000, Math.round(3000 * Math.pow(1.5, retryAttemptRef.current)));
+        retryAttemptRef.current = Math.min(retryAttemptRef.current + 1, 8);
+
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = setTimeout(() => {
           connect();
-        }, 3000);
+        }, backoffDelay);
       });
     } catch {
       setStatus("disconnected");
@@ -108,7 +122,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   }, [notifyListeners]);
 
   useEffect(() => {
-    // Setup cross-tab BroadcastChannel
+    // Setup cross-tab BroadcastChannel (only for local optimistic client broadcasts)
     if (typeof window !== "undefined" && "BroadcastChannel" in window) {
       try {
         const bc = new BroadcastChannel("papertrade_realtime");
@@ -127,6 +141,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
     // Re-verify stream when browser comes online or tab regains focus
     const handleOnline = () => {
+      retryAttemptRef.current = 0;
       connect();
     };
 

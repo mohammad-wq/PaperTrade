@@ -12,6 +12,22 @@ export async function GET(req: NextRequest) {
   }
 
   const encoder = new TextEncoder();
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+  let onEvent: ((event: RealtimeEvent) => void) | null = null;
+  let isClosed = false;
+
+  const cleanup = () => {
+    if (isClosed) return;
+    isClosed = true;
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (onEvent) {
+      realtimeEmitter.off("realtime-event", onEvent);
+      onEvent = null;
+    }
+  };
 
   const stream = new ReadableStream({
     start(controller) {
@@ -21,39 +37,50 @@ export async function GET(req: NextRequest) {
           encoder.encode(`event: connected\ndata: ${JSON.stringify({ status: "connected", timestamp: Date.now() })}\n\n`)
         );
       } catch {
-        // stream already closed
+        cleanup();
         return;
       }
 
       // 2. Realtime change event listener
-      const onEvent = (event: RealtimeEvent) => {
+      onEvent = (event: RealtimeEvent) => {
+        if (isClosed) return;
         try {
           const payload = JSON.stringify(event);
           controller.enqueue(encoder.encode(`event: change\ndata: ${payload}\n\n`));
         } catch {
-          // Stream controller closed or errored
+          cleanup();
+          try {
+            controller.close();
+          } catch {}
         }
       };
 
       realtimeEmitter.on("realtime-event", onEvent);
 
-      // 3. Keepalive heartbeat ping comment every 15s to prevent proxy/browser timeout
-      const heartbeatTimer = setInterval(() => {
+      // 3. Keepalive heartbeat ping comment every 15s
+      heartbeatTimer = setInterval(() => {
+        if (isClosed) return;
         try {
           controller.enqueue(encoder.encode(`: ping\n\n`));
         } catch {
-          clearInterval(heartbeatTimer);
+          cleanup();
+          try {
+            controller.close();
+          } catch {}
         }
       }, 15000);
 
       // 4. Cleanup when client disconnects or aborts
       req.signal.addEventListener("abort", () => {
-        clearInterval(heartbeatTimer);
-        realtimeEmitter.off("realtime-event", onEvent);
+        cleanup();
         try {
           controller.close();
         } catch {}
       });
+    },
+    cancel() {
+      // Guaranteed callback invoked when the consumer disconnects or closes the stream
+      cleanup();
     },
   });
 

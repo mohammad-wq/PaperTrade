@@ -101,9 +101,29 @@
     width: 100% !important;
   }
 
+  /* Eliminate scrollbars, uncap container heights, and prevent scroll clipping */
+  .overflow-x-auto,
+  .overflow-y-auto,
+  .overflow-auto,
+  [class*="overflow-"] {
+    overflow: visible !important;
+    overflow-x: visible !important;
+    overflow-y: visible !important;
+    max-height: none !important;
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+
+  ::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+
   /* High-density black & white tables */
   table {
     width: 100% !important;
+    table-layout: auto !important;
     border-collapse: collapse !important;
     color: #000000 !important;
     page-break-inside: auto;
@@ -129,6 +149,9 @@
     font-size: 7.5pt !important;
     color: #000000 !important;
     background: #ffffff !important;
+    min-width: 0 !important;
+    white-space: normal !important;
+    word-break: break-word !important;
   }
 
   th {

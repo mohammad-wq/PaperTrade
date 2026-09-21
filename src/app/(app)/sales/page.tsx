@@ -70,6 +70,10 @@ type SaleInvoiceRow = {
     quantity: number;
     unitPrice: number;
     lineTotal: number;
+    locationId?: string | null;
+    warehouseLotId?: string | null;
+    location?: { id: string; name: string; type: "SHOP" | "WAREHOUSE" } | null;
+    warehouseLot?: { id: string; lotNumber: string } | null;
   }>;
 };
 
@@ -108,6 +112,9 @@ type CommittedLineItem = {
   quantity: number;
   unitPrice: number;
   availableStock: number;
+  locationId: string;
+  locationName: string;
+  locationType: string;
   warehouseLotId?: string | null;
   lotNumber?: string | null;
 };
@@ -118,7 +125,7 @@ export default function SalesPage() {
   const [parties, setParties] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [inventory, setInventory] = useState<StockInfo[]>([]);
-  const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string }>>([]);
+  const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string; type: "SHOP" | "WAREHOUSE" }>>([]);
   const [warehouseLots, setWarehouseLots] = useState<WarehouseLotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -143,6 +150,7 @@ export default function SalesPage() {
   // Pattern 3: Active Data Entry Row State
   const [activeCodeInput, setActiveCodeInput] = useState("");
   const [matchedProduct, setMatchedProduct] = useState<ProductOption | null>(null);
+  const [activeItemLocationId, setActiveItemLocationId] = useState<string>("");
   const [activeLotId, setActiveLotId] = useState<string>("");
   const [activeQty, setActiveQty] = useState<string>("1");
   const [activeRate, setActiveRate] = useState<string>("0");
@@ -167,6 +175,8 @@ export default function SalesPage() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const productInputRef = useRef<HTMLInputElement>(null);
+  const itemLocationSelectRef = useRef<HTMLSelectElement>(null);
+  const lotSelectRef = useRef<HTMLSelectElement>(null);
   const qtyInputRef = useRef<HTMLInputElement>(null);
   const rateInputRef = useRef<HTMLInputElement>(null);
   const customerSelectRef = useRef<HTMLSelectElement>(null);
@@ -191,7 +201,7 @@ export default function SalesPage() {
         setInvoices(invRes.data as SaleInvoiceRow[]);
       }
       if (partyRes.success && partyRes.data) {
-        const partyList = (partyRes.data as PartyOption[]).filter((p) => p.type === "CUSTOMER");
+        const partyList = partyRes.data as PartyOption[];
         setParties(partyList);
       }
       if (prodRes.success && prodRes.data) {
@@ -202,11 +212,12 @@ export default function SalesPage() {
         setInventory(invRows);
       }
       if (locRes.success && locRes.data) {
-        const locs = locRes.data as Array<{ id: string; name: string }>;
+        const locs = locRes.data as Array<{ id: string; name: string; type: "SHOP" | "WAREHOUSE" }>;
         setDbLocations(locs);
         if (locs.length > 0) {
           const shop = locs.find((l) => l.name.toLowerCase() === "shop") ?? locs[0];
           setLocationId((prev) => prev || shop.id);
+          setActiveItemLocationId((prev) => prev || shop.id);
         }
       }
       if (lotRes.success && lotRes.data) {
@@ -278,9 +289,18 @@ export default function SalesPage() {
     return found ? found.available : 0;
   }
 
+  const currentItemLocationId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
+
+  const activeItemLocation = useMemo(
+    () => dbLocations.find((l) => l.id === currentItemLocationId),
+    [dbLocations, currentItemLocationId]
+  );
+
+  const isItemLocationWarehouse = activeItemLocation?.type === "WAREHOUSE";
+
   const locationLots = useMemo(
-    () => warehouseLots.filter((l) => l.locationId === locationId),
-    [warehouseLots, locationId]
+    () => warehouseLots.filter((l) => l.locationId === currentItemLocationId),
+    [warehouseLots, currentItemLocationId]
   );
 
   const selectedCustomer = useMemo(
@@ -362,6 +382,7 @@ export default function SalesPage() {
     setCommittedItems([]);
     setActiveCodeInput("");
     setMatchedProduct(null);
+    setActiveItemLocationId(locationId || (dbLocations[0]?.id ?? ""));
     setActiveLotId("");
     setActiveQty("1");
     setActiveRate("0");
@@ -396,21 +417,29 @@ export default function SalesPage() {
       setCustomerId(inv.customer.id);
     }
     setLocationId(inv.location.id);
+    setActiveItemLocationId(inv.location.id);
     setInvoiceDate(new Date(inv.date).toISOString().slice(0, 10));
     setNotes(inv.notes || "");
 
-    const items: CommittedLineItem[] = inv.items.map((it) => {
-      const prod = products.find((p) => p.id === it.product.id);
-      const currStock = getAvailableStock(it.product.id, inv.location.id);
+    const items: CommittedLineItem[] = inv.items.map((it: any) => {
+      const prod = products.find((p) => p.id === (it.product?.id || it.productId));
+      const itLocId = it.location?.id || it.locationId || inv.location?.id || "";
+      const itLoc = dbLocations.find((l) => l.id === itLocId) || it.location;
+      const currStock = getAvailableStock(it.product?.id || it.productId, itLocId);
       return {
-        productId: it.product.id,
-        productNo: it.product.productNo,
-        productName: it.product.name,
+        productId: it.product?.id || it.productId,
+        productNo: it.product?.productNo || prod?.productNo || "",
+        productName: it.product?.name || prod?.name || "",
         categoryName: prod?.category?.name || "",
-        unit: it.product.unit,
+        unit: it.product?.unit || prod?.unit || "PACKET",
         quantity: it.quantity,
         unitPrice: it.unitPrice,
         availableStock: currStock + it.quantity,
+        locationId: itLocId,
+        locationName: itLoc?.name || inv.location?.name || "Location",
+        locationType: itLoc?.type || "SHOP",
+        warehouseLotId: it.warehouseLot?.id || it.warehouseLotId || null,
+        lotNumber: it.warehouseLot?.lotNumber || null,
       };
     });
 
@@ -456,8 +485,10 @@ export default function SalesPage() {
       }
 
       const activeDocNo = editingInvoiceId
-        ? invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo || "INV-EDIT"
-        : "DRAFT-PREVIEW";
+        ? invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo || "INV-001"
+        : invoices[0]?.invoiceNo
+        ? invoices[0].invoiceNo.replace(/\d+$/, (n) => String(Number(n) + 1).padStart(n.length, "0"))
+        : `${new Date().getFullYear()}-001`;
 
       const payload = {
         type: "sale-invoice",
@@ -495,6 +526,9 @@ export default function SalesPage() {
         throw new Error(errText || "Failed to generate preview PDF");
       }
 
+      if (pdfPreviewUrl) {
+        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       setPdfPreviewUrl(url);
@@ -507,13 +541,68 @@ export default function SalesPage() {
   }
 
   // Quick create related DO, PO, or Purchase Invoice with pre-filled items
-  function handleCreateRelated(type: "DO" | "PO" | "PURCHASE") {
+  async function handleCreateRelated(type: "DO" | "PO" | "PURCHASE") {
+    if (type === "DO") {
+      // Filter out shop items - DO must be for warehouse items only!
+      const warehouseItems = committedItems.filter((item) => {
+        const loc = dbLocations.find((l) => l.id === item.locationId);
+        return loc ? loc.type === "WAREHOUSE" : item.locationType === "WAREHOUSE";
+      });
+
+      if (warehouseItems.length === 0) {
+        await confirm.alert(
+          "No warehouse products to dispatch. All products on this invoice are selected from the Shop. Delivery Orders are only issued for warehouse dispatches.",
+          { title: "No Warehouse Products", variant: "default" }
+        );
+        return;
+      }
+
+      // DO must be for ONE location only
+      const targetLocationId = warehouseItems[0].locationId;
+      const targetLocationName = warehouseItems[0].locationName;
+      const singleLocWarehouseItems = warehouseItems.filter((it) => it.locationId === targetLocationId);
+
+      if (singleLocWarehouseItems.length < warehouseItems.length) {
+        await confirm.alert(
+          `This invoice contains items from multiple warehouses. Forwarding ${singleLocWarehouseItems.length} items for ${targetLocationName}. Please create a separate Delivery Order for the remaining warehouse items.`,
+          { title: "Multiple Warehouses Detected" }
+        );
+      }
+
+      const payload = {
+        saleInvoiceId: editingInvoiceId || null,
+        customerId: customerType === "REGISTERED" ? customerId : null,
+        customerName:
+          customerType === "REGISTERED"
+            ? parties.find((p) => p.id === customerId)?.name || ""
+            : walkInName || "Walk-in Customer",
+        locationId: targetLocationId,
+        items: singleLocWarehouseItems.map((item) => ({
+          productId: item.productId,
+          warehouseLotId: item.warehouseLotId || undefined,
+          quantity: item.quantity,
+          unit: item.unit,
+          unitCost: item.unitPrice,
+        })),
+      };
+
+      try {
+        sessionStorage.setItem("draft_from_invoice", JSON.stringify(payload));
+      } catch (e) {
+        console.error("Failed to store draft_from_invoice in sessionStorage", e);
+      }
+
+      window.open("/delivery-orders?action=new&fromInvoice=1", "_blank");
+      return;
+    }
+
     const payload = {
       saleInvoiceId: editingInvoiceId || null,
       customerId: customerType === "REGISTERED" ? customerId : null,
-      customerName: customerType === "REGISTERED"
-        ? parties.find((p) => p.id === customerId)?.name || ""
-        : walkInName || "Walk-in Customer",
+      customerName:
+        customerType === "REGISTERED"
+          ? parties.find((p) => p.id === customerId)?.name || ""
+          : walkInName || "Walk-in Customer",
       locationId: locationId || "",
       items: committedItems.map((item) => ({
         productId: item.productId,
@@ -529,9 +618,7 @@ export default function SalesPage() {
       console.error("Failed to store draft_from_invoice in sessionStorage", e);
     }
 
-    if (type === "DO") {
-      window.open("/delivery-orders?action=new&fromInvoice=1", "_blank");
-    } else if (type === "PO") {
+    if (type === "PO") {
       window.open("/purchase-orders?action=new&fromInvoice=1", "_blank");
     } else if (type === "PURCHASE") {
       window.open("/purchases?action=new&fromInvoice=1", "_blank");
@@ -539,18 +626,57 @@ export default function SalesPage() {
   }
 
   // Create Delivery Order directly from an already posted Sale Invoice in table
-  function handleCreateDOFromInvoice(inv: SaleInvoiceRow) {
+  async function handleCreateDOFromInvoice(inv: SaleInvoiceRow) {
+    // Filter out shop items - DO must be for warehouse items only!
+    const warehouseItems = inv.items.filter((item: any) => {
+      const locType = item.location?.type || dbLocations.find((l) => l.id === item.locationId)?.type;
+      const locName = item.location?.name || dbLocations.find((l) => l.id === item.locationId)?.name || "";
+      if (locType) return locType === "WAREHOUSE";
+      return !locName.toLowerCase().includes("shop");
+    });
+
+    if (warehouseItems.length === 0) {
+      await confirm.alert(
+        "No warehouse products to dispatch. All products on this invoice are from the Shop. Delivery Orders are only issued for warehouse dispatches.",
+        { title: "No Warehouse Products", variant: "default" }
+      );
+      return;
+    }
+
+    // DO must be for ONE location only
+    const targetLocationId =
+      warehouseItems[0].location?.id ||
+      warehouseItems[0].locationId ||
+      inv.location?.id ||
+      "";
+    const targetLocationName =
+      warehouseItems[0].location?.name ||
+      dbLocations.find((l) => l.id === targetLocationId)?.name ||
+      "Warehouse";
+    const singleLocWarehouseItems = warehouseItems.filter(
+      (it: any) => (it.location?.id || it.locationId || inv.location?.id) === targetLocationId
+    );
+
+    if (singleLocWarehouseItems.length < warehouseItems.length) {
+      await confirm.alert(
+        `This invoice contains items from multiple warehouses. Forwarding ${singleLocWarehouseItems.length} items for ${targetLocationName}. Please create a separate Delivery Order for the remaining warehouse items.`,
+        { title: "Multiple Warehouses Detected" }
+      );
+    }
+
     const payload = {
       saleInvoiceId: inv.id,
       customerId: inv.customer?.id || null,
       customerName: inv.customer?.name || "",
-      locationId: inv.location?.id || "",
-      items: inv.items.map((item) => ({
+      locationId: targetLocationId,
+      items: singleLocWarehouseItems.map((item: any) => ({
         productId: item.product?.id || "",
+        warehouseLotId: item.warehouseLot?.id || item.warehouseLotId || undefined,
         quantity: item.quantity,
         unit: item.product?.unit || "",
       })),
     };
+
     try {
       sessionStorage.setItem("draft_from_invoice", JSON.stringify(payload));
     } catch (e) {
@@ -565,14 +691,18 @@ export default function SalesPage() {
     setActiveCodeInput(`${prod.productNo} - ${prod.name}`);
     setShowTypeahead(false);
     setActiveRowError(null);
-
-    // Default rate based on retail price
     setActiveRate(String(prod.retailPrice));
 
-    // Focus Quantity input and select text
+    // Focus Location selector first so location can be specified for this product
     setTimeout(() => {
-      qtyInputRef.current?.focus();
-      qtyInputRef.current?.select();
+      if (itemLocationSelectRef.current) {
+        itemLocationSelectRef.current.focus();
+      } else if (isItemLocationWarehouse && locationLots.length > 0 && lotSelectRef.current) {
+        lotSelectRef.current.focus();
+      } else {
+        qtyInputRef.current?.focus();
+        qtyInputRef.current?.select();
+      }
     }, 50);
   }
 
@@ -669,8 +799,11 @@ export default function SalesPage() {
       return;
     }
 
-    const available = locationId ? getAvailableStock(matchedProduct.id, locationId) : 0;
-    const matchedLot = activeLotId ? locationLots.find((l) => l.id === activeLotId) : null;
+    const finalLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
+    const finalLoc = dbLocations.find((l) => l.id === finalLocId);
+    const finalLocLots = warehouseLots.filter((l) => l.locationId === finalLocId);
+    const matchedLot = activeLotId ? finalLocLots.find((l) => l.id === activeLotId) : null;
+    const available = finalLocId ? getAvailableStock(matchedProduct.id, finalLocId) : 0;
 
     // Add to committed items list
     setCommittedItems((prev) => [
@@ -684,12 +817,15 @@ export default function SalesPage() {
         quantity: qtyNum,
         unitPrice: rateNum,
         availableStock: available,
-        warehouseLotId: activeLotId || null,
-        lotNumber: matchedLot ? matchedLot.lotNumber : null,
+        locationId: finalLocId,
+        locationName: finalLoc?.name || "Location",
+        locationType: finalLoc?.type || "SHOP",
+        warehouseLotId: finalLoc?.type === "WAREHOUSE" ? (activeLotId || null) : null,
+        lotNumber: finalLoc?.type === "WAREHOUSE" && matchedLot ? matchedLot.lotNumber : null,
       },
     ]);
 
-    // Reset active row state
+    // Reset active row state (keeps activeItemLocationId ready for next item)
     setActiveCodeInput("");
     setMatchedProduct(null);
     setActiveLotId("");
@@ -745,6 +881,7 @@ export default function SalesPage() {
         notes: notes.trim() || undefined,
         items: committedItems.map((item) => ({
           productId: item.productId,
+          locationId: item.locationId || locationId,
           warehouseLotId: item.warehouseLotId || undefined,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -1239,10 +1376,10 @@ export default function SalesPage() {
                         }}
                         className="w-full h-8 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-medium"
                       >
-                        <option value="">Select customer from directory...</option>
+                        <option value="">Select party from directory...</option>
                         {parties.map((p) => (
                           <option key={p.id} value={p.id}>
-                            {p.name} {p.creditLimit ? `(Limit: PKR ${p.creditLimit.toLocaleString()})` : ""}
+                            {p.name} {p.type ? `[${p.type}]` : ""} {p.creditLimit ? `(Limit: PKR ${p.creditLimit.toLocaleString()})` : ""}
                           </option>
                         ))}
                       </select>
@@ -1355,10 +1492,9 @@ export default function SalesPage() {
                     <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 text-[10px] font-bold uppercase border-b border-slate-200 dark:border-slate-700">
                       <tr>
                         <th className="py-1.5 px-2 w-8 text-center border-r border-slate-200 dark:border-slate-700">#</th>
-                        <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 min-w-[200px]">Product Code / Name</th>
-                        {locationLots.length > 0 && (
-                          <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-28 whitespace-nowrap">Lot</th>
-                        )}
+                        <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 min-w-[180px]">Product Code / Name</th>
+                        <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-32 whitespace-nowrap">Location</th>
+                        <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-28 whitespace-nowrap">Lot</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Category</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap text-right">Available Stock</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Unit</th>
@@ -1382,17 +1518,26 @@ export default function SalesPage() {
                               </span>
                               <span>{item.productName}</span>
                             </td>
-                            {locationLots.length > 0 && (
-                              <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-mono text-[11px]">
-                                {item.lotNumber ? (
-                                  <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-semibold text-[10px]">
-                                    #{item.lotNumber}
-                                  </span>
-                                ) : (
-                                  <span className="text-slate-400">—</span>
-                                )}
-                              </td>
-                            )}
+                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 font-sans text-xs">
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                                  item.locationType === "SHOP"
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-800"
+                                    : "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-800"
+                                }`}
+                              >
+                                {item.locationName}
+                              </span>
+                            </td>
+                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-mono text-[11px]">
+                              {item.lotNumber ? (
+                                <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-semibold text-[10px]">
+                                  #{item.lotNumber}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-600 dark:text-slate-400 font-sans">
                               {item.categoryName}
                             </td>
@@ -1460,7 +1605,9 @@ export default function SalesPage() {
                           {showTypeahead && typeaheadMatches.length > 0 && (
                             <div className="absolute left-2 right-2 top-8 z-30 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded shadow-lg max-h-48 overflow-y-auto font-sans">
                               {typeaheadMatches.map((p, idx) => {
-                                const avail = locationId ? getAvailableStock(p.id, locationId) : 0;
+                                const avail = (activeItemLocationId || locationId)
+                                  ? getAvailableStock(p.id, activeItemLocationId || locationId)
+                                  : 0;
                                 return (
                                   <div
                                     key={p.id}
@@ -1484,13 +1631,54 @@ export default function SalesPage() {
                           )}
                         </td>
 
-                        {/* Lot Selector (if location has lots) */}
-                        {locationLots.length > 0 && (
-                          <td className="py-1 px-2 border-r border-slate-200 dark:border-slate-700">
+                        {/* Location Selector for Active Row */}
+                        <td className="py-1 px-2 border-r border-slate-200 dark:border-slate-700">
+                          <select
+                            ref={itemLocationSelectRef}
+                            value={activeItemLocationId || locationId}
+                            onChange={(e) => {
+                              setActiveItemLocationId(e.target.value);
+                              setActiveLotId("");
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                const chosenLocId = activeItemLocationId || locationId;
+                                const chosenLoc = dbLocations.find((l) => l.id === chosenLocId);
+                                const chosenLots = warehouseLots.filter((l) => l.locationId === chosenLocId);
+                                if (chosenLoc?.type === "WAREHOUSE" && chosenLots.length > 0 && lotSelectRef.current) {
+                                  lotSelectRef.current.focus();
+                                } else {
+                                  qtyInputRef.current?.focus();
+                                  qtyInputRef.current?.select();
+                                }
+                              }
+                            }}
+                            className="h-7 w-full text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1 font-sans focus:ring-1 focus:ring-emerald-500"
+                          >
+                            {dbLocations.map((loc) => (
+                              <option key={loc.id} value={loc.id}>
+                                {loc.name} {loc.type === "SHOP" ? "[Shop]" : "[Warehouse]"}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+
+                        {/* Lot Selector (if location is warehouse) */}
+                        <td className="py-1 px-2 border-r border-slate-200 dark:border-slate-700">
+                          {isItemLocationWarehouse ? (
                             <select
+                              ref={lotSelectRef}
                               value={activeLotId}
                               onChange={(e) => setActiveLotId(e.target.value)}
-                              className="h-7 w-full text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1 font-mono"
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  qtyInputRef.current?.focus();
+                                  qtyInputRef.current?.select();
+                                }
+                              }}
+                              className="h-7 w-full text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1 font-mono focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
                             >
                               <option value="">No Lot</option>
                               {locationLots.map((lot) => (
@@ -1499,8 +1687,10 @@ export default function SalesPage() {
                                 </option>
                               ))}
                             </select>
-                          </td>
-                        )}
+                          ) : (
+                            <span className="text-[10px] text-slate-400 font-sans italic px-1 block text-center">N/A (Shop)</span>
+                          )}
+                        </td>
 
                         {/* Category (Auto-filled) */}
                         <td className="py-1 px-2 border-r border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-sans">
@@ -1512,12 +1702,12 @@ export default function SalesPage() {
                           {matchedProduct ? (
                             <span
                               className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                getAvailableStock(matchedProduct.id, locationId) > 0
+                                getAvailableStock(matchedProduct.id, activeItemLocationId || locationId) > 0
                                   ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
                                   : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
                               }`}
                             >
-                              {getAvailableStock(matchedProduct.id, locationId)} {matchedProduct.unit}
+                              {getAvailableStock(matchedProduct.id, activeItemLocationId || locationId)} {matchedProduct.unit}
                             </span>
                           ) : (
                             "—"
@@ -1741,13 +1931,16 @@ export default function SalesPage() {
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    const iframe = document.getElementById("pdfPreviewIframe") as HTMLIFrameElement;
-                    iframe?.contentWindow?.print();
+                    if (pdfPreviewUrl) {
+                      const win = window.open(pdfPreviewUrl, "_blank");
+                      win?.focus();
+                    }
                   }}
                   className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
+                  title="Open in dedicated tab for safe printing"
                 >
                   <Printer className="h-3.5 w-3.5" />
-                  Print
+                  Print / Open Tab
                 </Button>
                 <a
                   href={pdfPreviewUrl}
@@ -1758,7 +1951,13 @@ export default function SalesPage() {
                   Download
                 </a>
                 <button
-                  onClick={() => setShowPdfPreviewModal(false)}
+                  onClick={() => {
+                    setShowPdfPreviewModal(false);
+                    if (pdfPreviewUrl) {
+                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
+                      setPdfPreviewUrl(null);
+                    }
+                  }}
                   className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
                   title="Close Preview"
                 >

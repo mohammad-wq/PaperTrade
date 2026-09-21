@@ -164,6 +164,7 @@ export async function GET(
       });
     } else if (reportType === "general-ledger") {
       const accountType = searchParams.get("accountType") || undefined;
+      const referenceType = searchParams.get("referenceType") || undefined;
       const dateFilter: Record<string, Date> = {};
       if (startDate) dateFilter.gte = new Date(startDate);
       if (endDate) {
@@ -172,10 +173,17 @@ export async function GET(
         dateFilter.lte = end;
       }
 
+      let partyNameFilter = "";
+      if (partyId && partyId !== "ALL") {
+        const p = await prisma.party.findUnique({ where: { id: partyId }, select: { name: true } });
+        if (p) partyNameFilter = p.name;
+      }
+
       const entries = await prisma.ledgerEntry.findMany({
         where: {
           ...(partyId && partyId !== "ALL" ? { partyId } : {}),
           ...(accountType && accountType !== "ALL" ? { accountType: accountType as any } : {}),
+          ...(referenceType && referenceType !== "ALL" ? { referenceType } : {}),
           ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
         },
         include: {
@@ -196,9 +204,10 @@ export async function GET(
         : "All Time";
 
       const filters = [
+        partyNameFilter ? `Party: ${partyNameFilter}` : null,
         accountType && accountType !== "ALL" ? `Account: ${accountType}` : null,
-        partyId && partyId !== "ALL" ? `Party ID: ${partyId}` : null,
-      ].filter(Boolean).join(" | ") || "None";
+        referenceType && referenceType !== "ALL" ? `Transaction: ${referenceType.replace(/_/g, " ")}` : null,
+      ].filter(Boolean).join(" | ") || "All Transactions";
 
       filename = `General-Ledger-${startDate || "all"}-to-${endDate || "present"}.pdf`;
       docElement = React.createElement(GeneralLedgerPdfView, {

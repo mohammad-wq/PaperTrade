@@ -10,6 +10,7 @@ import {
   Wallet,
   Building,
   CheckCircle2,
+  Printer,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +26,7 @@ import { useConfirm } from "@/components/providers/confirm-provider";
 
 type PaymentRow = {
   id: string;
+  receiptNo?: string | null;
   amount: number;
   method: PaymentMethod;
   date: Date;
@@ -132,11 +134,9 @@ export default function PaymentsPage() {
 
   const candidateInvoices = useMemo(() => {
     if (!selectedParty) return [];
-    if (selectedParty.type === PartyType.CUSTOMER) {
-      return saleInvoices.filter((i) => i.customerId === selectedParty.id);
-    } else {
-      return purchaseInvoices.filter((i) => i.supplierId === selectedParty.id);
-    }
+    const sales = saleInvoices.filter((i) => i.customerId === selectedParty.id).map((i) => ({ ...i, invType: "SALE" }));
+    const purchases = purchaseInvoices.filter((i) => i.supplierId === selectedParty.id).map((i) => ({ ...i, invType: "PURCHASE" }));
+    return [...sales, ...purchases];
   }, [selectedParty, saleInvoices, purchaseInvoices]);
 
   const filteredPayments = useMemo(() => {
@@ -190,11 +190,12 @@ export default function PaymentsPage() {
 
     setSubmitting(true);
     try {
-      const isCust = selectedParty?.type === PartyType.CUSTOMER;
+      const isSaleInv = saleInvoices.some((i) => i.id === invoiceId);
+      const isPurchaseInv = purchaseInvoices.some((i) => i.id === invoiceId);
       const res = await createPaymentAction({
         partyId,
-        saleInvoiceId: isCust && invoiceId ? invoiceId : null,
-        purchaseInvoiceId: !isCust && invoiceId ? invoiceId : null,
+        saleInvoiceId: isSaleInv ? invoiceId : null,
+        purchaseInvoiceId: isPurchaseInv ? invoiceId : null,
         amount: Number(amount),
         method,
         date: new Date(paymentDate),
@@ -204,6 +205,7 @@ export default function PaymentsPage() {
       if (!res.success) {
         setFormError(res.error || "Failed to record payment.");
       } else {
+        const createdId = (res as any).data?.id;
         setIsDialogOpen(false);
         setPartyId("");
         setInvoiceId("");
@@ -212,6 +214,9 @@ export default function PaymentsPage() {
         setPaymentDate(new Date().toISOString().slice(0, 10));
         setNotes("");
         await loadData();
+        if (createdId) {
+          window.open(`/api/pdf/payment-receipt/${createdId}`, "_blank");
+        }
       }
     } finally {
       setSubmitting(false);
@@ -356,9 +361,16 @@ export default function PaymentsPage() {
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <CardTitle className="text-base font-bold text-slate-900">{p.party.name}</CardTitle>
-                      <span className={`text-[10px] font-bold uppercase tracking-wider ${isCustomer ? "text-emerald-700" : "text-amber-800"}`}>
-                        {p.party.type}
-                      </span>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className={`text-[10px] font-bold uppercase tracking-wider ${isCustomer ? "text-emerald-700" : "text-amber-800"}`}>
+                          {p.party.type}
+                        </span>
+                        {p.receiptNo && (
+                          <span className="text-[10px] font-mono font-semibold text-slate-500">
+                            #{p.receiptNo}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-700">
                       {p.method}
@@ -388,11 +400,24 @@ export default function PaymentsPage() {
                       &quot;{p.notes}&quot;
                     </div>
                   )}
-                  <div className="flex justify-between border-t border-slate-100 pt-2 font-bold text-base">
-                    <span>Amount:</span>
-                    <span className={isCustomer ? "text-emerald-800" : "text-amber-900"}>
-                      PKR {p.amount.toLocaleString()}
-                    </span>
+                  <div className="flex items-center justify-between border-t border-slate-100 pt-2">
+                    <div>
+                      <span className="text-[10px] text-slate-400 uppercase font-bold block">Amount Paid</span>
+                      <span className={`font-bold text-base ${isCustomer ? "text-emerald-800" : "text-amber-900"}`}>
+                        PKR {p.amount.toLocaleString()}
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => window.open(`/api/pdf/payment-receipt/${p.id}`, "_blank")}
+                      className="h-7 text-xs gap-1 border-slate-300 text-slate-700 hover:bg-slate-100 font-medium"
+                      title={isCustomer ? "Print Payment Receipt" : "Print Payment Voucher"}
+                    >
+                      <Printer className="h-3 w-3 text-slate-600" />
+                      <span>{isCustomer ? "Receipt" : "Voucher"}</span>
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
@@ -573,7 +598,7 @@ export default function PaymentsPage() {
                     <option value="">General account payment (no invoice)</option>
                     {candidateInvoices.map((inv) => (
                       <option key={inv.id} value={inv.id}>
-                        {inv.invoiceNo} (Total: PKR {inv.totalAmount.toLocaleString()})
+                        [{inv.invType === "SALE" ? "Sale Inv" : "Purchase Bill"}] #{inv.invoiceNo} (Total: PKR {inv.totalAmount.toLocaleString()})
                       </option>
                     ))}
                   </select>

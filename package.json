@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "prisma generate && next build",
+    "dev": "NODE_OPTIONS=--max-old-space-size=1536 next dev",
+    "build": "prisma generate && NODE_OPTIONS=--max-old-space-size=1536 next build",
     "postbuild": "node scripts/copy-standalone-assets.js",
-    "start": "next start",
+    "start": "NODE_OPTIONS=--max-old-space-size=1536 next start",
     "lint": "next lint",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",

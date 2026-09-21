@@ -29,10 +29,8 @@ class KeyedAsyncQueue {
     });
 
     // Update queue chain with error recovery
-    this.queues.set(
-      key,
-      currentPromise.then(() => nextPromise).catch(() => nextPromise),
-    );
+    const queueTail = currentPromise.then(() => nextPromise).catch(() => nextPromise);
+    this.queues.set(key, queueTail);
 
     try {
       await Promise.race([currentPromise, timeoutPromise]);
@@ -43,7 +41,7 @@ class KeyedAsyncQueue {
     return () => {
       releaseLock();
       // Clean up queue entry if it has settled to prevent memory growth
-      if (this.queues.get(key) === nextPromise) {
+      if (this.queues.get(key) === queueTail) {
         this.queues.delete(key);
       }
     };

@@ -7,21 +7,38 @@ export const purchaseOrderItemSchema = z.object({
   unitCost: z.coerce.number().min(0, "Unit cost must be 0 or greater"),
 });
 
-export const purchaseOrderSchema = z.object({
-  id: z.string().optional(),
-  supplierId: z.string().min(1, "Supplier is required"),
-  locationId: z.string().min(1, "Location is required"),
-  date: z.coerce.date(),
-  status: z.nativeEnum(PurchaseOrderStatus).default(PurchaseOrderStatus.DRAFT),
-  notes: z.string().trim().max(1000).optional().or(z.literal("")),
-  items: z.array(purchaseOrderItemSchema).min(1, "At least one item is required"),
-});
+export const purchaseOrderSchema = z
+  .object({
+    id: z.string().optional(),
+    supplierType: z.enum(["REGISTERED", "ONE_TIME"]).default("REGISTERED"),
+    supplierId: z.string().optional().nullable(),
+    oneTimeSupplierName: z.string().trim().max(200).optional().nullable(),
+    oneTimeSupplierPhone: z.string().trim().max(50).optional().nullable(),
+    saveSupplier: z.boolean().default(false),
+    locationId: z.string().min(1, "Location is required"),
+    date: z.coerce.date(),
+    status: z.nativeEnum(PurchaseOrderStatus).default(PurchaseOrderStatus.DRAFT),
+    notes: z.string().trim().max(1000).optional().or(z.literal("")),
+    items: z.array(purchaseOrderItemSchema).min(1, "At least one item is required"),
+  })
+  .refine(
+    (data) => {
+      if (data.supplierType === "REGISTERED") {
+        return Boolean(data.supplierId && data.supplierId.trim().length > 0);
+      }
+      return true;
+    },
+    {
+      message: "Please select a registered supplier",
+      path: ["supplierId"],
+    }
+  );
 
 export type PurchaseOrderInput = z.infer<typeof purchaseOrderSchema>;
 
 export const deliveryOrderItemSchema = z.object({
   productId: z.string().min(1, "Product is required"),
-  warehouseLotId: z.string().trim().optional().nullable(),
+  warehouseLotId: z.string().trim().min(1, "Warehouse lot must be specified for each delivery order item"),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unit: z.nativeEnum(Unit).default(Unit.PACKET),
 });

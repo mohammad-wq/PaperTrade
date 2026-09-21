@@ -194,13 +194,29 @@ export default function DeliveryOrdersPage() {
       setFormError("Please select valid items with quantities > 0 before previewing.");
       return;
     }
+    if (!locationId) {
+      setFormError("Please select a warehouse dispatch location.");
+      return;
+    }
+    const missingLot = items.find((i) => !i.warehouseLotId || !i.warehouseLotId.trim());
+    if (missingLot) {
+      const prod = products.find((p) => p.id === missingLot.productId);
+      setFormError(
+        `A warehouse lot must be specified for "${prod?.productNo ?? ""} ${prod?.name ?? "each item"}". All warehouse consignments require lot tracking.`
+      );
+      return;
+    }
     setPreviewLoading(true);
     try {
       const selectedCustomer = customers.find((c) => c.id === customerId);
       const selectedLoc = dbLocations.find((l) => l.id === locationId);
+      const activeDocNo = orders[0]?.doNo
+        ? orders[0].doNo.replace(/\d+$/, (n: string) => String(Number(n) + 1).padStart(n.length, "0"))
+        : `${new Date().getFullYear()}-001`;
+
       const payload = {
         type: "delivery-order",
-        docNumber: "DO-PREVIEW",
+        docNumber: activeDocNo,
         date: orderDate,
         partyName: orderType === "CUSTOMER" ? selectedCustomer?.name || "Customer" : "Internal Stock Transfer",
         partyPhone: selectedCustomer ? (selectedCustomer as any).phone || null : null,
@@ -233,6 +249,9 @@ export default function DeliveryOrdersPage() {
         throw new Error(errText || "Failed to generate preview PDF");
       }
 
+      if (pdfPreviewUrl) {
+        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       setPdfPreviewUrl(url);
@@ -259,7 +278,7 @@ export default function DeliveryOrdersPage() {
         setOrders(doRes.data as DORow[]);
       }
       if (partyRes.success && partyRes.data) {
-        const custList = (partyRes.data as PartyOption[]).filter((p) => p.type === "CUSTOMER");
+        const custList = partyRes.data as PartyOption[];
         setCustomers(custList);
       }
       if (prodRes.success && prodRes.data) {
@@ -293,6 +312,12 @@ export default function DeliveryOrdersPage() {
     return Array.from(map.values());
   }, [dbLocations, orders]);
 
+  const warehouseLocations = useMemo(() => {
+    const list = locations.filter((l) => l.type === "WAREHOUSE");
+    if (list.length > 0) return list;
+    return locations.filter((l) => !l.name.toLowerCase().includes("shop"));
+  }, [locations]);
+
   const selectedSourceLocation = useMemo(
     () => locations.find((l) => l.id === locationId),
     [locations, locationId],
@@ -303,7 +328,7 @@ export default function DeliveryOrdersPage() {
     [warehouseLots, locationId],
   );
 
-  const showLotSelector = selectedSourceLocation?.type === "WAREHOUSE" || sourceLocationLots.length > 0;
+  const showLotSelector = true; // Consignments on delivery orders require lot tracking
 
   const filteredOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -449,8 +474,16 @@ export default function DeliveryOrdersPage() {
         return;
       }
     }
-    if (items.some((i) => !i.productId || i.quantity <= 0)) {
-      setFormError("All line items must have a valid product and quantity > 0.");
+    if (!locationId) {
+      setFormError("Please select a warehouse dispatch location.");
+      return;
+    }
+    const missingLot = items.find((i) => !i.warehouseLotId || !i.warehouseLotId.trim());
+    if (missingLot) {
+      const prod = products.find((p) => p.id === missingLot.productId);
+      setFormError(
+        `A warehouse lot must be specified for "${prod?.productNo ?? ""} ${prod?.name ?? "each item"}". All warehouse consignments require lot tracking.`
+      );
       return;
     }
 
@@ -890,10 +923,10 @@ export default function DeliveryOrdersPage() {
                         className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
                         required
                       >
-                        <option value="">Select customer</option>
+                        <option value="">Select party</option>
                         {customers.map((c) => (
                           <option key={c.id} value={c.id}>
-                            {c.name}
+                            {c.name} {c.type ? `[${c.type}]` : ""}
                           </option>
                         ))}
                       </select>
@@ -901,7 +934,7 @@ export default function DeliveryOrdersPage() {
 
                     <div className="space-y-1">
                       <Label htmlFor="dolocation" className="text-xs font-semibold">
-                        Dispatch Location <span className="text-rose-500">*</span>
+                        Dispatch Warehouse <span className="text-rose-500">*</span>
                       </Label>
                       <select
                         id="dolocation"
@@ -910,10 +943,10 @@ export default function DeliveryOrdersPage() {
                         className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
                         required
                       >
-                        <option value="">Select location</option>
-                        {locations.map((loc) => (
+                        <option value="">Select Warehouse *</option>
+                        {warehouseLocations.map((loc) => (
                           <option key={loc.id} value={loc.id}>
-                            {loc.name} {loc.type === "WAREHOUSE" ? "(Warehouse)" : ""}
+                            {loc.name} [Warehouse]
                           </option>
                         ))}
                       </select>
@@ -1066,12 +1099,16 @@ export default function DeliveryOrdersPage() {
                           <select
                             value={item.warehouseLotId || ""}
                             onChange={(e) => handleLotChange(idx, e.target.value)}
-                            className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs"
+                            className={cn(
+                              "w-full rounded-md border px-2 py-1.5 text-xs font-mono",
+                              !item.warehouseLotId ? "border-rose-300 bg-rose-50/40 text-rose-900" : "border-slate-200 bg-white"
+                            )}
+                            required
                           >
-                            <option value="">No Lot</option>
+                            <option value="">Select Lot *</option>
                             {sourceLocationLots.map((lot) => (
                               <option key={lot.id} value={lot.id}>
-                                {lot.lotNumber} {lot.description ? `(${lot.description})` : ""}
+                                #{lot.lotNumber}{lot.description ? ` (${lot.description})` : ""}
                               </option>
                             ))}
                           </select>
@@ -1270,13 +1307,16 @@ export default function DeliveryOrdersPage() {
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    const iframe = document.getElementById("doPdfPreviewIframe") as HTMLIFrameElement;
-                    iframe?.contentWindow?.print();
+                    if (pdfPreviewUrl) {
+                      const win = window.open(pdfPreviewUrl, "_blank");
+                      win?.focus();
+                    }
                   }}
                   className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
+                  title="Open in dedicated tab for safe printing"
                 >
                   <Printer className="h-3.5 w-3.5" />
-                  Print
+                  Print / Open Tab
                 </Button>
                 <a
                   href={pdfPreviewUrl}
@@ -1287,7 +1327,13 @@ export default function DeliveryOrdersPage() {
                   Download
                 </a>
                 <button
-                  onClick={() => setShowPdfPreviewModal(false)}
+                  onClick={() => {
+                    setShowPdfPreviewModal(false);
+                    if (pdfPreviewUrl) {
+                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
+                      setPdfPreviewUrl(null);
+                    }
+                  }}
                   className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
                   title="Close Preview"
                 >

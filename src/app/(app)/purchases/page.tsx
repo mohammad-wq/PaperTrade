@@ -131,6 +131,9 @@ export default function PurchasesPage() {
   const [submittingQuickLot, setSubmittingQuickLot] = useState(false);
 
   // Form state
+  const [supplierType, setSupplierType] = useState<"REGISTERED" | "ONE_TIME">("REGISTERED");
+  const [oneTimeSupplierName, setOneTimeSupplierName] = useState("");
+  const [oneTimeSupplierPhone, setOneTimeSupplierPhone] = useState("");
   const [supplierId, setSupplierId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [purchaseOrderId, setPurchaseOrderId] = useState("");
@@ -180,16 +183,30 @@ export default function PurchasesPage() {
     }
     setPreviewLoading(true);
     try {
-      const selectedSupplier = suppliers.find((s) => s.id === supplierId);
       const selectedLoc = dbLocations.find((l) => l.id === locationId);
       const totalCost = items.reduce((sum, i) => sum + (i.quantity || 0) * (i.unitCost || 0), 0);
 
+      let partyName = "Market Vendor";
+      let partyPhone: string | null = null;
+      if (supplierType === "REGISTERED") {
+        const selectedSupplier = suppliers.find((s) => s.id === supplierId);
+        partyName = selectedSupplier?.name || "Paper Mill / Supplier";
+        partyPhone = selectedSupplier ? (selectedSupplier as any).phone || null : null;
+      } else {
+        partyName = oneTimeSupplierName.trim() || "Market Vendor";
+        partyPhone = oneTimeSupplierPhone.trim() || null;
+      }
+
+      const activeDocNo = invoices[0]?.invoiceNo
+        ? invoices[0].invoiceNo.replace(/\d+$/, (n) => String(Number(n) + 1).padStart(n.length, "0"))
+        : `${new Date().getFullYear()}-001`;
+
       const payload = {
         type: "purchase-invoice",
-        docNumber: "PINV-PREVIEW",
+        docNumber: activeDocNo,
         date: invoiceDate,
-        partyName: selectedSupplier?.name || "Paper Mill / Supplier",
-        partyPhone: selectedSupplier ? (selectedSupplier as any).phone || null : null,
+        partyName,
+        partyPhone,
         locationName: selectedLoc?.name || "Shop",
         referenceNo: purchaseOrderId ? `PO: ${pos.find((p) => p.id === purchaseOrderId)?.orderNo}` : null,
         totalAmount: totalCost,
@@ -219,6 +236,9 @@ export default function PurchasesPage() {
         throw new Error(errText || "Failed to generate preview PDF");
       }
 
+      if (pdfPreviewUrl) {
+        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       setPdfPreviewUrl(url);
@@ -246,7 +266,7 @@ export default function PurchasesPage() {
         setInvoices(invRes.data as PurchaseInvoiceRow[]);
       }
       if (partyRes.success && partyRes.data) {
-        const suppList = (partyRes.data as PartyOption[]).filter((p) => p.type === "SUPPLIER");
+        const suppList = partyRes.data as PartyOption[];
         setSuppliers(suppList);
       }
       if (prodRes.success && prodRes.data) {
@@ -424,9 +444,12 @@ export default function PurchasesPage() {
     e.preventDefault();
     setFormError(null);
 
-    if (!supplierId) {
-      setFormError("Please select a supplier.");
+    if (supplierType === "REGISTERED" && !supplierId) {
+      setFormError("Please select a registered supplier.");
       return;
+    }
+    if (supplierType === "ONE_TIME" && !oneTimeSupplierName.trim()) {
+      setOneTimeSupplierName("Market Vendor");
     }
     if (!locationId) {
       setFormError("Please select a receiving location.");
@@ -448,7 +471,10 @@ export default function PurchasesPage() {
     setSubmitting(true);
     try {
       const res = await createPurchaseInvoiceAction({
-        supplierId,
+        supplierType,
+        supplierId: supplierType === "REGISTERED" ? supplierId : undefined,
+        oneTimeSupplierName: supplierType === "ONE_TIME" ? (oneTimeSupplierName.trim() || "Market Vendor") : undefined,
+        oneTimeSupplierPhone: supplierType === "ONE_TIME" ? (oneTimeSupplierPhone.trim() || null) : undefined,
         locationId,
         purchaseOrderId: purchaseOrderId || null,
         date: new Date(invoiceDate),
@@ -743,33 +769,91 @@ export default function PurchasesPage() {
             )}
 
             <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+              {/* Supplier Type Toggle */}
+              <div className="flex items-center gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-md w-fit">
+                <button
+                  type="button"
+                  onClick={() => setSupplierType("REGISTERED")}
+                  className={`px-3 py-1 rounded text-xs font-semibold transition-all ${
+                    supplierType === "REGISTERED"
+                      ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+                  }`}
+                >
+                  Registered Supplier
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSupplierType("ONE_TIME");
+                    if (!oneTimeSupplierName) setOneTimeSupplierName("Market Vendor");
+                  }}
+                  className={`px-3 py-1 rounded text-xs font-semibold transition-all ${
+                    supplierType === "ONE_TIME"
+                      ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+                  }`}
+                >
+                  One-Time / Market Vendor
+                </button>
+              </div>
+
               <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="supplier" className="text-xs font-semibold">
-                      Supplier <span className="text-rose-500">*</span>
-                    </Label>
-                    {selectedSupplier && (
-                      <span className="text-[11px] text-slate-500">
-                        Payable: <strong className="text-amber-800">PKR {Number(selectedSupplier.balance || 0).toLocaleString()}</strong>
-                      </span>
-                    )}
+                {supplierType === "REGISTERED" ? (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="supplier" className="text-xs font-semibold">
+                        Supplier Party <span className="text-rose-500">*</span>
+                      </Label>
+                      {selectedSupplier && (
+                        <span className="text-[11px] text-slate-500">
+                          Payable: <strong className="text-amber-800">PKR {Number(selectedSupplier.balance || 0).toLocaleString()}</strong>
+                        </span>
+                      )}
+                    </div>
+                    <select
+                      id="supplier"
+                      value={supplierId}
+                      onChange={(e) => setSupplierId(e.target.value)}
+                      className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                      required={supplierType === "REGISTERED"}
+                    >
+                      <option value="">Select party from directory</option>
+                      {suppliers.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} {s.type ? `[${s.type}]` : ""}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <select
-                    id="supplier"
-                    value={supplierId}
-                    onChange={(e) => setSupplierId(e.target.value)}
-                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
-                    required
-                  >
-                    <option value="">Select supplier</option>
-                    {suppliers.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                ) : (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-semibold">
+                        Vendor Name <span className="text-rose-500">*</span>
+                      </Label>
+                      <div className="flex gap-1">
+                        {["Market Vendor", "Cash Supplier"].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => setOneTimeSupplierName(preset)}
+                            className="text-[10px] text-emerald-700 hover:text-emerald-900 hover:underline"
+                          >
+                            +{preset}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <Input
+                      value={oneTimeSupplierName}
+                      onChange={(e) => setOneTimeSupplierName(e.target.value)}
+                      placeholder="e.g. Market Vendor, Cash Supplier"
+                      className="h-8 text-xs bg-white"
+                      required={supplierType === "ONE_TIME"}
+                    />
+                  </div>
+                )}
 
                 <div className="space-y-1">
                   <Label htmlFor="location" className="text-xs font-semibold">
@@ -1085,13 +1169,16 @@ export default function PurchasesPage() {
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    const iframe = document.getElementById("purPdfPreviewIframe") as HTMLIFrameElement;
-                    iframe?.contentWindow?.print();
+                    if (pdfPreviewUrl) {
+                      const win = window.open(pdfPreviewUrl, "_blank");
+                      win?.focus();
+                    }
                   }}
                   className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
+                  title="Open in dedicated tab for safe printing"
                 >
                   <Printer className="h-3.5 w-3.5" />
-                  Print
+                  Print / Open Tab
                 </Button>
                 <a
                   href={pdfPreviewUrl}
@@ -1102,7 +1189,13 @@ export default function PurchasesPage() {
                   Download
                 </a>
                 <button
-                  onClick={() => setShowPdfPreviewModal(false)}
+                  onClick={() => {
+                    setShowPdfPreviewModal(false);
+                    if (pdfPreviewUrl) {
+                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
+                      setPdfPreviewUrl(null);
+                    }
+                  }}
                   className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
                   title="Close Preview"
                 >

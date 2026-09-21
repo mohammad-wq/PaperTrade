@@ -153,11 +153,14 @@ export default function LedgerPage() {
   async function handlePreviewPdf() {
     setPreviewLoading(true);
     try {
-      const url = `/api/pdf/reports/general-ledger?startDate=${startDate}&endDate=${endDate}&partyId=${partyId !== "ALL" ? partyId : ""}&accountType=${accountType !== "ALL" ? accountType : ""}`;
+      const url = `/api/pdf/reports/general-ledger?startDate=${startDate}&endDate=${endDate}&partyId=${partyId !== "ALL" ? partyId : ""}&accountType=${accountType !== "ALL" ? accountType : ""}&referenceType=${referenceType !== "ALL" ? referenceType : ""}`;
       const res = await fetch(url);
       if (!res.ok) {
         const text = await res.text();
         throw new Error(text || "Failed to render General Ledger PDF");
+      }
+      if (pdfPreviewUrl) {
+        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
       }
       const blob = await res.blob();
       const objUrl = URL.createObjectURL(blob);
@@ -271,7 +274,7 @@ export default function LedgerPage() {
           </Button>
 
           <a
-            href={`/api/pdf/reports/general-ledger?download=true&startDate=${startDate}&endDate=${endDate}&partyId=${partyId !== "ALL" ? partyId : ""}&accountType=${accountType !== "ALL" ? accountType : ""}`}
+            href={`/api/pdf/reports/general-ledger?download=true&startDate=${startDate}&endDate=${endDate}&partyId=${partyId !== "ALL" ? partyId : ""}&accountType=${accountType !== "ALL" ? accountType : ""}&referenceType=${referenceType !== "ALL" ? referenceType : ""}`}
             target="_blank"
             rel="noreferrer"
           >
@@ -322,20 +325,11 @@ export default function LedgerPage() {
                 className="w-full h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-medium"
               >
                 <option value="ALL">All Parties / General Accounts</option>
-                <optgroup label="Customers">
-                  {parties.filter((p) => p.type === "CUSTOMER").map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </optgroup>
-                <optgroup label="Suppliers">
-                  {parties.filter((p) => p.type === "SUPPLIER").map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </optgroup>
+                {parties.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} {p.type ? `[${p.type}]` : ""}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -416,7 +410,7 @@ export default function LedgerPage() {
                     setStartDate(e.target.value);
                     setDatePreset("CUSTOM");
                   }}
-                  className="h-7 text-xs w-32 bg-white dark:bg-slate-950"
+                  className="h-7 text-xs w-36 min-w-[145px] px-2 bg-white dark:bg-slate-950"
                 />
               </div>
               <div className="flex items-center gap-1">
@@ -428,7 +422,7 @@ export default function LedgerPage() {
                     setEndDate(e.target.value);
                     setDatePreset("CUSTOM");
                   }}
-                  className="h-7 text-xs w-32 bg-white dark:bg-slate-950"
+                  className="h-7 text-xs w-36 min-w-[145px] px-2 bg-white dark:bg-slate-950"
                 />
               </div>
               {(startDate || endDate || partyId !== "ALL" || accountType !== "ALL" || referenceType !== "ALL") && (
@@ -454,20 +448,20 @@ export default function LedgerPage() {
       </Card>
 
       {/* Main Ledger Table */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
-        <div className="overflow-x-auto max-h-[calc(100vh-270px)]">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden print:border-none print:shadow-none print:overflow-visible print:w-full">
+        <div className="overflow-x-auto max-h-[calc(100vh-270px)] print:overflow-visible print:max-h-none print:w-full">
+          <table className="w-full text-left text-xs border-collapse print:text-[8pt] print:table-auto">
+            <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider print:static print:bg-slate-200 print:text-black">
               <tr>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-10 text-center">#</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-24">Date</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-24">Account</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[160px]">Party Account</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-28">Reference</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[200px]">Description</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap w-28 font-bold text-emerald-800 dark:text-emerald-400">Debit (PKR)</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap w-28 font-bold text-amber-800 dark:text-amber-400">Credit (PKR)</th>
-                <th className="py-2 px-2.5 whitespace-nowrap text-right w-24 text-slate-500">By</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-10 text-center print:border-black print:px-1.5">#</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-24 print:border-black print:px-1.5">Date</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-24 print:border-black print:px-1.5">Account</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[160px] print:min-w-0 print:border-black print:px-1.5">Party Account</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-28 print:border-black print:px-1.5">Reference</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[200px] print:min-w-0 print:border-black print:px-1.5">Description</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap w-28 font-bold text-emerald-800 dark:text-emerald-400 print:border-black print:text-black print:px-1.5">Debit (PKR)</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap w-28 font-bold text-amber-800 dark:text-amber-400 print:border-black print:text-black print:px-1.5">Credit (PKR)</th>
+                <th className="py-2 px-2.5 whitespace-nowrap text-right w-24 text-slate-500 print:border-black print:text-black print:px-1.5">By</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
@@ -561,13 +555,16 @@ export default function LedgerPage() {
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    const iframe = document.getElementById("ledgerPdfPreviewIframe") as HTMLIFrameElement;
-                    iframe?.contentWindow?.print();
+                    if (pdfPreviewUrl) {
+                      const win = window.open(pdfPreviewUrl, "_blank");
+                      win?.focus();
+                    }
                   }}
                   className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
+                  title="Open in dedicated tab for safe printing"
                 >
                   <Printer className="h-3.5 w-3.5" />
-                  Print
+                  Print / Open Tab
                 </Button>
                 <a
                   href={pdfPreviewUrl}
@@ -578,7 +575,13 @@ export default function LedgerPage() {
                   Download
                 </a>
                 <button
-                  onClick={() => setShowPdfPreviewModal(false)}
+                  onClick={() => {
+                    setShowPdfPreviewModal(false);
+                    if (pdfPreviewUrl) {
+                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
+                      setPdfPreviewUrl(null);
+                    }
+                  }}
                   className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
                   title="Close Preview"
                 >

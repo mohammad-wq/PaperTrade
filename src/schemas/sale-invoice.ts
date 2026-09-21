@@ -3,6 +3,7 @@ import { PaymentMethod } from "@prisma/client";
 
 const lineItem = z.object({
   productId: z.string().min(1, "Product is required"),
+  locationId: z.string().optional().nullable(),
   warehouseLotId: z.string().optional().nullable(),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unitPrice: z.coerce.number().min(0),

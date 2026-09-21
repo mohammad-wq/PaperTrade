@@ -184,11 +184,9 @@ export default function InventoryPage() {
         const inventoryRows = result.data as unknown as InventoryRow[];
         setRows(inventoryRows);
         if (inventoryRows.length) {
-          if (!locationId) setLocationId(inventoryRows[0].locationId);
-          if (!fromLocationId) setFromLocationId(inventoryRows[0].locationId);
-          if (!toLocationId && inventoryRows.length > 1) {
-            setToLocationId(inventoryRows[1].locationId);
-          }
+          setLocationId((prev) => prev || inventoryRows[0].locationId);
+          setFromLocationId((prev) => prev || inventoryRows[0].locationId);
+          setToLocationId((prev) => prev || (inventoryRows.length > 1 ? inventoryRows[1].locationId : ""));
         }
       }
       if (lotsRes.success) {
@@ -197,7 +195,7 @@ export default function InventoryPage() {
     } finally {
       if (!isBackground) setLoading(false);
     }
-  }, [locationId, fromLocationId, toLocationId]);
+  }, []);
 
   useEffect(() => {
     void fetchRows();
@@ -878,21 +876,21 @@ export default function InventoryPage() {
 
       {/* Main Content Area */}
       {viewMode === "table" ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
-          <div className="overflow-x-auto max-h-[calc(100vh-230px)]">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden print:border-none print:shadow-none print:overflow-visible print:w-full">
+          <div className="overflow-x-auto max-h-[calc(100vh-230px)] print:overflow-visible print:max-h-none print:w-full">
+            <table className="w-full text-left text-xs border-collapse print:text-[8pt] print:table-auto">
+              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider print:static print:bg-slate-200 print:text-black">
                 <tr>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Code</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px]">Product Name</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Size & GSM</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Location</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap font-bold">Available</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Unit Wt (kg)</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap font-bold">Total Wt (kg)</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Tonnage (T)</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px]">Lots Breakdown</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Status</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Code</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px] print:min-w-0 print:border-black print:px-1.5">Product Name</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Size & GSM</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Location</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap font-bold print:border-black print:px-1.5">Available</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap print:border-black print:px-1.5">Unit Wt (kg)</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap font-bold print:border-black print:px-1.5">Total Wt (kg)</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap print:border-black print:px-1.5">Tonnage (T)</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px] print:hidden">Lots Breakdown</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap print:hidden">Status</th>
                   <th className="py-2 px-2.5 text-center whitespace-nowrap print:hidden">Actions</th>
                 </tr>
               </thead>
@@ -962,7 +960,7 @@ export default function InventoryPage() {
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 text-right whitespace-nowrap font-mono text-teal-800 font-semibold">
                           {totalLineWeightTonnes.toFixed(3)}
                         </td>
-                        <td className="py-1 px-2 border-r border-slate-200/60 text-[11px]">
+                        <td className="py-1 px-2 border-r border-slate-200/60 text-[11px] print:hidden">
                           {row.lots && row.lots.length > 0 ? (
                             <div className="flex flex-wrap gap-1 max-w-[280px]">
                               {row.lots.map((lot, lIdx) => (
@@ -979,7 +977,7 @@ export default function InventoryPage() {
                             <span className="text-slate-400 text-[10px] italic">Default lot</span>
                           )}
                         </td>
-                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 text-center whitespace-nowrap">
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 text-center whitespace-nowrap print:hidden">
                           {isOutOfStock ? (
                             <span className="rounded bg-rose-100 text-rose-800 text-[10px] px-1.5 py-0.5 font-semibold">
                               Out of Stock

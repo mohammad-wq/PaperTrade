@@ -9,7 +9,7 @@ import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { purchaseOrderSchema } from "@/schemas/order";
 import { deliveryOrderSchema } from "@/schemas/order";
-import { DeliveryOrderStatus, PurchaseOrderStatus, StockMovementType, Unit } from "@prisma/client";
+import { DeliveryOrderStatus, PartyType, PurchaseOrderStatus, StockMovementType, Unit } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { getActiveFinancialYear, getNextAtomicSequence } from "@/lib/financial-year";
 import { z } from "zod";
@@ -191,11 +191,62 @@ export async function createPurchaseOrderAction(raw: unknown) {
     const stockKeys = input.status === PurchaseOrderStatus.FULFILLED
       ? input.items.map((item) => `stock:${item.productId}:${input.locationId}`)
       : [];
-    const partyKey = `party:${input.supplierId}`;
+    const partyKey = input.supplierId ? `party:${input.supplierId}` : "party:one-time";
     const docKey = "doc:purchase_order";
     const lockKeys = [...stockKeys, partyKey, docKey];
 
     const res = await withResourceQueue(lockKeys, async (tx) => {
+      let targetSupplierId = input.supplierId;
+      if (input.supplierType === "ONE_TIME") {
+        const rawName = input.oneTimeSupplierName?.trim();
+        const isGeneric =
+          !rawName ||
+          rawName.toLowerCase() === "market vendor" ||
+          rawName.toLowerCase() === "cash vendor" ||
+          rawName.toLowerCase() === "cash supplier";
+        const finalName = isGeneric ? "Market Vendor" : rawName;
+
+        if (isGeneric) {
+          let genericParty = await tx.party.findFirst({
+            where: { name: "Market Vendor", type: PartyType.SUPPLIER },
+          });
+          if (!genericParty) {
+            genericParty = await tx.party.create({
+              data: {
+                name: "Market Vendor",
+                type: PartyType.SUPPLIER,
+                email: "vendor@internal.local",
+                phone: input.oneTimeSupplierPhone?.trim() || null,
+                isActive: true,
+              },
+            });
+          }
+          targetSupplierId = genericParty.id;
+        } else {
+          let existingParty = await tx.party.findFirst({
+            where: { name: { equals: finalName, mode: "insensitive" } },
+          });
+          if (existingParty) {
+            targetSupplierId = existingParty.id;
+          } else {
+            const newParty = await tx.party.create({
+              data: {
+                name: finalName,
+                type: PartyType.SUPPLIER,
+                phone: input.oneTimeSupplierPhone?.trim() || null,
+                isActive: true,
+              },
+            });
+            targetSupplierId = newParty.id;
+          }
+        }
+      } else {
+        if (!input.supplierId) {
+          throw userError("Please select a supplier.");
+        }
+        targetSupplierId = input.supplierId;
+      }
+
       const activeFy = await getActiveFinancialYear(tx);
       const { sequenceNo, formattedNumber: orderNo } = await getNextAtomicSequence(
         tx,
@@ -207,7 +258,7 @@ export async function createPurchaseOrderAction(raw: unknown) {
           orderNo,
           financialYearId: activeFy.id,
           sequenceNo,
-          supplierId: input.supplierId,
+          supplierId: targetSupplierId!,
           locationId: input.locationId,
           date: input.date,
           status: input.status,
@@ -373,6 +424,28 @@ export async function createDeliveryOrderAction(raw: unknown) {
     const lockKeys = [...stockKeys, ...(partyKey ? [partyKey] : []), docKey];
 
     const res = await withResourceQueue(lockKeys, async (tx) => {
+      // 1. Verify dispatch location is a WAREHOUSE
+      const dispatchLoc = await tx.location.findUnique({
+        where: { id: input.locationId },
+        select: { id: true, name: true, type: true },
+      });
+      if (!dispatchLoc || dispatchLoc.type !== "WAREHOUSE") {
+        throw userError("Delivery Orders must be dispatched from a Warehouse location.");
+      }
+
+      // 2. Verify all consignment items have lots specified
+      for (const item of input.items) {
+        if (!item.warehouseLotId || !item.warehouseLotId.trim()) {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+            select: { name: true, productNo: true },
+          });
+          throw userError(
+            `A warehouse lot must be specified for "${product?.productNo ?? ""} ${product?.name ?? ""}". All warehouse consignments require lot tracking.`
+          );
+        }
+      }
+
       const activeFy = await getActiveFinancialYear(tx);
       const { sequenceNo, formattedNumber: doNo } = await getNextAtomicSequence(
         tx,
@@ -585,7 +658,7 @@ export async function listLocationsAction() {
     await requireSession();
     return prisma.location.findMany({
       orderBy: { name: "asc" },
-      select: { id: true, name: true, address: true },
+      select: { id: true, name: true, address: true, type: true },
     });
   });
 }

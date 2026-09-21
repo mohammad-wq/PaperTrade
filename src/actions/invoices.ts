@@ -30,6 +30,8 @@ export async function listSaleInvoicesAction() {
         items: {
           include: {
             product: { select: { id: true, productNo: true, name: true, unit: true } },
+            location: { select: { id: true, name: true, type: true } },
+            warehouseLot: { select: { id: true, lotNumber: true } },
           },
         },
       },
@@ -58,7 +60,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
     }
     const input = parseInput(saleInvoiceSchema, raw);
 
-    const stockKeys = input.items.map((i) => `stock:${i.productId}:${input.locationId}`);
+    const stockKeys = input.items.map((i) => `stock:${i.productId}:${i.locationId || input.locationId}`);
     const partyKey = input.customerId ? `party:${input.customerId}` : "party:walkin";
     const docKey = "doc:sale_invoice";
     const doKey = input.deliveryOrderId ? `order:do:${input.deliveryOrderId}` : null;
@@ -156,16 +158,21 @@ export async function createSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // 2. Verify stock availability for each product at location inside locked transaction
+      // 2. Verify stock availability for each product at its specified location
       for (const item of input.items) {
-        const available = await getStockOnHand(item.productId, input.locationId, tx);
+        const itemLocId = item.locationId || input.locationId;
+        const available = await getStockOnHand(item.productId, itemLocId, tx);
         if (available < item.quantity) {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
             select: { name: true, productNo: true, unit: true },
           });
+          const loc = await tx.location.findUnique({
+            where: { id: itemLocId },
+            select: { name: true },
+          });
           throw userError(
-            `Insufficient stock for "${product?.productNo} - ${product?.name}". Available: ${available} ${product?.unit || "Packets"}, Requested: ${item.quantity}.`,
+            `Insufficient stock for "${product?.productNo} - ${product?.name}" at ${loc?.name || "location"}. Available: ${available} ${product?.unit || "Packets"}, Requested: ${item.quantity}.`,
           );
         }
       }
@@ -205,6 +212,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
+              locationId: item.locationId || input.locationId,
+              warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
               lineTotal: item.quantity * item.unitPrice,
@@ -225,13 +234,13 @@ export async function createSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // Create stock movements (SALE_OUT) at dispatch location only if not already deducted
+      // Create stock movements (SALE_OUT) at each item's specific location only if not already deducted
       if (!alreadyDeductedByDO) {
         for (const item of input.items) {
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: input.locationId,
+              locationId: item.locationId || input.locationId,
               warehouseLotId: item.warehouseLotId || null,
               type: StockMovementType.SALE_OUT,
               quantity: item.quantity,
@@ -277,8 +286,18 @@ export async function createSaleInvoiceAction(raw: unknown) {
 
       // If immediate or on-the-spot payment was made
       if (paidAmount > 0) {
+        const { sequenceNo: paymentSeq, formattedNumber: paymentFormatted } = await getNextAtomicSequence(
+          tx,
+          activeYear.id,
+          "PAYMENT_RECEIPT"
+        );
+        const receiptNo = `RCT-${paymentFormatted}`;
+
         const payment = await tx.payment.create({
           data: {
+            receiptNo,
+            financialYearId: activeYear.id,
+            sequenceNo: paymentSeq,
             partyId: targetCustomerId,
             saleInvoiceId: invoice.id,
             amount: paidAmount,
@@ -347,7 +366,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
     }
     const input = parseInput(updateSaleInvoiceSchema, raw);
 
-    const stockKeys = input.items.map((i) => `stock:${i.productId}:${input.locationId}`);
+    const stockKeys = input.items.map((i) => `stock:${i.productId}:${i.locationId || input.locationId}`);
     const partyKey = input.customerId ? `party:${input.customerId}` : "party:walkin";
     const docKey = "doc:sale_invoice";
     const invoiceKey = `invoice:${input.id}`;
@@ -474,16 +493,21 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         await tx.payment.delete({ where: { id: op.id } });
       }
 
-      // 3. Verify stock availability for each item (now that old stock movements are cleared)
+      // 3. Verify stock availability for each item at its specified location (now that old stock movements are cleared)
       for (const item of input.items) {
-        const available = await getStockOnHand(item.productId, input.locationId, tx);
+        const itemLocId = item.locationId || input.locationId;
+        const available = await getStockOnHand(item.productId, itemLocId, tx);
         if (available < item.quantity) {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
             select: { name: true, productNo: true, unit: true },
           });
+          const loc = await tx.location.findUnique({
+            where: { id: itemLocId },
+            select: { name: true },
+          });
           throw userError(
-            `Insufficient stock for "${product?.productNo} - ${product?.name}". Available: ${available} ${product?.unit || "Packets"}, Requested: ${item.quantity}.`,
+            `Insufficient stock for "${product?.productNo} - ${product?.name}" at ${loc?.name || "location"}. Available: ${available} ${product?.unit || "Packets"}, Requested: ${item.quantity}.`,
           );
         }
       }
@@ -523,6 +547,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         data: input.items.map((item) => ({
           invoiceId: existing.id,
           productId: item.productId,
+          locationId: item.locationId || input.locationId,
+          warehouseLotId: item.warehouseLotId || null,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           lineTotal: item.quantity * item.unitPrice,
@@ -546,7 +572,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: input.locationId,
+              locationId: item.locationId || input.locationId,
               warehouseLotId: item.warehouseLotId || null,
               type: StockMovementType.SALE_OUT,
               quantity: item.quantity,
@@ -592,8 +618,19 @@ export async function updateSaleInvoiceAction(raw: unknown) {
 
       // If immediate payment
       if (paidAmount > 0) {
+        const activeYear = existing.financialYearId ? { id: existing.financialYearId } : await getActiveFinancialYear(tx);
+        const { sequenceNo: paymentSeq, formattedNumber: paymentFormatted } = await getNextAtomicSequence(
+          tx,
+          activeYear.id,
+          "PAYMENT_RECEIPT"
+        );
+        const receiptNo = `RCT-${paymentFormatted}`;
+
         const payment = await tx.payment.create({
           data: {
+            receiptNo,
+            financialYearId: activeYear.id,
+            sequenceNo: paymentSeq,
             partyId: targetCustomerId,
             saleInvoiceId: existing.id,
             amount: paidAmount,
@@ -695,12 +732,76 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
     const input = parseInput(purchaseInvoiceSchema, raw);
 
     const stockKeys = input.items.map((i) => `stock:${i.productId}:${input.locationId}`);
-    const partyKey = `party:${input.supplierId}`;
+    const partyKey = input.supplierId ? `party:${input.supplierId}` : "party:one-time";
     const docKey = "doc:purchase_invoice";
     const poKey = input.purchaseOrderId ? `order:po:${input.purchaseOrderId}` : null;
     const lockKeys = [...stockKeys, partyKey, docKey, ...(poKey ? [poKey] : [])];
 
     const res = await withResourceQueue(lockKeys, async (tx) => {
+      let targetSupplierId = input.supplierId;
+      let supplierName = "";
+
+      if (input.supplierType === "ONE_TIME") {
+        const rawName = input.oneTimeSupplierName?.trim();
+        const isGeneric =
+          !rawName ||
+          rawName.toLowerCase() === "market vendor" ||
+          rawName.toLowerCase() === "cash vendor" ||
+          rawName.toLowerCase() === "cash supplier";
+        const finalName = isGeneric ? "Market Vendor" : rawName;
+
+        if (isGeneric) {
+          let genericParty = await tx.party.findFirst({
+            where: { name: "Market Vendor", type: PartyType.SUPPLIER },
+          });
+          if (!genericParty) {
+            genericParty = await tx.party.create({
+              data: {
+                name: "Market Vendor",
+                type: PartyType.SUPPLIER,
+                email: "vendor@internal.local",
+                phone: input.oneTimeSupplierPhone?.trim() || null,
+                isActive: true,
+              },
+            });
+          }
+          targetSupplierId = genericParty.id;
+          supplierName = genericParty.name;
+        } else {
+          let existingParty = await tx.party.findFirst({
+            where: {
+              name: { equals: finalName, mode: "insensitive" },
+            },
+          });
+          if (existingParty) {
+            targetSupplierId = existingParty.id;
+            supplierName = existingParty.name;
+          } else {
+            const newParty = await tx.party.create({
+              data: {
+                name: finalName,
+                type: PartyType.SUPPLIER,
+                phone: input.oneTimeSupplierPhone?.trim() || null,
+                isActive: true,
+              },
+            });
+            targetSupplierId = newParty.id;
+            supplierName = newParty.name;
+          }
+        }
+      } else {
+        if (!input.supplierId) {
+          throw userError("Please select a supplier.");
+        }
+        const supp = await tx.party.findUnique({
+          where: { id: input.supplierId },
+          select: { id: true, name: true },
+        });
+        if (!supp) throw userError("Supplier not found.");
+        targetSupplierId = supp.id;
+        supplierName = supp.name;
+      }
+
       const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
       
       const activeYear = await getActiveFinancialYear(tx);
@@ -711,7 +812,7 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           invoiceNo: formattedNumber,
           financialYearId: activeYear.id,
           sequenceNo,
-          supplierId: input.supplierId,
+          supplierId: targetSupplierId!,
           locationId: input.locationId,
           purchaseOrderId: input.purchaseOrderId || null,
           date: input.date,
@@ -786,14 +887,14 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
       // Supplier Payable (Credit)
       await tx.ledgerEntry.create({
         data: {
-          partyId: input.supplierId,
+          partyId: targetSupplierId!,
           accountType: AccountType.PAYABLE,
           debit: 0,
           credit: totalAmount,
           referenceType: "PURCHASE_INVOICE",
           referenceId: invoice.id,
           date: input.date,
-          description: `Payable for ${invoice.invoiceNo}`,
+          description: `Payable for ${invoice.invoiceNo} (${supplierName})`,
           createdById: session.user.id,
         },
       });

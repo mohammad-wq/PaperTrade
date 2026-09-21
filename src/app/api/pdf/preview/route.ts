@@ -39,12 +39,12 @@ export async function POST(request: NextRequest) {
       return isNaN(d.getTime()) ? format(new Date(), "dd/MM/yyyy") : format(d, "dd/MM/yyyy");
     };
 
-    let docTitle = "Sale Invoice (Draft Preview)";
-    if (type === "purchase-order") docTitle = "Purchase Order (Draft Preview)";
-    if (type === "delivery-order") docTitle = "Delivery Order (Draft Preview)";
-    if (type === "purchase-invoice") docTitle = "Purchase Invoice (Draft Preview)";
-    if (type === "sale-return") docTitle = "Credit Note (Draft Preview)";
-    if (type === "purchase-return") docTitle = "Debit Note (Draft Preview)";
+    let docTitle = "Sale Invoice";
+    if (type === "purchase-order") docTitle = "Purchase Order";
+    if (type === "delivery-order") docTitle = "Delivery Order";
+    if (type === "purchase-invoice") docTitle = "Purchase Invoice";
+    if (type === "sale-return") docTitle = "Credit Note";
+    if (type === "purchase-return") docTitle = "Debit Note";
 
     const docElement = React.createElement(DocumentPdfView, {
       docType: docTitle,

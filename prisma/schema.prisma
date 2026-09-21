@@ -155,9 +155,11 @@ model Location {
   stockMovements          StockMovement[]
   purchaseOrders          PurchaseOrder[]
   purchaseInvoices        PurchaseInvoice[]
+  purchaseInvoiceItems    PurchaseInvoiceItem[]
   deliveryOrders          DeliveryOrder[]          @relation("SourceLocation")
   deliveryOrdersIn        DeliveryOrder[]          @relation("DestinationLocation")
   saleInvoices            SaleInvoice[]
+  saleInvoiceItems        SaleInvoiceItem[]
   saleReturns             SaleReturn[]
   purchaseReturns         PurchaseReturn[]
   warehouseStorageCharges WarehouseStorageCharge[]
@@ -181,6 +183,7 @@ model WarehouseLot {
   stockMovements       StockMovement[]
   purchaseInvoiceItems PurchaseInvoiceItem[]
   deliveryOrderItems   DeliveryOrderItem[]
+  saleInvoiceItems     SaleInvoiceItem[]
 
   @@unique([locationId, lotNumber])
   @@index([locationId, isActive])
@@ -388,6 +391,7 @@ model PurchaseInvoiceItem {
   id             String        @id @default(cuid())
   invoiceId      String
   productId      String
+  locationId     String?
   warehouseLotId String?
   quantity       Decimal       @db.Decimal(14, 4)
   unitCost       Decimal       @db.Decimal(14, 4)
@@ -395,10 +399,12 @@ model PurchaseInvoiceItem {
 
   invoice      PurchaseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
   product      Product         @relation(fields: [productId], references: [id])
+  location     Location?       @relation(fields: [locationId], references: [id])
   warehouseLot WarehouseLot?   @relation(fields: [warehouseLotId], references: [id])
 
   @@index([invoiceId])
   @@index([productId])
+  @@index([locationId])
   @@index([warehouseLotId])
 }
 
@@ -496,12 +502,26 @@ model SaleInvoiceItem {
   quantity  Decimal @db.Decimal(14, 4)
   unitPrice Decimal @db.Decimal(14, 4)
   lineTotal Decimal @db.Decimal(14, 4)
+  id             String        @id @default(cuid())
+  invoiceId      String
+  productId      String
+  locationId     String?
+  warehouseLotId String?
+  quantity       Decimal       @db.Decimal(14, 4)
+  unitPrice      Decimal       @db.Decimal(14, 4)
+  lineTotal      Decimal       @db.Decimal(14, 4)
 
   invoice SaleInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
   product Product     @relation(fields: [productId], references: [id])
+  invoice      SaleInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  product      Product       @relation(fields: [productId], references: [id])
+  location     Location?     @relation(fields: [locationId], references: [id])
+  warehouseLot WarehouseLot? @relation(fields: [warehouseLotId], references: [id])
 
   @@index([invoiceId])
   @@index([productId])
+  @@index([locationId])
+  @@index([warehouseLotId])
 }
 
 model SaleReturn {

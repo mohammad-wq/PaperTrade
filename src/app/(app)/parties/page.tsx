@@ -645,19 +645,19 @@ function PartiesPageContent() {
 
       {/* Main Content: High-Density Table or Card Grid */}
       {viewMode === "table" ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
-          <div className="overflow-x-auto max-h-[calc(100vh-230px)]">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden print:border-none print:shadow-none print:overflow-visible print:w-full">
+          <div className="overflow-x-auto max-h-[calc(100vh-230px)] print:overflow-visible print:max-h-none print:w-full">
+            <table className="w-full text-left text-xs border-collapse print:text-[8pt] print:table-auto">
+              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider print:static print:bg-slate-200 print:text-black">
                 <tr>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Type</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px]">Party Name</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Phone / Contact</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Email</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[160px]">Address</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Credit Limit</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap font-bold">Ledger Balance</th>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Status</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Type</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px] print:min-w-0 print:border-black print:px-1.5">Party Name</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Phone / Contact</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Email</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[160px] print:min-w-0 print:border-black print:px-1.5">Address</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap print:border-black print:px-1.5">Credit Limit</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap font-bold print:border-black print:px-1.5">Ledger Balance</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap print:border-black print:px-1.5">Status</th>
                   <th className="py-2 px-2 text-center whitespace-nowrap print:hidden">Actions</th>
                 </tr>
               </thead>
@@ -746,13 +746,16 @@ function PartiesPageContent() {
                         </td>
 
                         {/* Active Status */}
-                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center whitespace-nowrap">
+                        <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center whitespace-nowrap print:border-black print:px-1">
                           <span
-                            className={`inline-block h-2 w-2 rounded-full ${
+                            className={`inline-block h-2 w-2 rounded-full print:hidden ${
                               p.isActive ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"
                             }`}
                             title={p.isActive ? "Active in Directory" : "Inactive"}
                           />
+                          <span className="hidden print:inline text-[7.5pt] font-mono">
+                            {p.isActive ? "Active" : "Inactive"}
+                          </span>
                         </td>
 
                         {/* Actions */}
