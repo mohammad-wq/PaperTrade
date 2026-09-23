@@ -15,6 +15,7 @@ import {
   Calendar,
   RotateCcw,
   CheckCircle2,
+  ArrowUpDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -23,7 +24,7 @@ import { Label } from "@/components/ui/label";
 import { listLedgerEntriesAction } from "@/actions/ledger";
 import { listPartiesAction } from "@/actions/parties";
 import { AccountType } from "@prisma/client";
-import { format } from "date-fns";
+import { formatDateTime } from "@/lib/utils";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 
 type LedgerRow = {
@@ -31,7 +32,10 @@ type LedgerRow = {
   accountType: AccountType;
   debit: number;
   credit: number;
-  date: Date;
+  runningBalance: number;
+  voucherType: string;
+  docNo: string;
+  date: Date | string;
   description: string;
   referenceType: string;
   referenceId: string;
@@ -43,6 +47,9 @@ export default function LedgerPage() {
   const [entries, setEntries] = useState<LedgerRow[]>([]);
   const [totalDebit, setTotalDebit] = useState(0);
   const [totalCredit, setTotalCredit] = useState(0);
+  const [openingBalance, setOpeningBalance] = useState(0);
+  const [closingBalance, setClosingBalance] = useState(0);
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [parties, setParties] = useState<Array<{ id: string; name: string; type: string }>>([]);
   const [loading, setLoading] = useState(true);
 
@@ -81,12 +88,15 @@ export default function LedgerPage() {
         referenceType: referenceType === "ALL" ? undefined : referenceType,
         startDate: startDate || undefined,
         endDate: endDate || undefined,
+        sortOrder,
       });
 
       if (res.success && res.data) {
-        setEntries(res.data.entries as LedgerRow[]);
+        setEntries(res.data.entries as unknown as LedgerRow[]);
         setTotalDebit(res.data.totalDebit);
         setTotalCredit(res.data.totalCredit);
+        setOpeningBalance(res.data.openingBalance);
+        setClosingBalance(res.data.closingBalance);
       }
     } finally {
       if (!isBackground) setLoading(false);
@@ -110,7 +120,7 @@ export default function LedgerPage() {
   useEffect(() => {
     void loadLedger();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [partyId, accountType, referenceType, startDate, endDate]);
+  }, [partyId, accountType, referenceType, startDate, endDate, sortOrder]);
 
   function applyDatePreset(preset: "ALL" | "TODAY" | "THIS_WEEK" | "THIS_MONTH" | "THIS_QUARTER" | "THIS_YEAR") {
     setDatePreset(preset);
@@ -180,6 +190,8 @@ export default function LedgerPage() {
       (e) =>
         e.description.toLowerCase().includes(q) ||
         e.referenceType.toLowerCase().includes(q) ||
+        (e.voucherType && e.voucherType.toLowerCase().includes(q)) ||
+        (e.docNo && e.docNo.toLowerCase().includes(q)) ||
         (e.party && e.party.name.toLowerCase().includes(q)),
     );
   }, [entries, query]);
@@ -199,7 +211,7 @@ export default function LedgerPage() {
             <p className="text-xs font-semibold uppercase">General Ledger Audit Statement</p>
           </div>
           <div className="text-right text-[10px] space-y-0.5">
-            <p>Printed: {new Date().toLocaleString()}</p>
+            <p>Printed: {formatDateTime(new Date())}</p>
             <p>Party Account: {selectedPartyObj ? `${selectedPartyObj.name} (${selectedPartyObj.type})` : "All Accounts"}</p>
             <p>Account Type: {accountType === "ALL" ? "All Types" : accountType}</p>
             <p>Period: {startDate ? startDate : "Beginning"} to {endDate ? endDate : "Present"}</p>
@@ -207,9 +219,12 @@ export default function LedgerPage() {
         </div>
         <div className="mt-2 flex gap-4 text-xs font-mono border-t border-black pt-1">
           <span>Entries: <strong>{filteredEntries.length}</strong></span>
+          {openingBalance !== 0 && (
+            <span>Opening (b/f): <strong>PKR {Math.abs(openingBalance).toLocaleString()} {openingBalance >= 0 ? "Dr" : "Cr"}</strong></span>
+          )}
           <span>Total Debits: <strong>PKR {totalDebit.toLocaleString()}</strong></span>
           <span>Total Credits: <strong>PKR {totalCredit.toLocaleString()}</strong></span>
-          <span>Net Difference: <strong>PKR {Math.abs(totalDebit - totalCredit).toLocaleString()}</strong></span>
+          <span>Closing Balance: <strong>PKR {Math.abs(closingBalance).toLocaleString()} {closingBalance >= 0 ? "Dr" : "Cr"}</strong></span>
         </div>
       </div>
 
@@ -224,7 +239,7 @@ export default function LedgerPage() {
               General Ledger
             </h1>
             <p className="text-[11px] text-slate-500">
-              Double-entry bookkeeping journal. Filter by party, date, transaction type, or account.
+              Traditional double-entry columnar register with real-time running balances.
             </p>
           </div>
         </div>
@@ -232,6 +247,11 @@ export default function LedgerPage() {
         <div className="flex flex-wrap items-center gap-2">
           {/* Counters */}
           <div className="hidden sm:flex items-center gap-2 text-xs font-mono">
+            {openingBalance !== 0 && (
+              <span className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-2 py-1 rounded">
+                Opening: <strong>PKR {Math.abs(openingBalance).toLocaleString()} {openingBalance >= 0 ? "Dr" : "Cr"}</strong>
+              </span>
+            )}
             <span className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded">
               Debits: <strong>PKR {totalDebit.toLocaleString()}</strong>
             </span>
@@ -240,14 +260,25 @@ export default function LedgerPage() {
             </span>
             <span
               className={`px-2 py-1 rounded border font-mono ${
-                totalDebit === totalCredit
-                  ? "bg-slate-100 text-slate-700 border-slate-200"
-                  : "bg-amber-50 text-amber-800 border-amber-200"
+                closingBalance >= 0
+                  ? "bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800"
+                  : "bg-amber-50 text-amber-900 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800"
               }`}
             >
-              Var: <strong>PKR {Math.abs(totalDebit - totalCredit).toLocaleString()}</strong>
+              Closing: <strong>PKR {Math.abs(closingBalance).toLocaleString()} {closingBalance >= 0 ? "Dr" : "Cr"}</strong>
             </span>
           </div>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSortOrder((s) => (s === "asc" ? "desc" : "asc"))}
+            className="h-8 text-xs border-slate-300 text-slate-700 gap-1.5"
+            title="Toggle chronological / reverse order"
+          >
+            <ArrowUpDown className="h-3.5 w-3.5" />
+            {sortOrder === "asc" ? "Oldest First" : "Newest First"}
+          </Button>
 
           <Button
             variant="outline"
@@ -359,9 +390,9 @@ export default function LedgerPage() {
                 className="w-full h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-medium"
               >
                 <option value="ALL">All Transaction Types</option>
-                <option value="SALE_INVOICE">Sale Invoices</option>
+                <option value="SALE_INVOICE">Sale Invoices (Estimates)</option>
                 <option value="PURCHASE_INVOICE">Purchase Invoices</option>
-                <option value="PAYMENT">Payments Received / Paid</option>
+                <option value="PAYMENT">Payments (Receipts & Vouchers)</option>
                 <option value="EXPENSE">Expenses</option>
                 <option value="SALE_RETURN">Sale Returns (Credit Notes)</option>
                 <option value="PURCHASE_RETURN">Purchase Returns (Debit Notes)</option>
@@ -410,7 +441,7 @@ export default function LedgerPage() {
                     setStartDate(e.target.value);
                     setDatePreset("CUSTOM");
                   }}
-                  className="h-7 text-xs w-36 min-w-[145px] px-2 bg-white dark:bg-slate-950"
+                  className="h-8 text-xs w-40 min-w-[155px] px-2.5 bg-white dark:bg-slate-950 border-slate-300"
                 />
               </div>
               <div className="flex items-center gap-1">
@@ -422,7 +453,7 @@ export default function LedgerPage() {
                     setEndDate(e.target.value);
                     setDatePreset("CUSTOM");
                   }}
-                  className="h-7 text-xs w-36 min-w-[145px] px-2 bg-white dark:bg-slate-950"
+                  className="h-8 text-xs w-40 min-w-[155px] px-2.5 bg-white dark:bg-slate-950 border-slate-300"
                 />
               </div>
               {(startDate || endDate || partyId !== "ALL" || accountType !== "ALL" || referenceType !== "ALL") && (
@@ -436,7 +467,7 @@ export default function LedgerPage() {
                     applyDatePreset("ALL");
                     setQuery("");
                   }}
-                  className="h-7 px-2 text-[11px] text-slate-500 hover:text-slate-800"
+                  className="h-8 px-2 text-[11px] text-slate-500 hover:text-slate-800"
                 >
                   <RotateCcw className="h-3 w-3 mr-1" />
                   Reset
@@ -447,91 +478,130 @@ export default function LedgerPage() {
         </CardContent>
       </Card>
 
-      {/* Main Ledger Table */}
+      {/* Main Columnar Ledger Table */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden print:border-none print:shadow-none print:overflow-visible print:w-full">
         <div className="overflow-x-auto max-h-[calc(100vh-270px)] print:overflow-visible print:max-h-none print:w-full">
           <table className="w-full text-left text-xs border-collapse print:text-[8pt] print:table-auto">
             <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider print:static print:bg-slate-200 print:text-black">
               <tr>
                 <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-10 text-center print:border-black print:px-1.5">#</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-24 print:border-black print:px-1.5">Date</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-24 print:border-black print:px-1.5">Account</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[160px] print:min-w-0 print:border-black print:px-1.5">Party Account</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-28 print:border-black print:px-1.5">Reference</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[200px] print:min-w-0 print:border-black print:px-1.5">Description</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-36 print:border-black print:px-1.5">Date & Time</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[220px] print:min-w-0 print:border-black print:px-1.5">Particulars / Account</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap w-36 print:border-black print:px-1.5">Voucher Type & No</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap w-28 font-bold text-emerald-800 dark:text-emerald-400 print:border-black print:text-black print:px-1.5">Debit (PKR)</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap w-28 font-bold text-amber-800 dark:text-amber-400 print:border-black print:text-black print:px-1.5">Credit (PKR)</th>
-                <th className="py-2 px-2.5 whitespace-nowrap text-right w-24 text-slate-500 print:border-black print:text-black print:px-1.5">By</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap w-32 font-bold text-slate-900 dark:text-slate-100 print:border-black print:text-black print:px-1.5">Balance</th>
+                <th className="py-2 px-2.5 whitespace-nowrap text-right w-20 text-slate-500 print:border-black print:text-black print:px-1.5">By</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-500 font-sans font-medium">
+                  <td colSpan={8} className="py-12 text-center text-slate-500 font-sans font-medium">
                     Loading ledger transactions...
                   </td>
                 </tr>
-              ) : filteredEntries.length === 0 ? (
+              ) : filteredEntries.length === 0 && openingBalance === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-500 font-sans font-medium">
+                  <td colSpan={8} className="py-12 text-center text-slate-500 font-sans font-medium">
                     No ledger entries found matching your selected criteria.
                   </td>
                 </tr>
               ) : (
-                filteredEntries.map((entry, idx) => (
-                  <tr
-                    key={entry.id}
-                    className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors"
-                  >
-                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center text-slate-400 font-sans text-[11px]">
-                      {idx + 1}
-                    </td>
-                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-700 dark:text-slate-300">
-                      {format(new Date(entry.date), "dd/MM/yyyy")}
-                    </td>
-                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap font-sans font-semibold text-[11px] text-slate-900 dark:text-slate-100">
-                      {entry.accountType}
-                    </td>
-                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-sans">
-                      {entry.party ? (
-                        <span className="font-semibold text-emerald-800 dark:text-emerald-400">
-                          {entry.party.name}{" "}
-                          <span className="text-[10px] font-normal text-slate-500">({entry.party.type})</span>
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 italic text-[11px]">General Ledger</span>
-                      )}
-                    </td>
-                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-600 dark:text-slate-400 text-[11px]">
-                      {entry.referenceType}
-                    </td>
-                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-sans text-slate-700 dark:text-slate-300">
-                      {entry.description}
-                    </td>
-                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-emerald-700 dark:text-emerald-400">
-                      {entry.debit > 0 ? entry.debit.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "—"}
-                    </td>
-                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-amber-700 dark:text-amber-400">
-                      {entry.credit > 0 ? entry.credit.toLocaleString(undefined, { minimumFractionDigits: 2 }) : "—"}
-                    </td>
-                    <td className="py-1.5 px-2.5 whitespace-nowrap text-right text-[10px] text-slate-400 font-sans truncate">
-                      {entry.createdBy?.name || "System"}
-                    </td>
-                  </tr>
-                ))
+                <>
+                  {openingBalance !== 0 && (
+                    <tr className="bg-slate-50/80 dark:bg-slate-800/40 font-semibold border-b border-slate-200/80 dark:border-slate-700">
+                      <td className="py-2 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center text-slate-400 font-sans text-[11px]">—</td>
+                      <td className="py-2 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-500 text-[11px]">
+                        {startDate ? `Prior to ${startDate}` : "Beginning"}
+                      </td>
+                      <td className="py-2 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-sans">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">Opening Balance (b/f)</span>
+                        <span className="text-[10px] text-slate-400 ml-1.5">Cumulative balance brought forward</span>
+                      </td>
+                      <td className="py-2 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-400 text-[11px]">—</td>
+                      <td className="py-2 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-emerald-700 dark:text-emerald-400">
+                        {openingBalance > 0 ? openingBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+                      </td>
+                      <td className="py-2 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-amber-700 dark:text-amber-400">
+                        {openingBalance < 0 ? Math.abs(openingBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+                      </td>
+                      <td className="py-2 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-slate-900 dark:text-slate-100">
+                        {Math.abs(openingBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {openingBalance >= 0 ? "Dr" : "Cr"}
+                      </td>
+                      <td className="py-2 px-2.5 whitespace-nowrap text-right text-[10px] text-slate-400 font-sans">—</td>
+                    </tr>
+                  )}
+                  {filteredEntries.map((entry, idx) => (
+                    <tr
+                      key={entry.id}
+                      className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors"
+                    >
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center text-slate-400 font-sans text-[11px]">
+                        {idx + 1}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-700 dark:text-slate-300 text-[11px]">
+                        {formatDateTime(entry.date)}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-sans">
+                        <div className="flex flex-col">
+                          <div className="flex items-center gap-1.5">
+                            {entry.party ? (
+                              <span className="font-semibold text-emerald-800 dark:text-emerald-400">
+                                {entry.party.name}{" "}
+                                <span className="text-[10px] font-normal text-slate-500">[{entry.party.type}]</span>
+                              </span>
+                            ) : (
+                              <span className="text-slate-600 dark:text-slate-300 font-medium">General Account</span>
+                            )}
+                            <span className="text-[10px] px-1 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">
+                              {entry.accountType}
+                            </span>
+                          </div>
+                          {entry.description && (
+                            <span className="text-[11px] text-slate-600 dark:text-slate-400">
+                              {entry.description}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-700 dark:text-slate-300 font-mono text-[11px]">
+                        <span className="font-medium text-slate-800 dark:text-slate-200">{entry.voucherType || entry.referenceType}</span>{" "}
+                        <span className="text-slate-500">{entry.docNo || (entry.referenceId.length > 10 ? `#${entry.referenceId.slice(-6)}` : entry.referenceId)}</span>
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-emerald-700 dark:text-emerald-400">
+                        {entry.debit > 0 ? entry.debit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-amber-700 dark:text-amber-400">
+                        {entry.credit > 0 ? entry.credit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-slate-900 dark:text-slate-100">
+                        {typeof entry.runningBalance === "number"
+                          ? `${Math.abs(entry.runningBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${entry.runningBalance >= 0 ? "Dr" : "Cr"}`
+                          : "—"}
+                      </td>
+                      <td className="py-1.5 px-2.5 whitespace-nowrap text-right text-[10px] text-slate-400 font-sans truncate">
+                        {entry.createdBy?.name || "System"}
+                      </td>
+                    </tr>
+                  ))}
+                </>
               )}
             </tbody>
-            {filteredEntries.length > 0 && (
+            {(filteredEntries.length > 0 || openingBalance !== 0) && (
               <tfoot className="bg-slate-100 dark:bg-slate-800 font-bold border-t-2 border-slate-300 dark:border-slate-700 font-mono text-xs">
                 <tr>
-                  <td colSpan={6} className="py-2 px-2.5 text-right font-sans uppercase">
-                    Total Period Activity ({filteredEntries.length} entries):
+                  <td colSpan={4} className="py-2.5 px-3 text-right font-sans uppercase">
+                    Period Total Activity & Closing Balance:
                   </td>
-                  <td className="py-2 px-2.5 text-right text-emerald-800 dark:text-emerald-400">
-                    PKR {totalDebit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <td className="py-2.5 px-2.5 text-right text-emerald-800 dark:text-emerald-400">
+                    PKR {totalDebit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </td>
-                  <td className="py-2 px-2.5 text-right text-amber-800 dark:text-amber-400">
-                    PKR {totalCredit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <td className="py-2.5 px-2.5 text-right text-amber-800 dark:text-amber-400">
+                    PKR {totalCredit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="py-2.5 px-2.5 text-right text-slate-900 dark:text-slate-100">
+                    PKR {Math.abs(closingBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {closingBalance >= 0 ? "Dr" : "Cr"}
                   </td>
                   <td></td>
                 </tr>

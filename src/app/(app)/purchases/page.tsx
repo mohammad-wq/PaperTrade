@@ -26,16 +26,22 @@ import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { listWarehouseLotsAction, createWarehouseLotAction } from "@/actions/warehouse-lots";
 import { format } from "date-fns";
-import { cn } from "@/lib/utils";
+import { formatDateTime, cn } from "@/lib/utils";
+import { formatSequenceDisplay } from "@/lib/financial-year";
+import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 
 type PurchaseInvoiceRow = {
   id: string;
   invoiceNo: string;
+  sequenceNo?: number;
   date: Date;
   status: string;
   totalAmount: number;
+  amountPaid: number;
+  balanceDue: number;
+  freightCharges?: number;
   supplier: { id: string; name: string; phone: string | null };
   location: { id: string; name: string };
   purchaseOrder?: { id: string; orderNo: string } | null;
@@ -45,6 +51,7 @@ type PurchaseInvoiceRow = {
     quantity: number;
     unitCost: number;
     lineTotal: number;
+    locationId?: string;
     warehouseLot?: { id: string; lotNumber: string } | null;
     product: { id: string; productNo: string; name: string; unit: string };
   }>;
@@ -75,6 +82,7 @@ type POOption = {
 
 type LineItem = {
   productId: string;
+  locationId?: string;
   warehouseLotId?: string;
   quantity: number;
   unitCost: number;
@@ -137,9 +145,12 @@ export default function PurchasesPage() {
   const [supplierId, setSupplierId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [purchaseOrderId, setPurchaseOrderId] = useState("");
-  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 10));
+  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 16));
   const [notes, setNotes] = useState("");
-  const [items, setItems] = useState<LineItem[]>([{ productId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
+  const [amountPaid, setAmountPaid] = useState<string>("0");
+  const [freightCharges, setFreightCharges] = useState<string>("0");
+  const [paymentMethod, setPaymentMethod] = useState<"CASH" | "BANK" | "CHEQUE" | "OTHER">("CASH");
+  const [items, setItems] = useState<LineItem[]>([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
@@ -356,6 +367,26 @@ export default function PurchasesPage() {
     [items],
   );
 
+  const numFreight = useMemo(
+    () => Math.max(0, parseFloat(freightCharges) || 0),
+    [freightCharges]
+  );
+
+  const invoiceGrandTotal = useMemo(
+    () => invoiceSubtotal + numFreight,
+    [invoiceSubtotal, numFreight]
+  );
+
+  const numPaid = useMemo(
+    () => Math.max(0, parseFloat(amountPaid) || 0),
+    [amountPaid]
+  );
+
+  const balanceDue = useMemo(
+    () => Math.max(0, invoiceGrandTotal - numPaid),
+    [invoiceGrandTotal, numPaid]
+  );
+
   const selectedSupplier = useMemo(
     () => suppliers.find((s) => s.id === supplierId),
     [suppliers, supplierId],
@@ -365,12 +396,25 @@ export default function PurchasesPage() {
     setLocationId(newLocId);
     setItems((prev) =>
       prev.map((it) => {
+        const itemLoc = it.locationId || newLocId;
         const lotMatches = warehouseLots.some(
-          (l) => l.id === it.warehouseLotId && l.locationId === newLocId,
+          (l) => l.id === it.warehouseLotId && l.locationId === itemLoc,
         );
         return lotMatches ? it : { ...it, warehouseLotId: "" };
       }),
     );
+  }
+
+  function handleItemLocationChange(index: number, newLocId: string) {
+    const updated = [...items];
+    updated[index].locationId = newLocId;
+    const lotMatches = warehouseLots.some(
+      (l) => l.id === updated[index].warehouseLotId && l.locationId === newLocId,
+    );
+    if (!lotMatches) {
+      updated[index].warehouseLotId = "";
+    }
+    setItems(updated);
   }
 
   function handleProductChange(index: number, pId: string) {
@@ -402,7 +446,8 @@ export default function PurchasesPage() {
   }
 
   function addItem() {
-    setItems([...items, { productId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
+    const lastLocId = items[items.length - 1]?.locationId || locationId || (locations[0]?.id ?? "");
+    setItems([...items, { productId: "", locationId: lastLocId, warehouseLotId: "", quantity: 1, unitCost: 0 }]);
   }
 
   function removeItem(index: number) {
@@ -412,11 +457,15 @@ export default function PurchasesPage() {
 
   async function handleCreateQuickLot(e: React.FormEvent) {
     e.preventDefault();
-    if (!locationId || !quickLotNumber.trim()) return;
+    const targetLocId =
+      (quickLotLineIndex !== null ? items[quickLotLineIndex]?.locationId : null) ||
+      locationId ||
+      (locations[0]?.id ?? "");
+    if (!targetLocId || !quickLotNumber.trim()) return;
     setSubmittingQuickLot(true);
     try {
       const res = await createWarehouseLotAction({
-        locationId,
+        locationId: targetLocId,
         lotNumber: quickLotNumber.trim(),
         description: quickLotDesc.trim() || undefined,
       });
@@ -451,7 +500,8 @@ export default function PurchasesPage() {
     if (supplierType === "ONE_TIME" && !oneTimeSupplierName.trim()) {
       setOneTimeSupplierName("Market Vendor");
     }
-    if (!locationId) {
+    const finalLocationId = locationId || items[0]?.locationId || (locations[0]?.id ?? "");
+    if (!finalLocationId) {
       setFormError("Please select a receiving location.");
       return;
     }
@@ -475,12 +525,16 @@ export default function PurchasesPage() {
         supplierId: supplierType === "REGISTERED" ? supplierId : undefined,
         oneTimeSupplierName: supplierType === "ONE_TIME" ? (oneTimeSupplierName.trim() || "Market Vendor") : undefined,
         oneTimeSupplierPhone: supplierType === "ONE_TIME" ? (oneTimeSupplierPhone.trim() || null) : undefined,
-        locationId,
+        locationId: finalLocationId,
         purchaseOrderId: purchaseOrderId || null,
         date: new Date(invoiceDate),
         notes,
+        amountPaid: numPaid,
+        freightCharges: numFreight,
+        paymentMethod: numPaid > 0 ? paymentMethod : undefined,
         items: items.map((i) => ({
           productId: i.productId,
+          locationId: i.locationId || finalLocationId,
           warehouseLotId: i.warehouseLotId || undefined,
           quantity: i.quantity,
           unitCost: i.unitCost,
@@ -494,8 +548,10 @@ export default function PurchasesPage() {
         setSupplierId("");
         setLocationId("");
         setPurchaseOrderId("");
-        setInvoiceDate(new Date().toISOString().slice(0, 10));
-        setItems([{ productId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
+        setInvoiceDate(new Date().toISOString().slice(0, 16));
+        setAmountPaid("0");
+        setFreightCharges("0");
+        setItems([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
         setNotes("");
         await loadData();
       }
@@ -642,9 +698,11 @@ export default function PurchasesPage() {
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="flex items-center gap-1.5">
-                      <CardTitle className="text-base font-bold text-slate-900">{inv.invoiceNo}</CardTitle>
+                      <CardTitle className="text-base font-bold text-slate-900">
+                        #{formatSequenceDisplay(inv.sequenceNo, inv.invoiceNo)}
+                      </CardTitle>
                       {inv.financialYear && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono" title={inv.invoiceNo}>
                           {inv.financialYear.label}
                         </span>
                       )}
@@ -674,8 +732,8 @@ export default function PurchasesPage() {
                   <span className="font-semibold text-slate-800">{inv.location.name}</span>
                 </div>
                 <div className="flex justify-between text-slate-600">
-                  <span>Date:</span>
-                  <span>{format(new Date(inv.date), "dd/MM/yyyy")}</span>
+                  <span>Date & Time:</span>
+                  <span className="font-mono text-[11px]">{formatDateTime(inv.date)}</span>
                 </div>
                 {inv.purchaseOrder && (
                   <div className="flex justify-between text-slate-600">
@@ -694,9 +752,19 @@ export default function PurchasesPage() {
                     )}
                   </div>
                 </div>
-                <div className="flex justify-between border-t border-slate-100 pt-2 font-bold text-sm">
+                <div className="flex justify-between border-t border-slate-100 pt-2 font-bold text-xs">
                   <span>Total Amount:</span>
                   <span className="text-slate-900">PKR {inv.totalAmount.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-slate-600 text-xs">
+                  <span>Amount Paid:</span>
+                  <span className="text-emerald-700 font-semibold">PKR {(inv.amountPaid || 0).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-xs font-bold">
+                  <span>Balance Due:</span>
+                  <span className={(inv.balanceDue ?? (inv.totalAmount - (inv.amountPaid || 0))) > 0 ? "text-rose-700" : "text-emerald-700"}>
+                    PKR {(inv.balanceDue ?? (inv.totalAmount - (inv.amountPaid || 0))).toLocaleString()}
+                  </span>
                 </div>
               </CardContent>
 
@@ -800,14 +868,30 @@ export default function PurchasesPage() {
 
               <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
                 {supplierType === "REGISTERED" ? (
-                  <div className="space-y-1">
+                  <div className="space-y-1 sm:col-span-2">
                     <div className="flex items-center justify-between">
                       <Label htmlFor="supplier" className="text-xs font-semibold">
                         Supplier Party <span className="text-rose-500">*</span>
                       </Label>
                       {selectedSupplier && (
-                        <span className="text-[11px] text-slate-500">
-                          Payable: <strong className="text-amber-800">PKR {Number(selectedSupplier.balance || 0).toLocaleString()}</strong>
+                        <span className="text-[11px] font-semibold">
+                          Balance:{" "}
+                          <strong
+                            className={
+                              Number(selectedSupplier.balance || 0) > 0
+                                ? "text-emerald-700"
+                                : Number(selectedSupplier.balance || 0) < 0
+                                ? "text-rose-700"
+                                : "text-slate-600"
+                            }
+                          >
+                            PKR {Math.abs(Number(selectedSupplier.balance || 0)).toLocaleString()}{" "}
+                            {Number(selectedSupplier.balance || 0) > 0
+                              ? "(Receivable / Advance)"
+                              : Number(selectedSupplier.balance || 0) < 0
+                              ? "(Payable / You owe)"
+                              : "(Settled)"}
+                          </strong>
                         </span>
                       )}
                     </div>
@@ -815,7 +899,7 @@ export default function PurchasesPage() {
                       id="supplier"
                       value={supplierId}
                       onChange={(e) => setSupplierId(e.target.value)}
-                      className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                      className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium"
                       required={supplierType === "REGISTERED"}
                     >
                       <option value="">Select party from directory</option>
@@ -827,7 +911,7 @@ export default function PurchasesPage() {
                     </select>
                   </div>
                 ) : (
-                  <div className="space-y-1">
+                  <div className="space-y-1 sm:col-span-2">
                     <div className="flex items-center justify-between">
                       <Label className="text-xs font-semibold">
                         Vendor Name <span className="text-rose-500">*</span>
@@ -856,26 +940,6 @@ export default function PurchasesPage() {
                 )}
 
                 <div className="space-y-1">
-                  <Label htmlFor="location" className="text-xs font-semibold">
-                    Receiving Location <span className="text-rose-500">*</span>
-                  </Label>
-                  <select
-                    id="location"
-                    value={locationId}
-                    onChange={(e) => handleLocationChange(e.target.value)}
-                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
-                    required
-                  >
-                    <option value="">Select location</option>
-                    {locations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>
-                        {loc.name} {loc.type === "WAREHOUSE" ? "(Warehouse)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="space-y-1">
                   <Label htmlFor="linked-po" className="text-xs font-semibold">
                     Link to PO <span className="text-slate-400 font-normal text-xs">(Optional)</span>
                   </Label>
@@ -896,11 +960,11 @@ export default function PurchasesPage() {
 
                 <div className="space-y-1">
                   <Label htmlFor="pdate" className="text-xs font-semibold">
-                    Date <span className="text-rose-500">*</span>
+                    Invoice Date & Time <span className="text-rose-500">*</span>
                   </Label>
                   <Input
                     id="pdate"
-                    type="date"
+                    type="datetime-local"
                     value={invoiceDate}
                     onChange={(e) => setInvoiceDate(e.target.value)}
                     className="text-xs"
@@ -914,11 +978,9 @@ export default function PurchasesPage() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">Stock Arrival Items</Label>
-                    {showLotSelector && (
-                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
-                        Lot Tracking Active
-                      </span>
-                    )}
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      (Specify receiving location & lot for each product)
+                    </span>
                   </div>
                   <Button type="button" variant="outline" size="sm" onClick={addItem} className="h-7 text-xs">
                     <Plus className="mr-1 h-3 w-3" /> Add Product
@@ -926,123 +988,255 @@ export default function PurchasesPage() {
                 </div>
 
                 <div className="space-y-3">
-                  {items.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className={cn(
-                        "grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50",
-                        showLotSelector
-                          ? "sm:grid-cols-[1fr_150px_90px_110px_90px_36px]"
-                          : "sm:grid-cols-[1fr_100px_120px_100px_36px]"
-                      )}
-                    >
-                      <div>
-                        <select
-                          value={item.productId}
-                          onChange={(e) => handleProductChange(idx, e.target.value)}
-                          className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
-                          required
-                        >
-                          <option value="">Select paper item</option>
-                          {products.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.productNo} - {p.name} ({p.unit})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                  {items.map((item, idx) => {
+                    const itemLocId = item.locationId || locationId || (locations[0]?.id ?? "");
+                    const itemLocObj = locations.find((l) => l.id === itemLocId);
+                    const rowLots = warehouseLots.filter((lot) => lot.locationId === itemLocId);
+                    const isRowWarehouse = itemLocObj?.type === "WAREHOUSE" || rowLots.length > 0;
 
-                      {showLotSelector && (
-                        <div className="flex items-center gap-1">
-                          <select
-                            value={item.warehouseLotId || ""}
-                            onChange={(e) => handleLotChange(idx, e.target.value)}
-                            className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs"
-                          >
-                            <option value="">No Lot</option>
-                            {locationLots.map((lot) => (
-                              <option key={lot.id} value={lot.id}>
-                                {lot.lotNumber} {lot.description ? `(${lot.description})` : ""}
-                              </option>
-                            ))}
-                          </select>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            title="Quick create new lot for this warehouse"
-                            onClick={() => {
-                              setQuickLotLineIndex(idx);
-                              setQuickLotModalOpen(true);
-                            }}
-                            className="h-7 w-7 shrink-0 p-0 text-amber-800 hover:bg-amber-100"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      )}
-
-                      <div>
-                        <Input
-                          type="number"
-                          min="0.0001"
-                          step="any"
-                          value={item.quantity}
-                          onChange={(e) => handleQuantityChange(idx, parseFloat(e.target.value) || 0)}
-                          className="h-8 text-xs text-right"
-                          placeholder="Qty"
-                          required
-                        />
-                      </div>
-
-                      <div>
-                        <Input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={item.unitCost}
-                          onChange={(e) => handleCostChange(idx, Number(e.target.value) || 0)}
-                          className="h-8 text-xs text-right"
-                          placeholder="Unit Cost"
-                          required
-                        />
-                      </div>
-
-                      <div className="text-right text-xs font-semibold text-slate-800">
-                        PKR {(((item.quantity || 0) * (item.unitCost || 0))).toFixed(2)}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => removeItem(idx)}
-                        disabled={items.length <= 1}
-                        className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:text-rose-600 disabled:opacity-30"
+                    return (
+                      <div
+                        key={idx}
+                        className="grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50 sm:grid-cols-[1.5fr_1.1fr_1.1fr_80px_100px_90px_36px]"
                       >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
+                        {/* Product SearchCombobox */}
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Product</Label>
+                          <SearchCombobox
+                            options={products.map((p) => ({
+                              id: p.id,
+                              label: `${p.productNo} - ${p.name}`,
+                              sublabel: `Unit: ${p.unit} | Cost: PKR ${p.costPrice}`,
+                            }))}
+                            value={item.productId}
+                            onChange={(val) => handleProductChange(idx, val)}
+                            placeholder="Select product..."
+                            className="w-full text-xs"
+                          />
+                        </div>
+
+                        {/* Location SearchCombobox */}
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Location</Label>
+                          <SearchCombobox
+                            options={locations.map((loc) => ({
+                              id: loc.id,
+                              label: loc.name,
+                              badge: loc.type === "WAREHOUSE" ? "Warehouse" : "Shop",
+                              badgeColor: loc.type === "WAREHOUSE" ? "amber" : "sky",
+                            }))}
+                            value={itemLocId}
+                            onChange={(val) => handleItemLocationChange(idx, val)}
+                            placeholder="Location"
+                            className="w-full text-xs"
+                          />
+                        </div>
+
+                        {/* Lot SearchCombobox */}
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Lot #</Label>
+                          {isRowWarehouse ? (
+                            <div className="flex items-center gap-1">
+                              <SearchCombobox
+                                options={[
+                                  { id: "", label: "No Lot" },
+                                  ...rowLots.map((lot) => ({
+                                    id: lot.id,
+                                    label: `#${lot.lotNumber}${lot.description ? ` (${lot.description})` : ""}`,
+                                  })),
+                                ]}
+                                value={item.warehouseLotId || ""}
+                                onChange={(val) => handleLotChange(idx, val)}
+                                placeholder="Lot #"
+                                className="w-full text-xs font-mono"
+                              />
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                title="Quick create new lot for this warehouse"
+                                onClick={() => {
+                                  setQuickLotLineIndex(idx);
+                                  setQuickLotModalOpen(true);
+                                }}
+                                className="h-7 w-7 shrink-0 p-0 text-amber-800 hover:bg-amber-100"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 italic text-center block">N/A (Shop)</span>
+                          )}
+                        </div>
+
+                        {/* Quantity */}
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Quantity</Label>
+                          <Input
+                            type="number"
+                            min="0.0001"
+                            step="any"
+                            value={item.quantity}
+                            onChange={(e) => handleQuantityChange(idx, parseFloat(e.target.value) || 0)}
+                            className="h-8 text-xs text-right font-mono"
+                            placeholder="Qty"
+                            required
+                          />
+                        </div>
+
+                        {/* Unit Cost */}
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Unit Cost</Label>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={item.unitCost}
+                            onChange={(e) => handleCostChange(idx, Number(e.target.value) || 0)}
+                            className="h-8 text-xs text-right font-mono"
+                            placeholder="Cost"
+                            required
+                          />
+                        </div>
+
+                        {/* Line Total */}
+                        <div className="text-right text-xs font-semibold text-slate-800 font-mono">
+                          PKR {((item.quantity || 0) * (item.unitCost || 0)).toFixed(2)}
+                        </div>
+
+                        {/* Remove Button */}
+                        <button
+                          type="button"
+                          onClick={() => removeItem(idx)}
+                          disabled={items.length <= 1}
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:text-rose-600 disabled:opacity-30"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
-              {/* Subtotal & Notes */}
-              <div className="border-t border-slate-100 pt-3 flex flex-col sm:flex-row justify-between items-start gap-4">
-                <div className="w-full sm:max-w-xs space-y-1">
-                  <Label htmlFor="pnotes" className="text-xs">
-                    Supplier Notes / Bill Reference <span className="text-slate-400 font-normal text-xs">(Optional)</span>
-                  </Label>
-                  <Input
-                    id="pnotes"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="e.g. Mill consignment #442"
-                    className="text-xs"
-                  />
+              {/* Subtotal, Settlement & Summary */}
+              <div className="border-t border-slate-100 pt-3 grid grid-cols-1 md:grid-cols-12 gap-4">
+                <div className="md:col-span-7 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[10px] uppercase font-bold text-slate-700">Amount Paid (PKR)</Label>
+                        <button
+                          type="button"
+                          onClick={() => setAmountPaid(String(invoiceGrandTotal))}
+                          className="text-[10px] font-bold text-amber-800 hover:text-amber-900 underline"
+                        >
+                          Full Pay
+                        </button>
+                      </div>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={amountPaid}
+                        onChange={(e) => setAmountPaid(e.target.value)}
+                        placeholder="0.00"
+                        className="mt-1 h-8 text-xs text-right font-mono font-bold"
+                      />
+                    </div>
+
+                    <div>
+                      <Label className="text-[10px] uppercase font-bold text-slate-700">Payment Method</Label>
+                      <select
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value as any)}
+                        disabled={numPaid <= 0}
+                        className="w-full mt-1 h-8 rounded border border-slate-300 bg-white px-2 text-xs font-semibold disabled:opacity-50"
+                      >
+                        <option value="CASH">CASH (Drawer)</option>
+                        <option value="BANK">BANK (Transfer)</option>
+                        <option value="CHEQUE">CHEQUE</option>
+                        <option value="OTHER">OTHER</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <Label className="text-[10px] uppercase font-bold text-slate-700">Freight / Packing (PKR)</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={freightCharges}
+                        onChange={(e) => setFreightCharges(e.target.value)}
+                        placeholder="0.00"
+                        className="mt-1 h-8 text-xs text-right font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="pnotes" className="text-xs">
+                      Supplier Notes / Bill Reference <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                    </Label>
+                    <Input
+                      id="pnotes"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder="e.g. Mill consignment #442"
+                      className="text-xs mt-1"
+                    />
+                  </div>
                 </div>
 
-                <div className="w-full sm:w-60 rounded-xl bg-amber-50/50 p-3 border border-amber-100 space-y-1 text-right">
-                  <p className="text-xs text-amber-800">Purchase Grand Total</p>
-                  <p className="text-xl font-bold text-amber-950">PKR {invoiceSubtotal.toLocaleString()}</p>
+                {/* 3-Figure Summary Box */}
+                <div className="md:col-span-5 rounded-xl bg-amber-50/60 p-3 border border-amber-200/80 space-y-1.5 text-xs font-mono">
+                  <div className="flex justify-between text-slate-600">
+                    <span>Subtotal:</span>
+                    <span className="font-bold text-slate-900">
+                      PKR {invoiceSubtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+
+                  {numFreight > 0 && (
+                    <div className="flex justify-between text-slate-600">
+                      <span>Freight / Packing:</span>
+                      <span className="font-bold text-slate-900">
+                        PKR {numFreight.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between text-slate-900 border-t border-amber-200 pt-1 font-bold">
+                    <span>Total Amount:</span>
+                    <span className="text-sm">
+                      PKR {invoiceGrandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between text-slate-600">
+                    <span>Amount Paid:</span>
+                    <span className="font-bold text-emerald-700">
+                      PKR {numPaid.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center border-t border-amber-200 pt-1 text-sm font-bold">
+                    <span>Balance Due:</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className={balanceDue > 0 ? "text-rose-700" : "text-emerald-700"}>
+                        PKR {balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                      <span
+                        className={`text-[9px] px-1.5 py-0.2 rounded font-sans uppercase font-bold ${
+                          balanceDue === 0
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-amber-100 text-amber-800"
+                        }`}
+                      >
+                        {balanceDue === 0 ? "SETTLED" : "OPEN"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
 

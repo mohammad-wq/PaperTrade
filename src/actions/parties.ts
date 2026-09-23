@@ -525,37 +525,58 @@ export async function bulkAdjustStockAction(raw: unknown) {
     }
     const input = parseInput(bulkStockAdjustmentSchema, raw);
 
-    const location = await prisma.location.findUnique({
-      where: { id: input.locationId },
+    // Resolve location for each item (item-level location or header fallback)
+    const normalizedItems = input.items.map((item) => {
+      const locId = item.locationId || input.locationId;
+      if (!locId) {
+        throw userError("Location is required for each adjustment item.");
+      }
+      return {
+        ...item,
+        locationId: locId,
+      };
+    });
+
+    const uniqueLocationIds = Array.from(new Set(normalizedItems.map((it) => it.locationId)));
+    const locations = await prisma.location.findMany({
+      where: { id: { in: uniqueLocationIds } },
       include: {
         warehouseLots: {
           where: { isActive: true, deletedAt: null },
         },
       },
     });
-    if (!location) throw userError("Location not found.");
 
-    if (location.warehouseLots.length > 0) {
-      for (const item of input.items) {
+    const locationMap = new Map(locations.map((l) => [l.id, l]));
+    for (const locId of uniqueLocationIds) {
+      if (!locationMap.has(locId)) {
+        throw userError(`Location not found: ${locId}`);
+      }
+    }
+
+    // Validate warehouse lots where applicable
+    for (const item of normalizedItems) {
+      const loc = locationMap.get(item.locationId)!;
+      if (loc.type === "WAREHOUSE" && loc.warehouseLots.length > 0) {
         if (!item.warehouseLotId) {
-          throw userError(`Location "${location.name}" has lots defined. Please select a lot for all items.`);
+          throw userError(`Warehouse "${loc.name}" has lots defined. Please select a lot for each item.`);
         }
-        const lotExists = location.warehouseLots.some((l) => l.id === item.warehouseLotId);
+        const lotExists = loc.warehouseLots.some((l) => l.id === item.warehouseLotId);
         if (!lotExists) {
-          throw userError("One or more selected lots do not exist in this location.");
+          throw userError(`Selected lot does not exist in warehouse "${loc.name}".`);
         }
       }
     }
 
-    const lockKeys = input.items.map((it) => `stock:${it.productId}:${input.locationId}`);
+    const lockKeys = normalizedItems.map((it) => `stock:${it.productId}:${it.locationId}`);
 
     const res = await withResourceQueue(lockKeys, async (tx) => {
       const referenceId = generateDocumentNumber("ADJ");
 
-      for (const item of input.items) {
+      for (const item of normalizedItems) {
         const currentStock = await getStockOnHand(
           item.productId,
-          input.locationId,
+          item.locationId,
           tx,
           item.warehouseLotId || undefined,
         );
@@ -570,7 +591,7 @@ export async function bulkAdjustStockAction(raw: unknown) {
         await tx.stockMovement.create({
           data: {
             productId: item.productId,
-            locationId: input.locationId,
+            locationId: item.locationId,
             warehouseLotId: item.warehouseLotId || null,
             type: "ADJUSTMENT",
             quantity: item.direction === "IN" ? item.quantity : -item.quantity,
@@ -582,11 +603,10 @@ export async function bulkAdjustStockAction(raw: unknown) {
         });
       }
 
-      return { success: true, count: input.items.length, referenceId };
+      return { success: true, count: normalizedItems.length, referenceId };
     });
 
     emitRealtimeEvent(["inventory", "stock-movements", "dashboard"], "update", "BulkStockAdjustment", {
-      locationId: input.locationId,
       referenceId: res.referenceId,
     });
 

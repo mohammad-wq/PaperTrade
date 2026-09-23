@@ -41,6 +41,9 @@ import { listProductsAction } from "@/actions/products";
 import { listLocationsAction } from "@/actions/orders";
 import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
 import { format } from "date-fns";
+import { formatDateTime } from "@/lib/utils";
+import { formatSequenceDisplay } from "@/lib/financial-year";
+import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 
@@ -54,11 +57,14 @@ type WarehouseLotOption = {
 type SaleInvoiceRow = {
   id: string;
   invoiceNo: string;
+  sequenceNo?: number;
   date: Date;
   status: string;
   totalAmount: number;
   amountPaid: number;
   balanceDue: number;
+  freightCharges?: number;
+  walkInName?: string | null;
   customer: { id: string; name: string; phone: string | null };
   location: { id: string; name: string };
   deliveryOrder?: { id: string; doNo: string } | null;
@@ -136,12 +142,12 @@ export default function SalesPage() {
   // Form state - Header
   const [customerType, setCustomerType] = useState<"REGISTERED" | "WALK_IN">("REGISTERED");
   const [customerId, setCustomerId] = useState("");
-  const [walkInName, setWalkInName] = useState("Walk-in Customer");
+  const [walkInName, setWalkInName] = useState("");
   const [walkInPhone, setWalkInPhone] = useState("");
   const [walkInAddress, setWalkInAddress] = useState("");
   const [saveCustomer, setSaveCustomer] = useState(false);
   const [locationId, setLocationId] = useState("");
-  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 10));
+  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 16));
   const [notes, setNotes] = useState("");
 
   // Pattern 3: Line Items Table State
@@ -159,9 +165,9 @@ export default function SalesPage() {
   const [typeaheadIndex, setTypeaheadIndex] = useState<number>(0);
 
   // Form Settlement State
-  const [paidImmediately, setPaidImmediately] = useState(true);
+  const [amountPaid, setAmountPaid] = useState<string>("0");
+  const [freightCharges, setFreightCharges] = useState<string>("0");
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "BANK" | "CHEQUE" | "OTHER">("CASH");
-  const [customAmountPaid, setCustomAmountPaid] = useState<string>("");
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -175,12 +181,11 @@ export default function SalesPage() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const productInputRef = useRef<HTMLInputElement>(null);
-  const itemLocationSelectRef = useRef<HTMLSelectElement>(null);
-  const lotSelectRef = useRef<HTMLSelectElement>(null);
+  const itemLocationInputRef = useRef<HTMLInputElement>(null);
+  const lotComboboxInputRef = useRef<HTMLInputElement>(null);
   const qtyInputRef = useRef<HTMLInputElement>(null);
   const rateInputRef = useRef<HTMLInputElement>(null);
   const customerSelectRef = useRef<HTMLSelectElement>(null);
-  const locationSelectRef = useRef<HTMLSelectElement>(null);
   const dateInputRef = useRef<HTMLInputElement>(null);
   const amountPaidInputRef = useRef<HTMLInputElement>(null);
 
@@ -198,7 +203,7 @@ export default function SalesPage() {
       ]);
 
       if (invRes.success && invRes.data) {
-        setInvoices(invRes.data as SaleInvoiceRow[]);
+        setInvoices(invRes.data as unknown as SaleInvoiceRow[]);
       }
       if (partyRes.success && partyRes.data) {
         const partyList = partyRes.data as PartyOption[];
@@ -313,6 +318,26 @@ export default function SalesPage() {
     [committedItems]
   );
 
+  const numFreight = useMemo(
+    () => Math.max(0, parseFloat(freightCharges) || 0),
+    [freightCharges]
+  );
+
+  const invoiceTotal = useMemo(
+    () => invoiceSubtotal + numFreight,
+    [invoiceSubtotal, numFreight]
+  );
+
+  const numPaid = useMemo(
+    () => Math.max(0, parseFloat(amountPaid) || 0),
+    [amountPaid]
+  );
+
+  const balanceDue = useMemo(
+    () => Math.max(0, invoiceTotal - numPaid),
+    [invoiceTotal, numPaid]
+  );
+
   const totalQuantity = useMemo(
     () => committedItems.reduce((sum, item) => sum + item.quantity, 0),
     [committedItems]
@@ -388,11 +413,14 @@ export default function SalesPage() {
     setActiveRate("0");
     setActiveRowError(null);
     setFormError(null);
-    setPaidImmediately(true);
-    setCustomAmountPaid("");
+    setAmountPaid("0");
+    setFreightCharges("0");
     setCustomerType("REGISTERED");
+    setWalkInName("");
+    setWalkInPhone("");
+    setWalkInAddress("");
     setNotes("");
-    setInvoiceDate(new Date().toISOString().slice(0, 10));
+    setInvoiceDate(new Date().toISOString().slice(0, 16));
     if (parties.length > 0 && !customerId) {
       setCustomerId(parties[0].id);
     }
@@ -409,17 +437,20 @@ export default function SalesPage() {
     const isWalkIn = inv.customer.name.toLowerCase().includes("walk-in");
     if (isWalkIn) {
       setCustomerType("WALK_IN");
-      setWalkInName(inv.customer.name);
+      setWalkInName((inv as any).walkInName || "");
       setWalkInPhone(inv.customer.phone || "");
       setWalkInAddress("");
     } else {
       setCustomerType("REGISTERED");
       setCustomerId(inv.customer.id);
+      setWalkInName("");
     }
     setLocationId(inv.location.id);
     setActiveItemLocationId(inv.location.id);
-    setInvoiceDate(new Date(inv.date).toISOString().slice(0, 10));
+    setInvoiceDate(new Date(inv.date).toISOString().slice(0, 16));
     setNotes(inv.notes || "");
+    setAmountPaid(String(inv.amountPaid || 0));
+    setFreightCharges(String((inv as any).freightCharges || 0));
 
     const items: CommittedLineItem[] = inv.items.map((it: any) => {
       const prod = products.find((p) => p.id === (it.product?.id || it.productId));
@@ -451,8 +482,6 @@ export default function SalesPage() {
     setActiveRate("0");
     setActiveRowError(null);
     setFormError(null);
-    setPaidImmediately(inv.amountPaid > 0);
-    setCustomAmountPaid(inv.amountPaid > 0 ? String(inv.amountPaid) : "");
     setIsDialogOpen(true);
   }
 
@@ -490,6 +519,11 @@ export default function SalesPage() {
         ? invoices[0].invoiceNo.replace(/\d+$/, (n) => String(Number(n) + 1).padStart(n.length, "0"))
         : `${new Date().getFullYear()}-001`;
 
+      const subtotal = committedItems.reduce((acc, it) => acc + it.quantity * it.unitPrice, 0);
+      const numF = Math.max(0, parseFloat(freightCharges) || 0);
+      const total = subtotal + numF;
+      const paid = Math.max(0, parseFloat(amountPaid) || 0);
+
       const payload = {
         type: "sale-invoice",
         docNumber: activeDocNo,
@@ -497,13 +531,13 @@ export default function SalesPage() {
         partyName,
         partyPhone,
         partyAddress,
+        walkInName: customerType === "WALK_IN" ? (walkInName?.trim() || null) : null,
         locationName: selectedLocName,
-        totalAmount: invoiceSubtotal,
-        amountPaid: paidImmediately
-          ? customAmountPaid !== ""
-            ? Number(customAmountPaid)
-            : invoiceSubtotal
-          : 0,
+        subtotalAmount: subtotal,
+        freightCharges: numF,
+        totalAmount: total,
+        amountPaid: paid,
+        balanceDue: Math.max(0, total - paid),
         notes: notes.trim() || null,
         items: committedItems.map((item) => ({
           name: `${item.productNo} - ${item.productName}`,
@@ -576,6 +610,10 @@ export default function SalesPage() {
           customerType === "REGISTERED"
             ? parties.find((p) => p.id === customerId)?.name || ""
             : walkInName || "Walk-in Customer",
+        recipientName:
+          customerType === "WALK_IN"
+            ? walkInName || "Walk-in Customer"
+            : parties.find((p) => p.id === customerId)?.name || "",
         locationId: targetLocationId,
         items: singleLocWarehouseItems.map((item) => ({
           productId: item.productId,
@@ -668,6 +706,7 @@ export default function SalesPage() {
       saleInvoiceId: inv.id,
       customerId: inv.customer?.id || null,
       customerName: inv.customer?.name || "",
+      recipientName: inv.walkInName || inv.customer?.name || "",
       locationId: targetLocationId,
       items: singleLocWarehouseItems.map((item: any) => ({
         productId: item.product?.id || "",
@@ -695,10 +734,12 @@ export default function SalesPage() {
 
     // Focus Location selector first so location can be specified for this product
     setTimeout(() => {
-      if (itemLocationSelectRef.current) {
-        itemLocationSelectRef.current.focus();
-      } else if (isItemLocationWarehouse && locationLots.length > 0 && lotSelectRef.current) {
-        lotSelectRef.current.focus();
+      if (itemLocationInputRef.current) {
+        itemLocationInputRef.current.focus();
+        itemLocationInputRef.current.select();
+      } else if (isItemLocationWarehouse && locationLots.length > 0 && lotComboboxInputRef.current) {
+        lotComboboxInputRef.current.focus();
+        lotComboboxInputRef.current.select();
       } else {
         qtyInputRef.current?.focus();
         qtyInputRef.current?.select();
@@ -850,7 +891,7 @@ export default function SalesPage() {
     setFormError(null);
 
     if (committedItems.length === 0) {
-      setFormError("Please add at least one line item to the invoice.");
+      setFormError("Please add at least one line item to the estimate.");
       productInputRef.current?.focus();
       return;
     }
@@ -861,44 +902,44 @@ export default function SalesPage() {
       return;
     }
 
-    if (customerType === "WALK_IN" && !walkInName.trim()) {
-      setFormError("Walk-in customer name is required.");
+    const subtotal = committedItems.reduce((acc, it) => acc + it.quantity * it.unitPrice, 0);
+    const numF = Math.max(0, parseFloat(freightCharges) || 0);
+    const total = subtotal + numF;
+    const paid = Math.max(0, parseFloat(amountPaid) || 0);
+
+    if (customerType === "WALK_IN" && paid < total - 0.001) {
+      setFormError(
+        `Walk-in Customer sales cannot be made on credit. Amount paid must equal the total invoice amount (PKR ${total.toFixed(2)}).`
+      );
       return;
     }
 
-    if (!locationId) {
-      setFormError("Please select a dispatch location.");
-      locationSelectRef.current?.focus();
-      return;
-    }
+    const fallbackLocId = locationId || committedItems[0]?.locationId || dbLocations[0]?.id;
 
     setSubmitting(true);
     try {
       const payload: any = {
         customerType,
-        locationId,
-        date: invoiceDate,
+        locationId: fallbackLocId,
+        date: new Date(invoiceDate),
         notes: notes.trim() || undefined,
+        freightCharges: numF,
+        amountPaid: paid,
+        paidImmediately: paid > 0,
+        paymentMethod: paid > 0 ? paymentMethod : undefined,
         items: committedItems.map((item) => ({
           productId: item.productId,
-          locationId: item.locationId || locationId,
+          locationId: item.locationId || fallbackLocId,
           warehouseLotId: item.warehouseLotId || undefined,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
         })),
-        paidImmediately,
-        paymentMethod: paidImmediately ? paymentMethod : undefined,
-        amountPaid: paidImmediately
-          ? customAmountPaid !== ""
-            ? Number(customAmountPaid)
-            : invoiceSubtotal
-          : 0,
       };
 
       if (customerType === "REGISTERED") {
         payload.customerId = customerId;
       } else {
-        payload.walkInName = walkInName.trim();
+        payload.walkInName = walkInName.trim() || "Walk-in Customer";
         payload.walkInPhone = walkInPhone.trim() || undefined;
         payload.walkInAddress = walkInAddress.trim() || undefined;
         payload.saveCustomer = saveCustomer;
@@ -916,7 +957,7 @@ export default function SalesPage() {
         await loadData(true);
         closeInvoiceDialog();
       } else {
-        setFormError(res.error || `Failed to ${editingInvoiceId ? "update" : "create"} sales invoice.`);
+        setFormError(res.error || `Failed to ${editingInvoiceId ? "update" : "create"} estimate.`);
       }
     } catch (err: any) {
       setFormError(err?.message || "An unexpected error occurred.");
@@ -953,7 +994,7 @@ export default function SalesPage() {
           </div>
           <div>
             <h1 className="text-base font-bold tracking-tight text-slate-900 dark:text-slate-100">
-              Sales Invoices
+              Estimates (Sales)
             </h1>
             <p className="text-[11px] text-slate-500">
               Counter billing, customer receivables, real-time stock deduction, and ledger posting
@@ -965,13 +1006,13 @@ export default function SalesPage() {
           {/* Quick Metrics Bar */}
           <div className="hidden sm:flex items-center gap-2 text-xs mr-2 font-mono">
             <span className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded">
-              Total Sales: <strong>PKR {totalFilteredSales.toLocaleString()}</strong>
+              Total Estimates: <strong>PKR {totalFilteredSales.toLocaleString()}</strong>
             </span>
             <span className="bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800 px-2 py-1 rounded">
               Balance Due: <strong>PKR {totalFilteredBalanceDue.toLocaleString()}</strong>
             </span>
             <span className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-300 px-2 py-1 rounded">
-              Invoices: <strong>{filteredInvoices.length}</strong>
+              Count: <strong>{filteredInvoices.length}</strong>
             </span>
           </div>
 
@@ -981,7 +1022,7 @@ export default function SalesPage() {
             className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-3"
           >
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New Sale Invoice <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+            New Estimate <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
           </Button>
         </div>
       </div>
@@ -994,7 +1035,7 @@ export default function SalesPage() {
             ref={searchInputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search invoices by number, customer name, phone, dispatch location, or item... (Press / to focus)"
+            placeholder="Search estimates by number, customer, phone, location, or item... (Press / to focus)"
             className="h-8 pl-8 pr-8 text-xs bg-slate-50 dark:bg-slate-950/50 border-slate-300 dark:border-slate-700 font-medium w-full"
           />
           {query && (
@@ -1019,7 +1060,7 @@ export default function SalesPage() {
                   : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
               }`}
             >
-              Open Invoices
+              Open Estimates
             </button>
             <button
               type="button"
@@ -1061,14 +1102,14 @@ export default function SalesPage() {
         </div>
       </div>
 
-      {/* Pattern 1: High-Density Tabular List View for Sales Invoices */}
+      {/* Pattern 1: High-Density Tabular List View for Sales Invoices / Estimates */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
         <div className="overflow-x-auto max-h-[calc(100vh-230px)]">
           <table className="w-full text-left text-xs border-collapse">
             <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
               <tr>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Invoice #</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Date</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Estimate #</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Date & Time</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[160px]">Customer</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Type</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Location</th>
@@ -1084,13 +1125,13 @@ export default function SalesPage() {
               {loading ? (
                 <tr>
                   <td colSpan={11} className="py-12 text-center text-slate-500 font-medium">
-                    Loading sales invoices...
+                    Loading estimates...
                   </td>
                 </tr>
               ) : filteredInvoices.length === 0 ? (
                 <tr>
                   <td colSpan={11} className="py-12 text-center text-slate-500 font-medium">
-                    No sales invoices match your search. Press <kbd className="px-1.5 py-0.5 bg-slate-100 border rounded text-[10px]">F2</kbd> to record a sale.
+                    No estimates match your search. Press <kbd className="px-1.5 py-0.5 bg-slate-100 border rounded text-[10px]">F2</kbd> to record an estimate.
                   </td>
                 </tr>
               ) : (
@@ -1098,33 +1139,45 @@ export default function SalesPage() {
                   const isWalkIn =
                     inv.customer.name.toLowerCase().includes("walk-in") ||
                     inv.customer.name.toLowerCase().includes("walk in");
+                  const walkInSpecificName = (inv as any).walkInName;
 
                   return (
                     <tr
                       key={inv.id}
                       className="hover:bg-amber-50/60 dark:hover:bg-slate-800/60 transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40"
                     >
-                      {/* Invoice No */}
+                      {/* Invoice / Estimate No */}
                       <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap">
                         <div className="flex items-center gap-1.5">
-                          <span className="font-bold text-slate-900 dark:text-slate-100">{inv.invoiceNo}</span>
+                          <span className="font-bold text-slate-900 dark:text-slate-100">
+                            #{formatSequenceDisplay(inv.sequenceNo, inv.invoiceNo)}
+                          </span>
                           {inv.financialYear && (
-                            <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-mono">
+                            <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-mono" title={inv.invoiceNo}>
                               {inv.financialYear.label}
                             </span>
                           )}
                         </div>
                       </td>
 
-                      {/* Date */}
-                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400">
-                        {format(new Date(inv.date), "dd/MM/yyyy")}
+                      {/* Date & Time */}
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400 text-[11px]">
+                        {formatDateTime(inv.date)}
                       </td>
 
                       {/* Customer */}
                       <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-800 dark:text-slate-200">
                         <div className="flex flex-col">
-                          <span>{inv.customer.name}</span>
+                          <span>
+                            {isWalkIn && walkInSpecificName ? (
+                              <>
+                                <strong className="text-slate-900 dark:text-slate-100">{walkInSpecificName}</strong>
+                                <span className="text-[10px] text-slate-400 ml-1">(Walk-in)</span>
+                              </>
+                            ) : (
+                              inv.customer.name
+                            )}
+                          </span>
                           {inv.customer.phone && (
                             <span className="text-[10px] text-slate-400 font-mono">{inv.customer.phone}</span>
                           )}
@@ -1200,7 +1253,7 @@ export default function SalesPage() {
                             size="sm"
                             onClick={() => openEditInvoiceDialog(inv)}
                             className="h-6 px-1.5 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40"
-                            title="Edit Invoice"
+                            title="Edit Estimate"
                           >
                             <Edit className="h-3 w-3 mr-1" />
                             Edit
@@ -1261,8 +1314,8 @@ export default function SalesPage() {
                 <Receipt className="h-4 w-4 text-emerald-400" />
                 <span className="font-bold text-xs">
                   {editingInvoiceId
-                    ? `Edit Sale Invoice Form - [${invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo || "Invoice"}]`
-                    : "Sale Invoice Entry Form - [New Invoice]"}
+                    ? `Edit Estimate Form - [#${formatSequenceDisplay(invoices.find((i) => i.id === editingInvoiceId)?.sequenceNo, invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo)}]`
+                    : "Estimate Entry Form - [New Estimate]"}
                 </span>
               </div>
               <button
@@ -1279,7 +1332,7 @@ export default function SalesPage() {
               <div className="flex items-center gap-3 font-mono text-[11px]">
                 <span>↵ Enter: Autofill & Advance</span>
                 <span>•</span>
-                <span>Ctrl+Enter: Save Invoice</span>
+                <span>Ctrl+Enter: Save Estimate</span>
                 <span>•</span>
                 <span>Esc: Close</span>
               </div>
@@ -1328,10 +1381,10 @@ export default function SalesPage() {
 
             {/* Dialog Body */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs bg-slate-50/50 dark:bg-slate-950/40">
-              {/* Header Section: Customer, Location, Date */}
+              {/* Header Section: Customer & Date */}
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 bg-white dark:bg-slate-900 p-3 rounded-md border border-slate-200 dark:border-slate-800">
                 {/* Customer Column */}
-                <div className="sm:col-span-6 space-y-1.5">
+                <div className="sm:col-span-7 space-y-1.5">
                   <div className="flex items-center justify-between">
                     <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
                       Customer <span className="text-rose-500">*</span>
@@ -1371,7 +1424,7 @@ export default function SalesPage() {
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
                             e.preventDefault();
-                            locationSelectRef.current?.focus();
+                            dateInputRef.current?.focus();
                           }
                         }}
                         className="w-full h-8 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-medium"
@@ -1384,78 +1437,83 @@ export default function SalesPage() {
                         ))}
                       </select>
                       {selectedCustomer && (
-                        <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
+                        <div className="flex items-center flex-wrap gap-2 mt-1 text-[11px]">
                           <span>
                             Ledger Balance:{" "}
-                            <strong className={selectedCustomer.balance > 0 ? "text-amber-700" : "text-slate-700"}>
-                              PKR {selectedCustomer.balance.toLocaleString()}
+                            <strong
+                              className={
+                                selectedCustomer.balance > 0
+                                  ? "text-emerald-700 dark:text-emerald-400 font-bold"
+                                  : selectedCustomer.balance < 0
+                                  ? "text-rose-700 dark:text-rose-400 font-bold"
+                                  : "text-slate-600 dark:text-slate-400"
+                              }
+                            >
+                              PKR {Math.abs(selectedCustomer.balance).toLocaleString()}{" "}
+                              {selectedCustomer.balance > 0
+                                ? "Dr (Receivable - Owes you)"
+                                : selectedCustomer.balance < 0
+                                ? "Cr (Payable - You owe)"
+                                : "(Settled)"}
                             </strong>
                           </span>
                           {selectedCustomer.creditLimit !== null && (
-                            <span>
+                            <span className="text-slate-500">
                               | Credit Limit: <strong>PKR {selectedCustomer.creditLimit.toLocaleString()}</strong>
+                              {selectedCustomer.balance > selectedCustomer.creditLimit && (
+                                <span className="ml-1 text-rose-600 font-bold bg-rose-50 border border-rose-200 px-1 rounded text-[10px]">
+                                  ⚠️ Limit Exceeded
+                                </span>
+                              )}
                             </span>
                           )}
                         </div>
                       )}
                     </div>
                   ) : (
-                    <div className="grid grid-cols-2 gap-2">
-                      <Input
-                        value={walkInName}
-                        onChange={(e) => setWalkInName(e.target.value)}
-                        placeholder="Customer Name *"
-                        className="h-8 text-xs bg-white dark:bg-slate-900"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            locationSelectRef.current?.focus();
-                          }
-                        }}
-                      />
-                      <Input
-                        value={walkInPhone}
-                        onChange={(e) => setWalkInPhone(e.target.value)}
-                        placeholder="Phone (Optional)"
-                        className="h-8 text-xs bg-white dark:bg-slate-900"
-                      />
+                    <div className="space-y-1">
+                      <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 px-2 py-0.5 rounded text-[10px] font-medium flex items-center justify-between">
+                        <span>Walk-in Customer (Cash Sale Only — No Credit Allowed)</span>
+                        <span className="font-bold uppercase bg-amber-200/60 dark:bg-amber-900 px-1 py-0.2 rounded text-[9px]">Counter Cash</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Input
+                          value={walkInName}
+                          onChange={(e) => setWalkInName(e.target.value)}
+                          placeholder="Customer Name (optional, on Estimate)"
+                          className="h-8 text-xs bg-white dark:bg-slate-900"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              dateInputRef.current?.focus();
+                            }
+                          }}
+                        />
+                        <Input
+                          value={walkInPhone}
+                          onChange={(e) => setWalkInPhone(e.target.value)}
+                          placeholder="Phone (Optional)"
+                          className="h-8 text-xs bg-white dark:bg-slate-900"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              dateInputRef.current?.focus();
+                            }
+                          }}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
 
-                {/* Dispatch Location */}
-                <div className="sm:col-span-3 space-y-1">
+                {/* Estimate Date & Time */}
+                <div className="sm:col-span-5 space-y-1">
                   <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Dispatch Location <span className="text-rose-500">*</span>
-                  </Label>
-                  <select
-                    ref={locationSelectRef}
-                    value={locationId}
-                    onChange={(e) => setLocationId(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        dateInputRef.current?.focus();
-                      }
-                    }}
-                    className="w-full h-8 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-medium"
-                  >
-                    {dbLocations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>
-                        {loc.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Invoice Date */}
-                <div className="sm:col-span-3 space-y-1">
-                  <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Invoice Date <span className="text-rose-500">*</span>
+                    Estimate Date & Time <span className="text-rose-500">*</span>
                   </Label>
                   <Input
                     ref={dateInputRef}
-                    type="date"
+                    type="datetime-local"
                     value={invoiceDate}
                     onChange={(e) => setInvoiceDate(e.target.value)}
                     onKeyDown={(e) => {
@@ -1467,6 +1525,9 @@ export default function SalesPage() {
                     }}
                     className="h-8 text-xs bg-white dark:bg-slate-900"
                   />
+                  <p className="text-[10px] text-slate-400 font-mono">
+                    All estimates record and print precise timestamps
+                  </p>
                 </div>
               </div>
 
@@ -1632,61 +1693,58 @@ export default function SalesPage() {
                         </td>
 
                         {/* Location Selector for Active Row */}
-                        <td className="py-1 px-2 border-r border-slate-200 dark:border-slate-700">
-                          <select
-                            ref={itemLocationSelectRef}
-                            value={activeItemLocationId || locationId}
-                            onChange={(e) => {
-                              setActiveItemLocationId(e.target.value);
+                        <td className="py-1 px-1 border-r border-slate-200 dark:border-slate-700 min-w-[130px]">
+                          <SearchCombobox
+                            options={dbLocations.map((loc) => ({
+                              id: loc.id,
+                              label: loc.name,
+                              badge: loc.type === "SHOP" ? "Shop" : "Warehouse",
+                              badgeColor: loc.type === "SHOP" ? "sky" : "amber",
+                            }))}
+                            value={activeItemLocationId || locationId || (dbLocations[0]?.id ?? "")}
+                            onChange={(val) => {
+                              setActiveItemLocationId(val);
                               setActiveLotId("");
                             }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                const chosenLocId = activeItemLocationId || locationId;
-                                const chosenLoc = dbLocations.find((l) => l.id === chosenLocId);
-                                const chosenLots = warehouseLots.filter((l) => l.locationId === chosenLocId);
-                                if (chosenLoc?.type === "WAREHOUSE" && chosenLots.length > 0 && lotSelectRef.current) {
-                                  lotSelectRef.current.focus();
-                                } else {
-                                  qtyInputRef.current?.focus();
-                                  qtyInputRef.current?.select();
-                                }
+                            inputRef={itemLocationInputRef}
+                            onEnterPress={() => {
+                              const chosenLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
+                              const chosenLoc = dbLocations.find((l) => l.id === chosenLocId);
+                              const chosenLots = warehouseLots.filter((l) => l.locationId === chosenLocId);
+                              if (chosenLoc?.type === "WAREHOUSE" && chosenLots.length > 0 && lotComboboxInputRef.current) {
+                                lotComboboxInputRef.current.focus();
+                                lotComboboxInputRef.current.select();
+                              } else {
+                                qtyInputRef.current?.focus();
+                                qtyInputRef.current?.select();
                               }
                             }}
-                            className="h-7 w-full text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1 font-sans focus:ring-1 focus:ring-emerald-500"
-                          >
-                            {dbLocations.map((loc) => (
-                              <option key={loc.id} value={loc.id}>
-                                {loc.name} {loc.type === "SHOP" ? "[Shop]" : "[Warehouse]"}
-                              </option>
-                            ))}
-                          </select>
+                            placeholder="Location"
+                            inputClassName="h-7 text-xs"
+                          />
                         </td>
 
                         {/* Lot Selector (if location is warehouse) */}
-                        <td className="py-1 px-2 border-r border-slate-200 dark:border-slate-700">
+                        <td className="py-1 px-1 border-r border-slate-200 dark:border-slate-700 min-w-[120px]">
                           {isItemLocationWarehouse ? (
-                            <select
-                              ref={lotSelectRef}
+                            <SearchCombobox
+                              options={[
+                                { id: "", label: "No Lot" },
+                                ...locationLots.map((lot) => ({
+                                  id: lot.id,
+                                  label: `#${lot.lotNumber}${lot.description ? ` (${lot.description})` : ""}`,
+                                })),
+                              ]}
                               value={activeLotId}
-                              onChange={(e) => setActiveLotId(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  e.preventDefault();
-                                  qtyInputRef.current?.focus();
-                                  qtyInputRef.current?.select();
-                                }
+                              onChange={(val) => setActiveLotId(val)}
+                              inputRef={lotComboboxInputRef}
+                              onEnterPress={() => {
+                                qtyInputRef.current?.focus();
+                                qtyInputRef.current?.select();
                               }}
-                              className="h-7 w-full text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1 font-mono focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
-                            >
-                              <option value="">No Lot</option>
-                              {locationLots.map((lot) => (
-                                <option key={lot.id} value={lot.id}>
-                                  #{lot.lotNumber}{lot.description ? ` (${lot.description})` : ""}
-                                </option>
-                              ))}
-                            </select>
+                              placeholder="Lot #"
+                              inputClassName="h-7 text-xs font-mono"
+                            />
                           ) : (
                             <span className="text-[10px] text-slate-400 font-sans italic px-1 block text-center">N/A (Shop)</span>
                           )}
@@ -1773,68 +1831,91 @@ export default function SalesPage() {
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 bg-white dark:bg-slate-900 p-3 rounded-md border border-slate-200 dark:border-slate-800">
                 {/* Payment Options */}
                 <div className="sm:col-span-7 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="paidImmediately"
-                      checked={paidImmediately}
-                      onChange={(e) => setPaidImmediately(e.target.checked)}
-                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <label htmlFor="paidImmediately" className="font-bold text-xs text-slate-800 dark:text-slate-200 cursor-pointer">
-                      Settle payment immediately at billing counter
-                    </label>
-                  </div>
-
-                  {paidImmediately && (
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      <div>
-                        <Label className="text-[10px] uppercase font-bold text-slate-500">Payment Method</Label>
-                        <select
-                          value={paymentMethod}
-                          onChange={(e) => setPaymentMethod(e.target.value as any)}
-                          className="w-full mt-1 h-8 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-semibold"
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {/* Amount Paid */}
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[10px] uppercase font-bold text-slate-700 dark:text-slate-300">
+                          Amount Paid (PKR)
+                        </Label>
+                        <button
+                          type="button"
+                          onClick={() => setAmountPaid(String(invoiceTotal))}
+                          className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 underline"
                         >
-                          <option value="CASH">CASH (Counter Cash Drawer)</option>
-                          <option value="BANK">BANK (Direct Online Transfer)</option>
-                          <option value="CHEQUE">CHEQUE</option>
-                          <option value="OTHER">OTHER</option>
-                        </select>
+                          Full Pay
+                        </button>
                       </div>
-
-                      <div>
-                        <Label className="text-[10px] uppercase font-bold text-slate-500">Amount Received (PKR)</Label>
-                        <Input
-                          ref={amountPaidInputRef}
-                          type="number"
-                          step="0.01"
-                          value={customAmountPaid !== "" ? customAmountPaid : invoiceSubtotal}
-                          onChange={(e) => setCustomAmountPaid(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              void handleSaveInvoice();
-                            }
-                          }}
-                          placeholder={String(invoiceSubtotal)}
-                          className="mt-1 h-8 text-xs text-right font-mono font-bold bg-white dark:bg-slate-900"
-                        />
-                      </div>
+                      <Input
+                        ref={amountPaidInputRef}
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={amountPaid}
+                        onChange={(e) => setAmountPaid(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void handleSaveInvoice();
+                          }
+                        }}
+                        placeholder="0.00"
+                        className="mt-1 h-8 text-xs text-right font-mono font-bold bg-white dark:bg-slate-900"
+                      />
+                      {customerType === "WALK_IN" && (
+                        <p className="text-[10px] text-amber-700 dark:text-amber-400 mt-0.5 font-medium">
+                          * Walk-in sale must be fully paid
+                        </p>
+                      )}
                     </div>
-                  )}
+
+                    {/* Payment Method */}
+                    <div>
+                      <Label className="text-[10px] uppercase font-bold text-slate-700 dark:text-slate-300">
+                        Payment Method
+                      </Label>
+                      <select
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value as any)}
+                        disabled={numPaid <= 0}
+                        className="w-full mt-1 h-8 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-semibold disabled:opacity-50"
+                      >
+                        <option value="CASH">CASH (Drawer)</option>
+                        <option value="BANK">BANK (Transfer)</option>
+                        <option value="CHEQUE">CHEQUE</option>
+                        <option value="OTHER">OTHER</option>
+                      </select>
+                    </div>
+
+                    {/* Freight / Packing Charges */}
+                    <div>
+                      <Label className="text-[10px] uppercase font-bold text-slate-700 dark:text-slate-300">
+                        Freight / Packing (PKR)
+                      </Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={freightCharges}
+                        onChange={(e) => setFreightCharges(e.target.value)}
+                        placeholder="0.00"
+                        className="mt-1 h-8 text-xs text-right font-mono bg-white dark:bg-slate-900"
+                      />
+                    </div>
+                  </div>
 
                   {/* Notes */}
                   <div className="pt-1">
                     <Input
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
-                      placeholder="Invoice notes / remarks (optional)"
+                      placeholder="Estimate notes / remarks (optional)"
                       className="h-7 text-xs bg-slate-50 dark:bg-slate-950/50"
                     />
                   </div>
                 </div>
 
-                {/* Subtotal & Balance Due Readout */}
+                {/* Subtotal & 3-Figure Readout */}
                 <div className="sm:col-span-5 bg-slate-50 dark:bg-slate-800/80 p-3 rounded border border-slate-200 dark:border-slate-700 flex flex-col justify-between space-y-1.5 font-mono text-xs">
                   <div className="flex justify-between text-slate-600 dark:text-slate-400">
                     <span>Subtotal:</span>
@@ -1843,30 +1924,45 @@ export default function SalesPage() {
                     </span>
                   </div>
 
-                  <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                    <span>Amount Paid:</span>
-                    <span className="font-bold text-emerald-700 dark:text-emerald-400">
-                      PKR{" "}
-                      {paidImmediately
-                        ? (customAmountPaid !== "" ? Number(customAmountPaid) : invoiceSubtotal).toLocaleString(
-                            undefined,
-                            { minimumFractionDigits: 2 }
-                          )
-                        : "0.00"}
+                  {numFreight > 0 && (
+                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                      <span>Freight / Packing:</span>
+                      <span className="font-bold text-slate-900 dark:text-slate-100">
+                        PKR {numFreight.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between text-slate-900 dark:text-slate-100 border-t border-slate-200 dark:border-slate-700 pt-1 font-bold">
+                    <span>Total Amount:</span>
+                    <span className="text-sm">
+                      PKR {invoiceTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </span>
                   </div>
 
-                  <div className="flex justify-between border-t border-slate-200 dark:border-slate-700 pt-1 text-sm font-bold">
-                    <span>Balance Due:</span>
-                    <span className="text-rose-700 dark:text-rose-400">
-                      PKR{" "}
-                      {paidImmediately
-                        ? Math.max(
-                            0,
-                            invoiceSubtotal - (customAmountPaid !== "" ? Number(customAmountPaid) : invoiceSubtotal)
-                          ).toLocaleString(undefined, { minimumFractionDigits: 2 })
-                        : invoiceSubtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                    <span>Amount Paid:</span>
+                    <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                      PKR {numPaid.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </span>
+                  </div>
+
+                  <div className="flex justify-between items-center border-t border-slate-200 dark:border-slate-700 pt-1 text-sm font-bold">
+                    <span>Balance Due:</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className={balanceDue > 0 ? "text-rose-700 dark:text-rose-400" : "text-emerald-700 dark:text-emerald-400"}>
+                        PKR {balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                      <span
+                        className={`text-[9px] px-1.5 py-0.2 rounded font-sans uppercase font-bold ${
+                          balanceDue === 0
+                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                            : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                        }`}
+                      >
+                        {balanceDue === 0 ? "SETTLED" : "OPEN"}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1875,7 +1971,7 @@ export default function SalesPage() {
             {/* Window Footer Action Bar */}
             <div className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] text-slate-500 font-mono">
-                [Ctrl+Enter] Save Invoice  •  [Ctrl+P] Preview PDF  •  [Esc] Cancel
+                [Ctrl+Enter] Save Estimate  •  [Ctrl+P] Preview PDF  •  [Esc] Cancel
               </span>
 
               <div className="flex items-center gap-2">
@@ -1909,7 +2005,7 @@ export default function SalesPage() {
                   className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-4"
                 >
                   <Check className="h-3.5 w-3.5 mr-1.5" />
-                  {submitting ? "Posting Invoice..." : editingInvoiceId ? "Update Sale Invoice (Ctrl+Enter)" : "Save Sale Invoice (Ctrl+Enter)"}
+                  {submitting ? "Posting Estimate..." : editingInvoiceId ? "Update Estimate (Ctrl+Enter)" : "Save Estimate (Ctrl+Enter)"}
                 </Button>
               </div>
             </div>

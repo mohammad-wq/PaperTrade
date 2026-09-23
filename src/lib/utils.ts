@@ -6,8 +6,8 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export const DATE_FORMAT = "dd/MM/yyyy";
-export const DATE_TIME_FORMAT = "dd/MM/yyyy, HH:mm";
+export const DATE_FORMAT = "dd-MM-yyyy";
+export const DATE_TIME_FORMAT = "dd-MM-yyyy h:mm a";
 
 export function formatDate(
   date: Date | string | number | null | undefined,

@@ -146,8 +146,20 @@ export async function createSaleInvoiceAction(raw: unknown) {
         customerBalance = await getPartyBalance(customer.id, tx);
       }
 
-      // Calculate total amount
-      const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+      // Fallback location resolution
+      const fallbackLocationId =
+        input.locationId ||
+        input.items.find((it) => it.locationId)?.locationId ||
+        (await tx.location.findFirst({ select: { id: true } }))?.id;
+
+      if (!fallbackLocationId) {
+        throw userError("No stock location is configured in the system.");
+      }
+
+      // Calculate total amount with freight charges
+      const freight = typeof input.freightCharges === "number" ? Math.max(0, input.freightCharges) : 0;
+      const subtotal = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+      const totalAmount = subtotal + freight;
 
       // Check customer balance and credit limit warning
       let creditWarning: string | null = null;
@@ -160,7 +172,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
 
       // 2. Verify stock availability for each product at its specified location
       for (const item of input.items) {
-        const itemLocId = item.locationId || input.locationId;
+        const itemLocId = item.locationId || fallbackLocationId;
         const available = await getStockOnHand(item.productId, itemLocId, tx);
         if (available < item.quantity) {
           const product = await tx.product.findUnique({
@@ -183,6 +195,12 @@ export async function createSaleInvoiceAction(raw: unknown) {
         ? Math.min(totalAmount, rawPaid > 0 ? rawPaid : totalAmount)
         : Math.min(totalAmount, Math.max(0, rawPaid));
 
+      // Walk-in Customer cash-only enforcement
+      const isWalkIn = input.customerType === "WALK_IN" || customerName?.toLowerCase().includes("walk-in");
+      if (isWalkIn && paidAmount < totalAmount - 0.001) {
+        throw userError("Walk-in Customer sales cannot be made on credit. Amount paid must equal the total invoice amount.");
+      }
+
       // 3. Multi-table transaction with atomic financial year sequence
       const activeYear = await getActiveFinancialYear(tx);
       const { sequenceNo, formattedNumber } = await getNextAtomicSequence(tx, activeYear.id, "SALE_INVOICE");
@@ -193,7 +211,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
           : null;
       const finalNotes = [input.notes?.trim(), walkInContactDetails].filter(Boolean).join(" — ");
 
-      const isSettled = paidAmount >= totalAmount;
+      const isSettled = paidAmount >= totalAmount - 0.001;
 
       const invoice = await tx.saleInvoice.create({
         data: {
@@ -201,18 +219,20 @@ export async function createSaleInvoiceAction(raw: unknown) {
           financialYearId: activeYear.id,
           sequenceNo,
           customerId: targetCustomerId,
-          locationId: input.locationId,
+          locationId: fallbackLocationId,
           deliveryOrderId: input.deliveryOrderId || null,
           date: input.date,
           status: isSettled ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
           totalAmount,
           amountPaid: paidAmount,
+          freightCharges: freight,
+          walkInName: input.walkInName?.trim() || null,
           notes: finalNotes || null,
           createdById: session.user.id,
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
-              locationId: item.locationId || input.locationId,
+              locationId: item.locationId || fallbackLocationId,
               warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
@@ -240,14 +260,14 @@ export async function createSaleInvoiceAction(raw: unknown) {
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: item.locationId || input.locationId,
+              locationId: item.locationId || fallbackLocationId,
               warehouseLotId: item.warehouseLotId || null,
               type: StockMovementType.SALE_OUT,
               quantity: item.quantity,
               referenceType: "SALE_INVOICE",
               referenceId: invoice.id,
               createdById: session.user.id,
-              notes: `Sale Invoice ${invoice.invoiceNo} (${customerName})`,
+              notes: `Estimate ${invoice.invoiceNo} (${customerName})`,
             },
           });
         }
@@ -264,7 +284,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
           referenceType: "SALE_INVOICE",
           referenceId: invoice.id,
           date: input.date,
-          description: `Sale Invoice ${invoice.invoiceNo} (${customerName})`,
+          description: `Estimate ${invoice.invoiceNo} (${customerName})`,
           createdById: session.user.id,
         },
       });
@@ -279,7 +299,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
           referenceType: "SALE_INVOICE",
           referenceId: invoice.id,
           date: input.date,
-          description: `Sale Revenue from ${invoice.invoiceNo}`,
+          description: `Sales Revenue from ${invoice.invoiceNo}`,
           createdById: session.user.id,
         },
       });
@@ -302,8 +322,9 @@ export async function createSaleInvoiceAction(raw: unknown) {
             saleInvoiceId: invoice.id,
             amount: paidAmount,
             method: input.paymentMethod || PaymentMethod.CASH,
+            direction: "IN",
             date: input.date,
-            notes: `Settlement for invoice ${invoice.invoiceNo} (${input.customerType === "WALK_IN" ? "Walk-in Sale" : "Registered Customer"})`,
+            notes: `Settlement for Estimate ${invoice.invoiceNo} (${input.customerType === "WALK_IN" ? "Walk-in Sale" : "Registered Customer"})`,
             createdById: session.user.id,
           },
         });
@@ -458,8 +479,21 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         customerBalance = await getPartyBalance(customer.id, tx);
       }
 
-      // Calculate total amount
-      const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+      // Fallback location resolution
+      const fallbackLocationId =
+        input.locationId ||
+        input.items.find((it) => it.locationId)?.locationId ||
+        existing.locationId ||
+        (await tx.location.findFirst({ select: { id: true } }))?.id;
+
+      if (!fallbackLocationId) {
+        throw userError("No stock location is configured in the system.");
+      }
+
+      // Calculate total amount with freight charges
+      const freight = typeof input.freightCharges === "number" ? Math.max(0, input.freightCharges) : 0;
+      const subtotal = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+      const totalAmount = subtotal + freight;
 
       // Revert previous side effects safely before re-checking stock and re-posting
       // A. Delete old stock movements generated by this invoice
@@ -482,7 +516,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
       const oldAutoPayments = await tx.payment.findMany({
         where: {
           saleInvoiceId: existing.id,
-          notes: { contains: "Settlement for invoice" },
+          notes: { contains: "Settlement for" },
         },
         select: { id: true },
       });
@@ -495,7 +529,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
 
       // 3. Verify stock availability for each item at its specified location (now that old stock movements are cleared)
       for (const item of input.items) {
-        const itemLocId = item.locationId || input.locationId;
+        const itemLocId = item.locationId || fallbackLocationId;
         const available = await getStockOnHand(item.productId, itemLocId, tx);
         if (available < item.quantity) {
           const product = await tx.product.findUnique({
@@ -518,23 +552,31 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         ? Math.min(totalAmount, rawPaid > 0 ? rawPaid : totalAmount)
         : Math.min(totalAmount, Math.max(0, rawPaid));
 
+      // Walk-in Customer cash-only enforcement
+      const isWalkIn = input.customerType === "WALK_IN" || customerName?.toLowerCase().includes("walk-in");
+      if (isWalkIn && paidAmount < totalAmount - 0.001) {
+        throw userError("Walk-in Customer sales cannot be made on credit. Amount paid must equal the total invoice amount.");
+      }
+
       const walkInContactDetails =
         input.customerType === "WALK_IN" && (input.walkInPhone || input.walkInAddress)
           ? `Walk-in: ${[input.walkInName || "Walk-in Customer", input.walkInPhone, input.walkInAddress].filter(Boolean).join(" | ")}`
           : null;
       const finalNotes = [input.notes?.trim(), walkInContactDetails].filter(Boolean).join(" — ");
-      const isSettled = paidAmount >= totalAmount;
+      const isSettled = paidAmount >= totalAmount - 0.001;
 
       // Update invoice record
       const updatedInvoice = await tx.saleInvoice.update({
         where: { id: existing.id },
         data: {
           customerId: targetCustomerId,
-          locationId: input.locationId,
+          locationId: fallbackLocationId,
           date: input.date,
           status: isSettled ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
           totalAmount,
           amountPaid: paidAmount,
+          freightCharges: freight,
+          walkInName: input.walkInName?.trim() || null,
           notes: finalNotes || null,
         },
       });
@@ -547,7 +589,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         data: input.items.map((item) => ({
           invoiceId: existing.id,
           productId: item.productId,
-          locationId: item.locationId || input.locationId,
+          locationId: item.locationId || fallbackLocationId,
           warehouseLotId: item.warehouseLotId || null,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -572,14 +614,14 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: item.locationId || input.locationId,
+              locationId: item.locationId || fallbackLocationId,
               warehouseLotId: item.warehouseLotId || null,
               type: StockMovementType.SALE_OUT,
               quantity: item.quantity,
               referenceType: "SALE_INVOICE",
               referenceId: existing.id,
               createdById: session.user.id,
-              notes: `Sale Invoice ${existing.invoiceNo} (${customerName}) [Edited]`,
+              notes: `Estimate ${existing.invoiceNo} (${customerName}) [Edited]`,
             },
           });
         }
@@ -596,7 +638,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           referenceType: "SALE_INVOICE",
           referenceId: existing.id,
           date: input.date,
-          description: `Sale Invoice ${existing.invoiceNo} (${customerName})`,
+          description: `Estimate ${existing.invoiceNo} (${customerName})`,
           createdById: session.user.id,
         },
       });
@@ -611,7 +653,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           referenceType: "SALE_INVOICE",
           referenceId: existing.id,
           date: input.date,
-          description: `Sale Revenue from ${existing.invoiceNo}`,
+          description: `Sales Revenue from ${existing.invoiceNo}`,
           createdById: session.user.id,
         },
       });
@@ -635,8 +677,9 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             saleInvoiceId: existing.id,
             amount: paidAmount,
             method: input.paymentMethod || PaymentMethod.CASH,
+            direction: "IN",
             date: input.date,
-            notes: `Settlement for invoice ${existing.invoiceNo} (${input.customerType === "WALK_IN" ? "Walk-in Sale" : "Registered Customer"})`,
+            notes: `Settlement for Estimate ${existing.invoiceNo} (${input.customerType === "WALK_IN" ? "Walk-in Sale" : "Registered Customer"})`,
             createdById: session.user.id,
           },
         });
@@ -713,6 +756,9 @@ export async function listPurchaseInvoicesAction() {
     return invoices.map((inv) => ({
       ...inv,
       totalAmount: Number(inv.totalAmount),
+      amountPaid: Number(inv.amountPaid || 0),
+      balanceDue: Math.max(0, Number(inv.totalAmount) - Number(inv.amountPaid || 0)),
+      freightCharges: Number(inv.freightCharges || 0),
       items: inv.items.map((item) => ({
         ...item,
         quantity: Number(item.quantity),
@@ -802,7 +848,22 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         supplierName = supp.name;
       }
 
-      const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
+      const fallbackLocationId =
+        input.locationId ||
+        input.items.find((it: any) => it.locationId)?.locationId ||
+        (await tx.location.findFirst({ select: { id: true } }))?.id;
+
+      if (!fallbackLocationId) {
+        throw userError("No stock location is configured in the system.");
+      }
+
+      const freight = typeof input.freightCharges === "number" ? Math.max(0, input.freightCharges) : 0;
+      const subtotal = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
+      const totalAmount = subtotal + freight;
+
+      const rawPaid = typeof input.amountPaid === "number" ? input.amountPaid : 0;
+      const paidAmount = Math.min(totalAmount, Math.max(0, rawPaid));
+      const isSettled = paidAmount >= totalAmount - 0.001;
       
       const activeYear = await getActiveFinancialYear(tx);
       const { sequenceNo, formattedNumber } = await getNextAtomicSequence(tx, activeYear.id, "PURCHASE_INVOICE");
@@ -813,16 +874,19 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           financialYearId: activeYear.id,
           sequenceNo,
           supplierId: targetSupplierId!,
-          locationId: input.locationId,
+          locationId: fallbackLocationId,
           purchaseOrderId: input.purchaseOrderId || null,
           date: input.date,
-          status: InvoiceStatus.OPEN,
+          status: isSettled ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
           totalAmount,
+          amountPaid: paidAmount,
+          freightCharges: freight,
           notes: input.notes || null,
           createdById: session.user.id,
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
+              locationId: (item as any).locationId || fallbackLocationId,
               warehouseLotId: item.warehouseLotId || input.warehouseLotId || null,
               quantity: item.quantity,
               unitCost: item.unitCost,
@@ -852,10 +916,11 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
       // Create stock movements (PURCHASE_IN) at receiving location only if not already fulfilled
       if (!alreadyFulfilledByPO) {
         for (const item of input.items) {
+          const itemLoc = (item as any).locationId || fallbackLocationId;
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: input.locationId,
+              locationId: itemLoc,
               warehouseLotId: item.warehouseLotId || input.warehouseLotId || null,
               type: StockMovementType.PURCHASE_IN,
               quantity: item.quantity,
@@ -898,6 +963,62 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           createdById: session.user.id,
         },
       });
+
+      // If immediate payment was made
+      if (paidAmount > 0) {
+        const { sequenceNo: paymentSeq, formattedNumber: paymentFormatted } = await getNextAtomicSequence(
+          tx,
+          activeYear.id,
+          "PAYMENT_RECEIPT"
+        );
+        const receiptNo = `PAY-${paymentFormatted}`;
+
+        const payment = await tx.payment.create({
+          data: {
+            receiptNo,
+            financialYearId: activeYear.id,
+            sequenceNo: paymentSeq,
+            partyId: targetSupplierId!,
+            purchaseInvoiceId: invoice.id,
+            amount: paidAmount,
+            method: PaymentMethod.CASH,
+            direction: "OUT",
+            date: input.date,
+            notes: `Payment for Purchase Invoice ${invoice.invoiceNo} (${supplierName})`,
+            createdById: session.user.id,
+          },
+        });
+
+        // Supplier Payable reduced (Debit)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetSupplierId!,
+            accountType: AccountType.PAYABLE,
+            debit: paidAmount,
+            credit: 0,
+            referenceType: "PAYMENT",
+            referenceId: payment.id,
+            date: input.date,
+            description: `Payment for ${invoice.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+
+        // Cash outflow (Credit)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.CASH,
+            debit: 0,
+            credit: paidAmount,
+            referenceType: "PAYMENT",
+            referenceId: payment.id,
+            date: input.date,
+            description: `Cash payment for ${invoice.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+      }
 
       return {
         invoiceId: invoice.id,

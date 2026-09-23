@@ -33,18 +33,22 @@ import { listProductsAction } from "@/actions/products";
 import { listWarehouseLotsAction, createWarehouseLotAction } from "@/actions/warehouse-lots";
 import { DeliveryOrderStatus, Unit } from "@prisma/client";
 import { format } from "date-fns";
-import { cn } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
+import { formatSequenceDisplay } from "@/lib/financial-year";
+import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 
 type DORow = {
   id: string;
   doNo: string;
+  sequenceNo?: number | null;
   date: Date;
   status: DeliveryOrderStatus;
   vehicleNo: string | null;
   driverName: string | null;
   deliveredTo: string | null;
+  recipientName: string | null;
   notes: string | null;
   customer: { id: string; name: string; phone: string | null } | null;
   location: { id: string; name: string };
@@ -133,10 +137,15 @@ export default function DeliveryOrdersPage() {
   const [customerId, setCustomerId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [destinationLocationId, setDestinationLocationId] = useState("");
-  const [orderDate, setOrderDate] = useState(new Date().toISOString().slice(0, 10));
+  const [orderDate, setOrderDate] = useState(() => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  });
   const [vehicleNo, setVehicleNo] = useState("");
   const [driverName, setDriverName] = useState("");
   const [deliveredTo, setDeliveredTo] = useState("");
+  const [recipientName, setRecipientName] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<LineItem[]>([
     { productId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET },
@@ -171,6 +180,9 @@ export default function DeliveryOrdersPage() {
           if (parsed.saleInvoiceId) setSaleInvoiceId(parsed.saleInvoiceId);
           if (parsed.customerId) setCustomerId(parsed.customerId);
           if (parsed.locationId) setLocationId(parsed.locationId);
+          if (parsed.recipientName || parsed.customerName) {
+            setRecipientName(parsed.recipientName || parsed.customerName || "");
+          }
           if (Array.isArray(parsed.items) && parsed.items.length > 0) {
             setItems(
               parsed.items.map((item: any) => ({
@@ -220,6 +232,7 @@ export default function DeliveryOrdersPage() {
         date: orderDate,
         partyName: orderType === "CUSTOMER" ? selectedCustomer?.name || "Customer" : "Internal Stock Transfer",
         partyPhone: selectedCustomer ? (selectedCustomer as any).phone || null : null,
+        recipientName: recipientName || null,
         locationName: selectedLoc?.name || "Warehouse",
         referenceNo: vehicleNo ? `Vehicle: ${vehicleNo}` : null,
         notes: notes || null,
@@ -508,13 +521,14 @@ export default function DeliveryOrdersPage() {
         destinationLocationId: orderType === "INTERNAL_TRANSFER" ? destinationLocationId : null,
         saleInvoiceId: saleInvoiceId || undefined,
         date: new Date(orderDate),
-        status: DeliveryOrderStatus.DRAFT,
-        vehicleNo,
-        driverName,
+        status: DeliveryOrderStatus.DISPATCHED,
+        vehicleNo: vehicleNo || undefined,
+        driverName: driverName || undefined,
         deliveredTo: orderType === "INTERNAL_TRANSFER"
           ? (locations.find(l => l.id === destinationLocationId)?.name || deliveredTo)
           : deliveredTo,
-        notes,
+        recipientName: recipientName.trim() || undefined,
+        notes: notes || undefined,
         items: items.map((i) => ({
           productId: i.productId,
           warehouseLotId: i.warehouseLotId || undefined,
@@ -531,10 +545,13 @@ export default function DeliveryOrdersPage() {
         setCustomerId("");
         setLocationId("");
         setDestinationLocationId("");
-        setOrderDate(new Date().toISOString().slice(0, 10));
+        const now = new Date();
+        const pad = (n: number) => String(n).padStart(2, "0");
+        setOrderDate(`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`);
         setVehicleNo("");
         setDriverName("");
         setDeliveredTo("");
+        setRecipientName("");
         setNotes("");
         setItems([{ productId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET }]);
         await loadData();
@@ -692,7 +709,9 @@ export default function DeliveryOrdersPage() {
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="flex items-center gap-1.5">
-                      <CardTitle className="text-base font-bold text-slate-900">{order.doNo}</CardTitle>
+                      <CardTitle className="text-base font-bold text-slate-900">
+                        #{formatSequenceDisplay(order.sequenceNo, order.doNo)}
+                      </CardTitle>
                       {order.financialYear && (
                         <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">
                           {order.financialYear.label}
@@ -717,6 +736,12 @@ export default function DeliveryOrdersPage() {
               </CardHeader>
 
               <CardContent className="py-3 space-y-2 text-xs">
+                {order.recipientName && (
+                  <div className="flex justify-between text-slate-600">
+                    <span>Recipient:</span>
+                    <span className="font-semibold text-amber-900">{order.recipientName}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-slate-600">
                   <span>From Location:</span>
                   <span className="font-semibold text-slate-800">{order.location.name}</span>
@@ -728,8 +753,8 @@ export default function DeliveryOrdersPage() {
                   </div>
                 )}
                 <div className="flex justify-between text-slate-600">
-                  <span>Date:</span>
-                  <span>{format(new Date(order.date), "dd/MM/yyyy")}</span>
+                  <span>Date & Time:</span>
+                  <span className="font-medium text-slate-800">{formatDateTime(order.date)}</span>
                 </div>
                 {order.vehicleNo && (
                   <div className="flex justify-between text-slate-600">
@@ -909,103 +934,116 @@ export default function DeliveryOrdersPage() {
                 </div>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-4">
                 {orderType === "CUSTOMER" ? (
                   <>
                     <div className="space-y-1">
-                      <Label htmlFor="docustomer" className="text-xs font-semibold">
+                      <Label className="text-xs font-semibold">
                         Customer <span className="text-rose-500">*</span>
                       </Label>
-                      <select
-                        id="docustomer"
+                      <SearchCombobox
+                        options={customers.map((c) => ({
+                          id: c.id,
+                          label: c.name,
+                          sublabel: c.type || undefined,
+                        }))}
                         value={customerId}
-                        onChange={(e) => setCustomerId(e.target.value)}
-                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
-                        required
-                      >
-                        <option value="">Select party</option>
-                        {customers.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name} {c.type ? `[${c.type}]` : ""}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setCustomerId(val)}
+                        placeholder="Select customer..."
+                        className="text-xs h-8"
+                      />
                     </div>
 
                     <div className="space-y-1">
-                      <Label htmlFor="dolocation" className="text-xs font-semibold">
+                      <Label htmlFor="recipientName" className="text-xs font-semibold">
+                        Recipient Name <span className="text-slate-400 font-normal">(Optional)</span>
+                      </Label>
+                      <Input
+                        id="recipientName"
+                        value={recipientName}
+                        onChange={(e) => setRecipientName(e.target.value)}
+                        placeholder="e.g. Ali Ahmed"
+                        className="text-xs h-8"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label className="text-xs font-semibold">
                         Dispatch Warehouse <span className="text-rose-500">*</span>
                       </Label>
-                      <select
-                        id="dolocation"
+                      <SearchCombobox
+                        options={warehouseLocations.map((loc) => ({
+                          id: loc.id,
+                          label: `${loc.name} [Warehouse]`,
+                        }))}
                         value={locationId}
-                        onChange={(e) => handleLocationChange(e.target.value)}
-                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
-                        required
-                      >
-                        <option value="">Select Warehouse *</option>
-                        {warehouseLocations.map((loc) => (
-                          <option key={loc.id} value={loc.id}>
-                            {loc.name} [Warehouse]
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => handleLocationChange(val)}
+                        placeholder="Select warehouse..."
+                        className="text-xs h-8"
+                      />
                     </div>
                   </>
                 ) : (
                   <>
                     <div className="space-y-1">
-                      <Label htmlFor="dofromlocation" className="text-xs font-semibold text-rose-800">
+                      <Label className="text-xs font-semibold text-rose-800">
                         Source Location (From) <span className="text-rose-500">*</span>
                       </Label>
-                      <select
-                        id="dofromlocation"
+                      <SearchCombobox
+                        options={locations.map((loc) => ({
+                          id: loc.id,
+                          label: `${loc.name} ${loc.type === "WAREHOUSE" ? "(Warehouse)" : ""}`,
+                        }))}
                         value={locationId}
-                        onChange={(e) => handleLocationChange(e.target.value)}
-                        className="w-full rounded-md border border-rose-200 bg-rose-50/30 px-3 py-2 text-xs font-medium"
-                        required
-                      >
-                        <option value="">Select source</option>
-                        {locations.map((loc) => (
-                          <option key={loc.id} value={loc.id}>
-                            {loc.name} {loc.type === "WAREHOUSE" ? "(Warehouse)" : ""}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => handleLocationChange(val)}
+                        placeholder="Select source..."
+                        className="text-xs h-8"
+                      />
                     </div>
 
                     <div className="space-y-1">
-                      <Label htmlFor="dotolocation" className="text-xs font-semibold text-emerald-800">
+                      <Label className="text-xs font-semibold text-emerald-800">
                         Destination Location (To) <span className="text-rose-500">*</span>
                       </Label>
-                      <select
-                        id="dotolocation"
+                      <SearchCombobox
+                        options={locations
+                          .filter((loc) => loc.id !== locationId)
+                          .map((loc) => ({
+                            id: loc.id,
+                            label: loc.name,
+                          }))}
                         value={destinationLocationId}
-                        onChange={(e) => setDestinationLocationId(e.target.value)}
-                        className="w-full rounded-md border border-emerald-200 bg-emerald-50/30 px-3 py-2 text-xs font-medium"
-                        required
-                      >
-                        <option value="">Select destination</option>
-                        {locations.map((loc) => (
-                          <option key={loc.id} value={loc.id} disabled={loc.id === locationId}>
-                            {loc.name} {loc.id === locationId ? "(Source)" : ""}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setDestinationLocationId(val)}
+                        placeholder="Select destination..."
+                        className="text-xs h-8"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="recipientName" className="text-xs font-semibold">
+                        Recipient Name <span className="text-slate-400 font-normal">(Optional)</span>
+                      </Label>
+                      <Input
+                        id="recipientName"
+                        value={recipientName}
+                        onChange={(e) => setRecipientName(e.target.value)}
+                        placeholder="e.g. Warehouse Receiver"
+                        className="text-xs h-8"
+                      />
                     </div>
                   </>
                 )}
 
                 <div className="space-y-1">
                   <Label htmlFor="dodate" className="text-xs font-semibold">
-                    Date <span className="text-rose-500">*</span>
+                    Date & Time <span className="text-rose-500">*</span>
                   </Label>
                   <Input
                     id="dodate"
-                    type="date"
+                    type="datetime-local"
                     value={orderDate}
                     onChange={(e) => setOrderDate(e.target.value)}
-                    className="text-xs"
+                    className="text-xs h-8"
                     required
                   />
                 </div>
@@ -1079,39 +1117,37 @@ export default function DeliveryOrdersPage() {
                       )}
                     >
                       <div>
-                        <select
+                        <SearchCombobox
+                          options={products.map((p) => ({
+                            id: p.id,
+                            label: `${p.productNo} - ${p.name}`,
+                            sublabel: p.unit,
+                          }))}
                           value={item.productId}
-                          onChange={(e) => handleProductChange(idx, e.target.value)}
-                          className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
-                          required
-                        >
-                          <option value="">Select paper item</option>
-                          {products.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.productNo} - {p.name}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={(val) => handleProductChange(idx, val)}
+                          placeholder="Select paper item..."
+                          className="text-xs h-8"
+                        />
                       </div>
 
                       {showLotSelector && (
                         <div className="flex items-center gap-1">
-                          <select
-                            value={item.warehouseLotId || ""}
-                            onChange={(e) => handleLotChange(idx, e.target.value)}
-                            className={cn(
-                              "w-full rounded-md border px-2 py-1.5 text-xs font-mono",
-                              !item.warehouseLotId ? "border-rose-300 bg-rose-50/40 text-rose-900" : "border-slate-200 bg-white"
-                            )}
-                            required
-                          >
-                            <option value="">Select Lot *</option>
-                            {sourceLocationLots.map((lot) => (
-                              <option key={lot.id} value={lot.id}>
-                                #{lot.lotNumber}{lot.description ? ` (${lot.description})` : ""}
-                              </option>
-                            ))}
-                          </select>
+                          <div className="flex-1">
+                            <SearchCombobox
+                              options={sourceLocationLots.map((lot) => ({
+                                id: lot.id,
+                                label: `#${lot.lotNumber}`,
+                                sublabel: lot.description || undefined,
+                              }))}
+                              value={item.warehouseLotId || ""}
+                              onChange={(val) => handleLotChange(idx, val)}
+                              placeholder="Select Lot *"
+                              className={cn(
+                                "text-xs h-8 font-mono",
+                                !item.warehouseLotId && "border-rose-300"
+                              )}
+                            />
+                          </div>
                           <Button
                             type="button"
                             variant="ghost"

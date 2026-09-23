@@ -31,6 +31,9 @@ import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { PurchaseOrderStatus } from "@prisma/client";
 import { format } from "date-fns";
+import { formatDateTime } from "@/lib/utils";
+import { formatSequenceDisplay } from "@/lib/financial-year";
+import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 
@@ -543,9 +546,11 @@ export default function PurchaseOrdersPage() {
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="flex items-center gap-1.5">
-                        <CardTitle className="text-base font-bold text-slate-900">{order.orderNo}</CardTitle>
+                        <CardTitle className="text-base font-bold text-slate-900">
+                          #{formatSequenceDisplay((order as any).sequenceNo, order.orderNo)}
+                        </CardTitle>
                         {order.financialYear && (
-                          <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-mono">
                             {order.financialYear.label}
                           </span>
                         )}
@@ -562,8 +567,8 @@ export default function PurchaseOrdersPage() {
                     <span className="font-semibold text-slate-800">{order.location.name}</span>
                   </div>
                   <div className="flex justify-between text-slate-600">
-                    <span>Date:</span>
-                    <span>{format(new Date(order.date), "dd/MM/yyyy")}</span>
+                    <span>Date & Time:</span>
+                    <span className="font-medium text-slate-800">{formatDateTime(order.date)}</span>
                   </div>
                   <div className="flex justify-between text-slate-600">
                     <span>Ordered Items:</span>
@@ -587,6 +592,18 @@ export default function PurchaseOrdersPage() {
                       >
                         <Send className="mr-1 h-3 w-3" />
                         Mark Sent
+                      </Button>
+                    )}
+                    {(order.status === PurchaseOrderStatus.SENT || order.status === PurchaseOrderStatus.DRAFT) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.FULFILLED)}
+                        className="h-7 text-[11px] text-emerald-700 hover:bg-emerald-50 px-2 font-semibold"
+                        title="Fulfill purchase order and receive inventory stock"
+                      >
+                        <CheckCircle2 className="mr-1 h-3 w-3 text-emerald-600" />
+                        Receive Stock
                       </Button>
                     )}
                     {order.status !== PurchaseOrderStatus.CANCELLED && order.status !== PurchaseOrderStatus.FULFILLED && (
@@ -709,7 +726,23 @@ export default function PurchaseOrdersPage() {
                       </Label>
                       {selectedSupplier && (
                         <span className="text-[11px] text-slate-500">
-                          Payable: <strong className="text-amber-800">PKR {Number(selectedSupplier.balance || 0).toLocaleString()}</strong>
+                          Balance:{" "}
+                          <strong
+                            className={
+                              Number(selectedSupplier.balance || 0) > 0
+                                ? "text-emerald-700"
+                                : Number(selectedSupplier.balance || 0) < 0
+                                ? "text-amber-800"
+                                : "text-slate-600"
+                            }
+                          >
+                            PKR {Math.abs(Number(selectedSupplier.balance || 0)).toLocaleString()}{" "}
+                            {Number(selectedSupplier.balance || 0) > 0
+                              ? "(Receivable)"
+                              : Number(selectedSupplier.balance || 0) < 0
+                              ? "(Payable)"
+                              : "(Settled)"}
+                          </strong>
                         </span>
                       )}
                     </div>
@@ -761,29 +794,26 @@ export default function PurchaseOrdersPage() {
                   <Label htmlFor="polocation" className="text-xs font-semibold">
                     Destination Location <span className="text-rose-500">*</span>
                   </Label>
-                  <select
-                    id="polocation"
+                  <SearchCombobox
+                    options={locations.map((loc) => ({
+                      id: loc.id,
+                      label: loc.name,
+                    }))}
                     value={locationId}
-                    onChange={(e) => setLocationId(e.target.value)}
-                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                    onChange={(val) => setLocationId(val)}
+                    placeholder="Select destination location"
+                    className="w-full text-xs"
                     required
-                  >
-                    <option value="">Select location</option>
-                    {locations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>
-                        {loc.name}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
 
                 <div className="space-y-1">
                   <Label htmlFor="podate" className="text-xs font-semibold">
-                    Order Date <span className="text-rose-500">*</span>
+                    Order Date & Time <span className="text-rose-500">*</span>
                   </Label>
                   <Input
                     id="podate"
-                    type="date"
+                    type="datetime-local"
                     value={orderDate}
                     onChange={(e) => setOrderDate(e.target.value)}
                     className="text-xs"

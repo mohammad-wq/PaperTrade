@@ -364,9 +364,11 @@ type ItemRow = {
 export function DocumentPdfView({
   docType,
   docNumber,
+  sequenceNo,
   date,
   partyLabel,
   partyName,
+  walkInName,
   partyAddress,
   partyPhone,
   locationName,
@@ -374,6 +376,7 @@ export function DocumentPdfView({
   items,
   totalAmount,
   amountPaid,
+  freightCharges,
   financialYearLabel,
   notes,
   deliveryDetails,
@@ -381,10 +384,12 @@ export function DocumentPdfView({
 }: {
   docType: string;
   docNumber: string;
+  sequenceNo?: number | null;
   financialYearLabel?: string | null;
   date: string;
   partyLabel: string;
   partyName: string;
+  walkInName?: string | null;
   partyAddress?: string | null;
   partyPhone?: string | null;
   locationName?: string;
@@ -392,16 +397,37 @@ export function DocumentPdfView({
   items: ItemRow[];
   totalAmount?: number;
   amountPaid?: number;
+  freightCharges?: number;
   notes?: string | null;
-  deliveryDetails?: { vehicleNo?: string | null; driverName?: string | null; deliveredTo?: string | null };
+  deliveryDetails?: {
+    vehicleNo?: string | null;
+    driverName?: string | null;
+    deliveredTo?: string | null;
+    recipientName?: string | null;
+  };
   signatures?: { leftLabel: string; rightLabel: string };
 }) {
   const companyName = process.env.BUSINESS_NAME || "PAPER TRADE CO.";
   const companyAddress = process.env.BUSINESS_ADDRESS || "Wholesale Paper Market, Station Road";
   const companyPhone = process.env.BUSINESS_PHONE || "+92-300-1234567";
 
+  const isSaleInvoice =
+    docType.toLowerCase().includes("sale") || docType.toLowerCase() === "estimate";
+  const printedHeading = isSaleInvoice ? "Estimate" : docType;
+  const displayDocNumber =
+    typeof sequenceNo === "number" && sequenceNo > 0
+      ? `#${String(sequenceNo).padStart(3, "0")}`
+      : docNumber;
+
+  const displayPartyName = walkInName
+    ? `${partyName} (${walkInName})`
+    : deliveryDetails?.recipientName
+      ? `${partyName} (Attn: ${deliveryDetails.recipientName})`
+      : partyName;
+
   const hasRates = items.some((i) => typeof i.unitPrice === "number" && !isNaN(i.unitPrice));
-  const isDeliveryOrder = docType.toLowerCase().includes("delivery") || docType.toLowerCase().includes("transfer");
+  const isDeliveryOrder =
+    docType.toLowerCase().includes("delivery") || docType.toLowerCase().includes("transfer");
   const hasLots = isDeliveryOrder || items.some((i) => Boolean(i.lot));
 
   return (
@@ -417,13 +443,15 @@ export function DocumentPdfView({
             </View>
           </View>
           <View style={styles.docTitleBox}>
-            <Text style={styles.docTitle}>{docType}</Text>
+            <Text style={styles.docTitle}>{printedHeading}</Text>
             <View style={styles.docNumberRow}>
               <Text style={styles.docNumberLabel}>No:</Text>
-              <Text style={styles.docNumber}>{docNumber}</Text>
+              <Text style={styles.docNumber}>{displayDocNumber}</Text>
             </View>
             <Text style={styles.docMeta}>Date: {date}</Text>
-            {financialYearLabel ? <Text style={styles.docMeta}>Financial Year: {financialYearLabel}</Text> : null}
+            {financialYearLabel ? (
+              <Text style={styles.docMeta}>Financial Year: {financialYearLabel}</Text>
+            ) : null}
             {referenceNo ? <Text style={styles.docMeta}>Ref: {referenceNo}</Text> : null}
           </View>
         </View>
@@ -432,7 +460,7 @@ export function DocumentPdfView({
         <View style={styles.metaSection}>
           <View style={styles.metaPartyCol}>
             <Text style={styles.sectionHeading}>{partyLabel}</Text>
-            <Text style={styles.metaPartyName}>{partyName}</Text>
+            <Text style={styles.metaPartyName}>{displayPartyName}</Text>
             {partyAddress ? <Text style={styles.metaPartyText}>{partyAddress}</Text> : null}
             {partyPhone ? <Text style={styles.metaPartyText}>Phone: {partyPhone}</Text> : null}
           </View>
@@ -460,6 +488,12 @@ export function DocumentPdfView({
               <View style={styles.metaKeyValueRow}>
                 <Text style={styles.metaKey}>Driver Name:</Text>
                 <Text style={styles.metaVal}>{deliveryDetails.driverName}</Text>
+              </View>
+            ) : null}
+            {deliveryDetails?.recipientName ? (
+              <View style={styles.metaKeyValueRow}>
+                <Text style={styles.metaKey}>Recipient:</Text>
+                <Text style={styles.metaVal}>{deliveryDetails.recipientName}</Text>
               </View>
             ) : null}
             {deliveryDetails?.deliveredTo ? (
@@ -568,25 +602,41 @@ export function DocumentPdfView({
 
           {typeof totalAmount === "number" && !isNaN(totalAmount) ? (
             <View style={styles.summaryCol}>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Subtotal:</Text>
-                <Text style={styles.summaryValue}>PKR {formatMoney(totalAmount)}</Text>
-              </View>
-              {typeof amountPaid === "number" && !isNaN(amountPaid) && amountPaid > 0 ? (
+              {typeof freightCharges === "number" && freightCharges > 0 ? (
                 <>
                   <View style={styles.summaryRow}>
-                    <Text style={styles.summaryLabel}>Amount Received:</Text>
-                    <Text style={styles.summaryValue}>PKR {formatMoney(amountPaid)}</Text>
+                    <Text style={styles.summaryLabel}>Subtotal:</Text>
+                    <Text style={styles.summaryValue}>
+                      PKR {formatMoney(totalAmount - freightCharges)}
+                    </Text>
                   </View>
                   <View style={styles.summaryRow}>
-                    <Text style={styles.summaryLabel}>Balance Due:</Text>
-                    <Text style={styles.summaryValue}>PKR {formatMoney(totalAmount - amountPaid)}</Text>
+                    <Text style={styles.summaryLabel}>Freight / Packing:</Text>
+                    <Text style={styles.summaryValue}>PKR {formatMoney(freightCharges)}</Text>
                   </View>
                 </>
               ) : null}
               <View style={styles.grandTotalRow}>
                 <Text style={styles.grandTotalLabel}>Total Amount:</Text>
                 <Text style={styles.grandTotalValue}>PKR {formatMoney(totalAmount)}</Text>
+              </View>
+              {/* Always display 3 figures summary block, even when zero */}
+              <View style={[styles.summaryRow, { marginTop: 4 }]}>
+                <Text style={styles.summaryLabel}>Amount Paid:</Text>
+                <Text style={styles.summaryValue}>PKR {formatMoney(amountPaid || 0)}</Text>
+              </View>
+              <View
+                style={[
+                  styles.summaryRow,
+                  { borderTopWidth: 0.75, borderTopColor: "#000000", paddingTop: 3, marginTop: 2 },
+                ]}
+              >
+                <Text style={[styles.summaryLabel, { fontFamily: "Helvetica-Bold", color: "#000000" }]}>
+                  Balance Due:
+                </Text>
+                <Text style={[styles.summaryValue, { fontFamily: "Helvetica-Bold", color: "#000000" }]}>
+                  PKR {formatMoney(Math.max(0, totalAmount - (amountPaid || 0)))}
+                </Text>
               </View>
             </View>
           ) : null}
@@ -620,6 +670,8 @@ export function DocumentPdfView({
 
 export function PaymentReceiptPdfView({
   receiptNo,
+  sequenceNo,
+  direction = "IN",
   financialYearLabel,
   date,
   partyName,
@@ -627,12 +679,16 @@ export function PaymentReceiptPdfView({
   partyPhone,
   partyAddress,
   amount,
+  remainingBalance,
   method,
   notes,
   invoiceNo,
   createdByName,
+  splits,
 }: {
   receiptNo: string;
+  sequenceNo?: number | null;
+  direction?: string;
   financialYearLabel?: string | null;
   date: string;
   partyName: string;
@@ -640,18 +696,24 @@ export function PaymentReceiptPdfView({
   partyPhone?: string | null;
   partyAddress?: string | null;
   amount: number;
+  remainingBalance?: number | null;
   method: string;
   notes?: string | null;
   invoiceNo?: string | null;
   createdByName?: string | null;
+  splits?: Array<{ method: string; amount: number; reference?: string | null }>;
 }) {
   const companyName = process.env.BUSINESS_NAME || "PAPER TRADE CO.";
   const companyAddress = process.env.BUSINESS_ADDRESS || "Wholesale Paper Market, Station Road";
   const companyPhone = process.env.BUSINESS_PHONE || "+92-300-1234567";
 
-  const isCustomer = (partyType || "").toUpperCase() === "CUSTOMER";
-  const receiptTitle = isCustomer ? "Official Payment Receipt" : "Payment Voucher / Receipt";
-  const partyHeaderLabel = isCustomer ? "Received From (Customer)" : "Paid To (Supplier / Payee)";
+  const isMoneyIn = direction === "IN" || (partyType || "").toUpperCase() === "CUSTOMER";
+  const receiptTitle = isMoneyIn ? "Official Payment Receipt" : "Payment Disbursement Voucher";
+  const partyHeaderLabel = isMoneyIn ? "Received From (Customer)" : "Paid To (Supplier / Payee)";
+  const displayReceiptNo =
+    typeof sequenceNo === "number" && sequenceNo > 0
+      ? `#${String(sequenceNo).padStart(3, "0")}`
+      : receiptNo;
 
   return (
     <Document>
@@ -668,11 +730,13 @@ export function PaymentReceiptPdfView({
           <View style={styles.docTitleBox}>
             <Text style={styles.docTitle}>{receiptTitle}</Text>
             <View style={styles.docNumberRow}>
-              <Text style={styles.docNumberLabel}>Receipt No:</Text>
-              <Text style={styles.docNumber}>{receiptNo}</Text>
+              <Text style={styles.docNumberLabel}>Voucher No:</Text>
+              <Text style={styles.docNumber}>{displayReceiptNo}</Text>
             </View>
             <Text style={styles.docMeta}>Date: {date}</Text>
-            {financialYearLabel ? <Text style={styles.docMeta}>Financial Year: {financialYearLabel}</Text> : null}
+            {financialYearLabel ? (
+              <Text style={styles.docMeta}>Financial Year: {financialYearLabel}</Text>
+            ) : null}
           </View>
         </View>
 
@@ -685,9 +749,13 @@ export function PaymentReceiptPdfView({
             {partyPhone ? <Text style={styles.metaPartyText}>Phone: {partyPhone}</Text> : null}
           </View>
           <View style={styles.metaDetailsCol}>
-            <Text style={styles.sectionHeading}>Payment Particulars</Text>
+            <Text style={styles.sectionHeading}>Transaction Particulars</Text>
             <View style={styles.metaKeyValueRow}>
-              <Text style={styles.metaKey}>Payment Mode:</Text>
+              <Text style={styles.metaKey}>Transaction Type:</Text>
+              <Text style={styles.metaVal}>{isMoneyIn ? "Money In (Receipt)" : "Money Out (Disbursement)"}</Text>
+            </View>
+            <View style={styles.metaKeyValueRow}>
+              <Text style={styles.metaKey}>Primary Mode:</Text>
               <Text style={styles.metaVal}>{method}</Text>
             </View>
             {invoiceNo ? (
@@ -726,10 +794,10 @@ export function PaymentReceiptPdfView({
         >
           <View>
             <Text style={{ fontSize: 8, fontFamily: "Helvetica-Bold", color: "#4b5563", textTransform: "uppercase" }}>
-              Net Payment Amount
+              {isMoneyIn ? "Total Received Amount" : "Total Disbursed Amount"}
             </Text>
             <Text style={{ fontSize: 9, fontFamily: "Helvetica", color: "#374151", marginTop: 2 }}>
-              Mode of Settlement: {method}
+              Mode of Settlement: {splits && splits.length > 0 ? splits.map((s) => s.method).join(", ") : method}
             </Text>
           </View>
           <Text style={{ fontSize: 18, fontFamily: "Times-Bold", color: "#000000" }}>
@@ -747,17 +815,37 @@ export function PaymentReceiptPdfView({
             <Text style={[{ width: "18%" }, styles.headerCellRight]}>Amount (PKR)</Text>
           </View>
 
-          <View style={styles.tableRow}>
-            <Text style={[{ width: "6%" }, styles.cellIndex]}>1</Text>
-            <Text style={[{ width: "44%", paddingRight: 4 }, styles.cellTextBold]}>
-              {invoiceNo ? `Payment received towards Invoice ${invoiceNo}` : `Payment on account - ${partyName}`}
-            </Text>
-            <Text style={[{ width: "15%" }, styles.cellCenter]}>{method}</Text>
-            <Text style={[{ width: "17%", paddingRight: 4 }, styles.cellText]}>
-              {receiptNo}
-            </Text>
-            <Text style={[{ width: "18%" }, styles.cellBoldRight]}>{formatMoney(amount)}</Text>
-          </View>
+          {splits && splits.length > 0 ? (
+            splits.map((s, idx) => (
+              <View key={idx} style={styles.tableRow}>
+                <Text style={[{ width: "6%" }, styles.cellIndex]}>{idx + 1}</Text>
+                <Text style={[{ width: "44%", paddingRight: 4 }, styles.cellTextBold]}>
+                  {invoiceNo
+                    ? `${isMoneyIn ? "Receipt towards" : "Payment against"} ${invoiceNo}`
+                    : `${isMoneyIn ? "Receipt on account" : "Payment on account"} - ${partyName}`}
+                </Text>
+                <Text style={[{ width: "15%" }, styles.cellCenter]}>{s.method}</Text>
+                <Text style={[{ width: "17%", paddingRight: 4 }, styles.cellText]}>
+                  {s.reference || "—"}
+                </Text>
+                <Text style={[{ width: "18%" }, styles.cellBoldRight]}>{formatMoney(s.amount)}</Text>
+              </View>
+            ))
+          ) : (
+            <View style={styles.tableRow}>
+              <Text style={[{ width: "6%" }, styles.cellIndex]}>1</Text>
+              <Text style={[{ width: "44%", paddingRight: 4 }, styles.cellTextBold]}>
+                {invoiceNo
+                  ? `${isMoneyIn ? "Receipt towards" : "Payment against"} ${invoiceNo}`
+                  : `${isMoneyIn ? "Receipt on account" : "Payment on account"} - ${partyName}`}
+              </Text>
+              <Text style={[{ width: "15%" }, styles.cellCenter]}>{method}</Text>
+              <Text style={[{ width: "17%", paddingRight: 4 }, styles.cellText]}>
+                {displayReceiptNo}
+              </Text>
+              <Text style={[{ width: "18%" }, styles.cellBoldRight]}>{formatMoney(amount)}</Text>
+            </View>
+          )}
         </View>
 
         {/* Bottom Section */}
@@ -780,13 +868,29 @@ export function PaymentReceiptPdfView({
 
           <View style={styles.summaryCol}>
             <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Total Paid:</Text>
+              <Text style={styles.summaryLabel}>Total Settled:</Text>
               <Text style={styles.summaryValue}>PKR {formatMoney(amount)}</Text>
             </View>
-            <View style={styles.grandTotalRow}>
-              <Text style={styles.grandTotalLabel}>Net Settled:</Text>
-              <Text style={styles.grandTotalValue}>PKR {formatMoney(amount)}</Text>
-            </View>
+            {remainingBalance != null ? (
+              <View
+                style={[
+                  styles.summaryRow,
+                  { borderTopWidth: 0.5, borderTopColor: "#9ca3af", paddingTop: 3, marginTop: 3 },
+                ]}
+              >
+                <Text style={[styles.summaryLabel, { fontFamily: "Helvetica-Bold", color: "#000000" }]}>
+                  Remaining Balance:
+                </Text>
+                <Text style={[styles.summaryValue, { fontFamily: "Helvetica-Bold", color: "#000000" }]}>
+                  PKR {formatMoney(Math.abs(remainingBalance))}{" "}
+                  {remainingBalance > 0
+                    ? isMoneyIn ? "(Dr - Owes you)" : "(Cr - You owe)"
+                    : remainingBalance < 0
+                      ? isMoneyIn ? "(Cr - Advance)" : "(Dr - Advance)"
+                      : "(Settled)"}
+                </Text>
+              </View>
+            ) : null}
           </View>
         </View>
 
@@ -806,7 +910,7 @@ export function PaymentReceiptPdfView({
 
         {/* Footer */}
         <View style={styles.footer} fixed>
-          <Text>{companyName} — Official Payment Receipt</Text>
+          <Text>{companyName} — Official Voucher</Text>
           <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>
       </Page>

@@ -1,13 +1,21 @@
 import { z } from "zod";
 import { PaymentMethod } from "@prisma/client";
 
+export const paymentSplitItemSchema = z.object({
+  method: z.nativeEnum(PaymentMethod),
+  amount: z.coerce.number().gt(0, "Split amount must be greater than 0"),
+  reference: z.string().trim().max(100).optional().nullable(),
+});
+
 export const paymentSchema = z
   .object({
     partyId: z.string().min(1, "Party is required"),
+    direction: z.enum(["IN", "OUT"]).default("IN"),
     saleInvoiceId: z.string().optional().nullable(),
     purchaseInvoiceId: z.string().optional().nullable(),
     amount: z.coerce.number().gt(0, "Amount must be greater than 0"),
-    method: z.nativeEnum(PaymentMethod),
+    method: z.nativeEnum(PaymentMethod).default(PaymentMethod.CASH),
+    splits: z.array(paymentSplitItemSchema).optional(),
     date: z.coerce.date(),
     notes: z.string().trim().max(500).optional().or(z.literal("")),
   })
@@ -24,4 +32,5 @@ export const miscExpenseSchema = z.object({
 });
 
 export type PaymentInput = z.infer<typeof paymentSchema>;
+export type PaymentSplitInput = z.infer<typeof paymentSplitItemSchema>;
 export type MiscExpenseInput = z.infer<typeof miscExpenseSchema>;

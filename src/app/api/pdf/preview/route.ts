@@ -25,21 +25,24 @@ export async function POST(request: NextRequest) {
       partyName = "Customer",
       partyAddress = null,
       partyPhone = null,
+      walkInName = null,
+      recipientName = null,
       locationName = "Shop",
       referenceNo = null,
       totalAmount = 0,
       amountPaid = 0,
+      freightCharges = 0,
       notes = null,
       items = [],
     } = body;
 
     const safeFormatDate = (val?: string | null | Date) => {
-      if (!val) return format(new Date(), "dd/MM/yyyy");
+      if (!val) return format(new Date(), "dd-MM-yyyy h:mm a");
       const d = new Date(val);
-      return isNaN(d.getTime()) ? format(new Date(), "dd/MM/yyyy") : format(d, "dd/MM/yyyy");
+      return isNaN(d.getTime()) ? format(new Date(), "dd-MM-yyyy h:mm a") : format(d, "dd-MM-yyyy h:mm a");
     };
 
-    let docTitle = "Sale Invoice";
+    let docTitle = "Estimate";
     if (type === "purchase-order") docTitle = "Purchase Order";
     if (type === "delivery-order") docTitle = "Delivery Order";
     if (type === "purchase-invoice") docTitle = "Purchase Invoice";
@@ -53,12 +56,15 @@ export async function POST(request: NextRequest) {
       date: safeFormatDate(date),
       partyLabel,
       partyName,
+      walkInName,
       partyAddress,
       partyPhone,
       locationName,
       referenceNo,
       totalAmount: Number(totalAmount || 0),
       amountPaid: Number(amountPaid || 0),
+      freightCharges: Number(freightCharges || 0),
+      deliveryDetails: recipientName ? { recipientName } : undefined,
       notes,
       signatures: { leftLabel: "Prepared By", rightLabel: "Authorized Signature" },
       items: items.map((item: any) => ({

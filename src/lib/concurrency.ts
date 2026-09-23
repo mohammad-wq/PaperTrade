@@ -98,7 +98,7 @@ export async function acquireAdvisoryLocks(
   for (const key of sortedKeys) {
     try {
       // Uses PostgreSQL 2-key advisory lock: domain hashtext + key hashtext
-      await tx.$queryRawUnsafe(
+      await tx.$executeRawUnsafe(
         "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
         "PAPERTRADE",
         key,

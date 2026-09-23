@@ -32,7 +32,9 @@ import {
   bulkAdjustStockAction,
   bulkTransferStockAction,
 } from "@/actions/parties";
+import { listLocationsAction } from "@/actions/orders";
 import { listWarehouseLotsAction, createWarehouseLotAction } from "@/actions/warehouse-lots";
+import { SearchCombobox, type ComboboxOption } from "@/components/ui/search-combobox";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -147,12 +149,13 @@ export default function InventoryPage() {
   const [bulkAdjItems, setBulkAdjItems] = useState<
     Array<{
       productId: string;
+      locationId: string;
       warehouseLotId?: string;
       quantity: number;
       direction: "IN" | "OUT";
       notes?: string;
     }>
-  >([{ productId: "", warehouseLotId: "", quantity: 1, direction: "IN", notes: "" }]);
+  >([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, direction: "IN", notes: "" }]);
   const [submittingBulkAdj, setSubmittingBulkAdj] = useState(false);
 
   // Bulk transfer state
@@ -170,15 +173,17 @@ export default function InventoryPage() {
   >([{ productId: "", fromWarehouseLotId: "", toWarehouseLotId: "", quantity: 1 }]);
   const [submittingBulkTr, setSubmittingBulkTr] = useState(false);
 
+  const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string; type: "SHOP" | "WAREHOUSE" }>>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const fetchRows = useCallback(async (isBackground = false) => {
     if (!isBackground) setLoading(true);
     try {
-      const [result, lotsRes] = await Promise.all([
+      const [result, lotsRes, locsRes] = await Promise.all([
         listInventoryAction(),
         listWarehouseLotsAction(),
+        listLocationsAction(),
       ]);
       if (result.success) {
         const inventoryRows = result.data as unknown as InventoryRow[];
@@ -191,6 +196,9 @@ export default function InventoryPage() {
       }
       if (lotsRes.success) {
         setAllLots(lotsRes.data);
+      }
+      if (locsRes.success && locsRes.data) {
+        setDbLocations(locsRes.data as Array<{ id: string; name: string; type: "SHOP" | "WAREHOUSE" }>);
       }
     } finally {
       if (!isBackground) setLoading(false);
@@ -205,10 +213,26 @@ export default function InventoryPage() {
     void fetchRows(true);
   });
 
-  const locations = useMemo(
-    () => Array.from(new Map(rows.map((row) => [row.locationId, row.locationName])).entries()).map(([id, name]) => ({ id, name })),
-    [rows],
-  );
+  const locations = useMemo(() => {
+    if (dbLocations.length > 0) return dbLocations;
+    return Array.from(
+      new Map(
+        rows.map((row) => [
+          row.locationId,
+          { id: row.locationId, name: row.locationName, type: (row.locationType || "SHOP") as "SHOP" | "WAREHOUSE" },
+        ])
+      ).values()
+    );
+  }, [dbLocations, rows]);
+
+  const locationOptions: ComboboxOption[] = useMemo(() => {
+    return locations.map((loc) => ({
+      id: loc.id,
+      label: loc.name,
+      badge: loc.type,
+      badgeColor: (loc.type === "WAREHOUSE" ? "sky" : "green") as any,
+    }));
+  }, [locations]);
 
   const uniqueProducts = useMemo(
     () => Array.from(new Map(rows.map((row) => [row.productId, { id: row.productId, name: row.productName, no: row.productNo }])).values()),
@@ -228,6 +252,21 @@ export default function InventoryPage() {
   const toLocationLots = useMemo(
     () => allLots.filter((l) => l.locationId === toLocationId),
     [allLots, toLocationId],
+  );
+
+  const getLotsForLocation = useCallback(
+    (locId: string): ComboboxOption[] => {
+      const lots = allLots.filter((l) => l.locationId === locId);
+      return [
+        { id: "", label: "No Lot / Standard Stock" },
+        ...lots.map((l) => ({
+          id: l.id,
+          label: l.lotNumber,
+          sublabel: `${l.currentStock} pkts`,
+        })),
+      ];
+    },
+    [allLots],
   );
 
   const bulkAdjLocationLots = useMemo(
@@ -415,7 +454,7 @@ export default function InventoryPage() {
   function addBulkAdjItem() {
     setBulkAdjItems((prev) => [
       ...prev,
-      { productId: "", warehouseLotId: "", quantity: 1, direction: "IN", notes: "" },
+      { productId: "", locationId: bulkAdjLocationId || (locations[0]?.id ?? ""), warehouseLotId: "", quantity: 1, direction: "IN", notes: "" },
     ]);
   }
 
@@ -426,12 +465,15 @@ export default function InventoryPage() {
 
   function updateBulkAdjItem(
     index: number,
-    field: "productId" | "warehouseLotId" | "quantity" | "direction" | "notes",
+    field: "productId" | "locationId" | "warehouseLotId" | "quantity" | "direction" | "notes",
     value: any,
   ) {
     setBulkAdjItems((prev) => {
       const copy = [...prev];
       copy[index] = { ...copy[index], [field]: value };
+      if (field === "locationId") {
+        copy[index].warehouseLotId = "";
+      }
       return copy;
     });
   }
@@ -439,16 +481,16 @@ export default function InventoryPage() {
   async function handleBulkAdjustment(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
-    if (!bulkAdjLocationId) {
-      setMsg({ type: "error", text: "Please select an adjustment location." });
-      return;
-    }
     if (!bulkAdjReason.trim()) {
       setMsg({ type: "error", text: "Reason is mandatory for stock adjustment." });
       return;
     }
     if (bulkAdjItems.some((it) => !it.productId || it.quantity <= 0)) {
       setMsg({ type: "error", text: "All items must have a product selected and quantity > 0." });
+      return;
+    }
+    if (bulkAdjItems.some((it) => !it.locationId && !bulkAdjLocationId)) {
+      setMsg({ type: "error", text: "Please select a location for every adjustment item." });
       return;
     }
 
@@ -463,10 +505,11 @@ export default function InventoryPage() {
     setSubmittingBulkAdj(true);
     try {
       const res = await bulkAdjustStockAction({
-        locationId: bulkAdjLocationId,
+        locationId: bulkAdjLocationId || undefined,
         reason: bulkAdjReason.trim(),
         items: bulkAdjItems.map((it) => ({
           productId: it.productId,
+          locationId: it.locationId || bulkAdjLocationId || undefined,
           warehouseLotId: it.warehouseLotId || undefined,
           quantity: it.quantity,
           direction: it.direction,
@@ -477,7 +520,7 @@ export default function InventoryPage() {
       if (res.success) {
         setShowBulkAdjustModal(false);
         setBulkAdjReason("");
-        setBulkAdjItems([{ productId: "", warehouseLotId: "", quantity: 1, direction: "IN", notes: "" }]);
+        setBulkAdjItems([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, direction: "IN", notes: "" }]);
         setMsg({ type: "success", text: `Bulk adjustment of ${bulkAdjItems.length} item(s) posted successfully.` });
         broadcastLocalChange(["inventory", "stock-movements", "dashboard"]);
         router.refresh();
@@ -1214,20 +1257,18 @@ export default function InventoryPage() {
                       + New Lot
                     </button>
                   </div>
-                  <select
-                    id="adjlot"
+                  <SearchCombobox
+                    options={adjLocationLots.map((lot) => ({
+                      id: lot.id,
+                      label: `${lot.lotNumber} ${lot.description ? `(${lot.description})` : ""}`,
+                      sublabel: `${lot.currentStock} on hand`,
+                    }))}
                     value={warehouseLotId}
-                    onChange={(e) => setWarehouseLotId(e.target.value)}
-                    className="w-full rounded-md border border-blue-300 bg-white px-2.5 py-1.5 text-xs font-mono font-medium"
+                    onChange={(val) => setWarehouseLotId(val)}
+                    placeholder="Select Lot"
+                    className="w-full text-xs font-mono font-medium"
                     required
-                  >
-                    <option value="">Select Lot</option>
-                    {adjLocationLots.map((lot) => (
-                      <option key={lot.id} value={lot.id}>
-                        {lot.lotNumber} {lot.description ? `(${lot.description})` : ""} — [{lot.currentStock} on hand]
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
               )}
 
@@ -1370,20 +1411,18 @@ export default function InventoryPage() {
                           + New
                         </button>
                       </div>
-                      <select
-                        id="fromlot"
+                      <SearchCombobox
+                        options={fromLocationLots.map((l) => ({
+                          id: l.id,
+                          label: l.lotNumber,
+                          sublabel: `${l.currentStock} on hand`,
+                        }))}
                         value={fromWarehouseLotId}
-                        onChange={(e) => setFromWarehouseLotId(e.target.value)}
-                        className="w-full rounded border border-amber-300 bg-white px-2 py-1 text-[11px] font-mono font-medium"
+                        onChange={(val) => setFromWarehouseLotId(val)}
+                        placeholder="Select Lot"
+                        className="w-full text-[11px] font-mono font-medium"
                         required
-                      >
-                        <option value="">Select Lot</option>
-                        {fromLocationLots.map((l) => (
-                          <option key={l.id} value={l.id}>
-                            {l.lotNumber} ({l.currentStock} on hand)
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </div>
                   )}
                 </div>
@@ -1426,20 +1465,18 @@ export default function InventoryPage() {
                           + New
                         </button>
                       </div>
-                      <select
-                        id="tolot"
+                      <SearchCombobox
+                        options={toLocationLots.map((l) => ({
+                          id: l.id,
+                          label: l.lotNumber,
+                          sublabel: `${l.currentStock} on hand`,
+                        }))}
                         value={toWarehouseLotId}
-                        onChange={(e) => setToWarehouseLotId(e.target.value)}
-                        className="w-full rounded border border-amber-300 bg-white px-2 py-1 text-[11px] font-mono font-medium"
+                        onChange={(val) => setToWarehouseLotId(val)}
+                        placeholder="Select Lot"
+                        className="w-full text-[11px] font-mono font-medium"
                         required
-                      >
-                        <option value="">Select Lot</option>
-                        {toLocationLots.map((l) => (
-                          <option key={l.id} value={l.id}>
-                            {l.lotNumber} ({l.currentStock} on hand)
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </div>
                   )}
                 </div>
@@ -1520,19 +1557,17 @@ export default function InventoryPage() {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1">
                   <Label htmlFor="bulkAdjLoc" className="text-xs font-semibold">
-                    Location <span className="text-rose-500">*</span>
+                    Default Location <span className="text-slate-400 font-normal">(Optional default)</span>
                   </Label>
                   <select
                     id="bulkAdjLoc"
                     value={bulkAdjLocationId}
                     onChange={(e) => {
                       setBulkAdjLocationId(e.target.value);
-                      setBulkAdjItems((prev) => prev.map((it) => ({ ...it, warehouseLotId: "" })));
                     }}
                     className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
-                    required
                   >
-                    <option value="">Select location</option>
+                    <option value="">(Select default or specify per row)</option>
                     {locations.map((loc) => (
                       <option key={loc.id} value={loc.id}>
                         {loc.name}
@@ -1559,16 +1594,9 @@ export default function InventoryPage() {
               {/* Items List */}
               <div className="space-y-2 border-t border-slate-100 pt-3">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                      Adjustment Items ({bulkAdjItems.length})
-                    </Label>
-                    {bulkAdjLocationLots.length > 0 && (
-                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-900">
-                        Lot Selection Active
-                      </span>
-                    )}
-                  </div>
+                  <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                    Adjustment Items ({bulkAdjItems.length})
+                  </Label>
                   <Button
                     type="button"
                     variant="outline"
@@ -1581,106 +1609,109 @@ export default function InventoryPage() {
                 </div>
 
                 <div className="space-y-2.5">
-                  {bulkAdjItems.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className={cn(
-                        "grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50",
-                        bulkAdjLocationLots.length > 0
-                          ? "sm:grid-cols-[1fr_140px_90px_110px_1fr_36px]"
-                          : "sm:grid-cols-[1fr_100px_110px_1fr_36px]"
-                      )}
-                    >
-                      <div>
-                        <select
-                          value={item.productId}
-                          onChange={(e) => updateBulkAdjItem(idx, "productId", e.target.value)}
-                          className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
-                          required
-                        >
-                          <option value="">Select product</option>
-                          {uniqueProducts.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.no} - {p.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                  {bulkAdjItems.map((item, idx) => {
+                    const rowLocId = item.locationId || bulkAdjLocationId;
+                    const rowLots = rowLocId ? getLotsForLocation(rowLocId) : [];
+                    const rowLocObj = locations.find((l) => l.id === rowLocId);
+                    const isWarehouse = rowLocObj?.type === "WAREHOUSE" || rowLots.length > 1;
 
-                      {bulkAdjLocationLots.length > 0 && (
-                        <div className="flex items-center gap-1">
+                    return (
+                      <div
+                        key={idx}
+                        className="grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50 sm:grid-cols-[1.5fr_1.2fr_1.2fr_90px_100px_1fr_36px]"
+                      >
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Product</Label>
                           <select
-                            value={item.warehouseLotId || ""}
-                            onChange={(e) => updateBulkAdjItem(idx, "warehouseLotId", e.target.value)}
-                            className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-mono"
+                            value={item.productId}
+                            onChange={(e) => updateBulkAdjItem(idx, "productId", e.target.value)}
+                            className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+                            required
                           >
-                            <option value="">No Lot</option>
-                            {bulkAdjLocationLots.map((lot) => (
-                              <option key={lot.id} value={lot.id}>
-                                {lot.lotNumber} ({lot.currentStock} pkts)
+                            <option value="">Select product</option>
+                            {uniqueProducts.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.no} - {p.name}
                               </option>
                             ))}
                           </select>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            title="Quick add lot"
-                            onClick={() => {
-                              setQuickLotLocationId(bulkAdjLocationId);
-                              setQuickLotTarget({ type: "bulk-adj", itemIndex: idx });
-                              setShowQuickLotModal(true);
-                            }}
-                            className="h-7 w-7 shrink-0 p-0 text-blue-700 hover:bg-blue-100"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                          </Button>
                         </div>
-                      )}
 
-                      <div>
-                        <Input
-                          type="number"
-                          min="0.0001"
-                          step="any"
-                          value={item.quantity}
-                          onChange={(e) => updateBulkAdjItem(idx, "quantity", parseFloat(e.target.value) || 0)}
-                          className="h-8 text-xs text-right"
-                          placeholder="Qty"
-                          required
-                        />
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Location</Label>
+                          <SearchCombobox
+                            options={locationOptions}
+                            value={item.locationId || bulkAdjLocationId}
+                            onChange={(val) => {
+                              updateBulkAdjItem(idx, "locationId", val);
+                              updateBulkAdjItem(idx, "warehouseLotId", "");
+                            }}
+                            placeholder="Select location"
+                            className="w-full text-xs"
+                          />
+                        </div>
+
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Lot</Label>
+                          <SearchCombobox
+                            options={rowLots}
+                            value={item.warehouseLotId || ""}
+                            onChange={(val) => updateBulkAdjItem(idx, "warehouseLotId", val)}
+                            placeholder={isWarehouse ? "Select lot" : "No lot"}
+                            disabled={rowLots.length <= 1}
+                            className="w-full text-xs font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Quantity</Label>
+                          <Input
+                            type="number"
+                            min="0.0001"
+                            step="any"
+                            value={item.quantity}
+                            onChange={(e) => updateBulkAdjItem(idx, "quantity", parseFloat(e.target.value) || 0)}
+                            className="h-8 text-xs text-right"
+                            placeholder="Qty"
+                            required
+                          />
+                        </div>
+
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Direction</Label>
+                          <select
+                            value={item.direction}
+                            onChange={(e) => updateBulkAdjItem(idx, "direction", e.target.value as "IN" | "OUT")}
+                            className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium"
+                          >
+                            <option value="IN">+ Increase</option>
+                            <option value="OUT">- Decrease</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Notes</Label>
+                          <Input
+                            value={item.notes || ""}
+                            onChange={(e) => updateBulkAdjItem(idx, "notes", e.target.value)}
+                            placeholder="Item note (optional)"
+                            className="h-8 text-xs"
+                          />
+                        </div>
+
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => removeBulkAdjItem(idx)}
+                            disabled={bulkAdjItems.length <= 1}
+                            className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:text-rose-600 disabled:opacity-30"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
                       </div>
-
-                      <div>
-                        <select
-                          value={item.direction}
-                          onChange={(e) => updateBulkAdjItem(idx, "direction", e.target.value as "IN" | "OUT")}
-                          className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium"
-                        >
-                          <option value="IN">+ Increase</option>
-                          <option value="OUT">- Decrease</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <Input
-                          value={item.notes || ""}
-                          onChange={(e) => updateBulkAdjItem(idx, "notes", e.target.value)}
-                          placeholder="Item note (optional)"
-                          className="h-8 text-xs"
-                        />
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => removeBulkAdjItem(idx)}
-                        disabled={bulkAdjItems.length <= 1}
-                        className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:text-rose-600 disabled:opacity-30"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1839,18 +1870,20 @@ export default function InventoryPage() {
 
                       {bulkTrFromLots.length > 0 && (
                         <div className="flex items-center gap-1">
-                          <select
+                          <SearchCombobox
+                            options={[
+                              { id: "", label: "From: Default" },
+                              ...bulkTrFromLots.map((lot) => ({
+                                id: lot.id,
+                                label: lot.lotNumber,
+                                sublabel: `${lot.currentStock} pkts`,
+                              })),
+                            ]}
                             value={item.fromWarehouseLotId || ""}
-                            onChange={(e) => updateBulkTrItem(idx, "fromWarehouseLotId", e.target.value)}
-                            className="w-full rounded-md border border-amber-200 bg-white px-2 py-1.5 text-xs font-mono"
-                          >
-                            <option value="">From: Default</option>
-                            {bulkTrFromLots.map((lot) => (
-                              <option key={lot.id} value={lot.id}>
-                                {lot.lotNumber} ({lot.currentStock} pkts)
-                              </option>
-                            ))}
-                          </select>
+                            onChange={(val) => updateBulkTrItem(idx, "fromWarehouseLotId", val)}
+                            placeholder="From Lot"
+                            className="w-full text-xs font-mono"
+                          />
                           <Button
                             type="button"
                             variant="ghost"
@@ -1870,18 +1903,20 @@ export default function InventoryPage() {
 
                       {bulkTrToLots.length > 0 && (
                         <div className="flex items-center gap-1">
-                          <select
+                          <SearchCombobox
+                            options={[
+                              { id: "", label: "To: Default" },
+                              ...bulkTrToLots.map((lot) => ({
+                                id: lot.id,
+                                label: lot.lotNumber,
+                                sublabel: `${lot.currentStock} pkts`,
+                              })),
+                            ]}
                             value={item.toWarehouseLotId || ""}
-                            onChange={(e) => updateBulkTrItem(idx, "toWarehouseLotId", e.target.value)}
-                            className="w-full rounded-md border border-emerald-200 bg-white px-2 py-1.5 text-xs font-mono"
-                          >
-                            <option value="">To: Default</option>
-                            {bulkTrToLots.map((lot) => (
-                              <option key={lot.id} value={lot.id}>
-                                {lot.lotNumber} ({lot.currentStock} pkts)
-                              </option>
-                            ))}
-                          </select>
+                            onChange={(val) => updateBulkTrItem(idx, "toWarehouseLotId", val)}
+                            placeholder="To Lot"
+                            className="w-full text-xs font-mono"
+                          />
                           <Button
                             type="button"
                             variant="ghost"

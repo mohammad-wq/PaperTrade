@@ -19,7 +19,8 @@ export const saleInvoiceBaseSchema = z.object({
   paidImmediately: z.boolean().default(false),
   paymentMethod: z.nativeEnum(PaymentMethod).default(PaymentMethod.CASH),
   amountPaid: z.coerce.number().min(0).default(0),
-  locationId: z.string().min(1, "Location is required"),
+  freightCharges: z.coerce.number().min(0).default(0),
+  locationId: z.string().optional().nullable(),
   deliveryOrderId: z.string().optional().nullable(),
   date: z.coerce.date(),
   notes: z.string().trim().max(1000).optional().or(z.literal("")),
@@ -33,10 +34,29 @@ const refineCustomer = (data: { customerType: string; customerId?: string | null
   return true;
 };
 
-export const saleInvoiceSchema = saleInvoiceBaseSchema.refine(refineCustomer, {
-  message: "Please select a registered customer",
-  path: ["customerId"],
-});
+const refineWalkInCash = (data: {
+  customerType: string;
+  amountPaid: number;
+  freightCharges?: number;
+  items: Array<{ quantity: number; unitPrice: number }>;
+}) => {
+  if (data.customerType === "WALK_IN") {
+    const subtotal = data.items.reduce((s, it) => s + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0), 0);
+    const total = subtotal + (Number(data.freightCharges) || 0);
+    return Number(data.amountPaid) >= total - 0.001;
+  }
+  return true;
+};
+
+export const saleInvoiceSchema = saleInvoiceBaseSchema
+  .refine(refineCustomer, {
+    message: "Please select a registered customer",
+    path: ["customerId"],
+  })
+  .refine(refineWalkInCash, {
+    message: "Walk-in customers cannot buy on credit. Amount paid must equal the total invoice amount.",
+    path: ["amountPaid"],
+  });
 
 export const updateSaleInvoiceSchema = saleInvoiceBaseSchema
   .extend({
@@ -45,6 +65,10 @@ export const updateSaleInvoiceSchema = saleInvoiceBaseSchema
   .refine(refineCustomer, {
     message: "Please select a registered customer",
     path: ["customerId"],
+  })
+  .refine(refineWalkInCash, {
+    message: "Walk-in customers cannot buy on credit. Amount paid must equal the total invoice amount.",
+    path: ["amountPaid"],
   });
 
 export type SaleInvoiceInput = z.infer<typeof saleInvoiceSchema>;

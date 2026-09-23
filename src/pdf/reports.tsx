@@ -1026,8 +1026,10 @@ export function GeneralLedgerPdfView({
   companyPhone = "+92-300-1234567",
   period = "All Time",
   filterInfo,
+  openingBalance = 0,
   totalDebit = 0,
   totalCredit = 0,
+  closingBalance,
   entries = [],
 }: {
   companyName?: string;
@@ -1035,22 +1037,30 @@ export function GeneralLedgerPdfView({
   companyPhone?: string;
   period?: string;
   filterInfo?: string;
+  openingBalance?: number;
   totalDebit?: number;
   totalCredit?: number;
+  closingBalance?: number;
   entries?: Array<{
     date: string;
     accountType: string;
     partyName: string;
     referenceType: string;
     referenceId: string;
+    voucherType?: string;
+    docNo?: string;
     description: string;
     debit: number;
     credit: number;
+    runningBalance?: number;
   }>;
 }) {
+  const safeOpeningBalance = Number(openingBalance) || 0;
   const safeTotalDebit = Number(totalDebit) || 0;
   const safeTotalCredit = Number(totalCredit) || 0;
-  const netBalance = safeTotalDebit - safeTotalCredit;
+  const safeClosingBalance = closingBalance !== undefined
+    ? Number(closingBalance)
+    : safeOpeningBalance + safeTotalDebit - safeTotalCredit;
 
   return (
     <Document>
@@ -1072,6 +1082,12 @@ export function GeneralLedgerPdfView({
         {/* Summary Bar */}
         <View style={styles.summaryGrid}>
           <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Opening Balance (b/f)</Text>
+            <Text style={styles.kpiValue}>
+              PKR {formatMoney(Math.abs(safeOpeningBalance))} {safeOpeningBalance >= 0 ? "Dr" : "Cr"}
+            </Text>
+          </View>
+          <View style={styles.kpiCard}>
             <Text style={styles.kpiLabel}>Total Debits (Dr)</Text>
             <Text style={styles.kpiValue}>PKR {formatMoney(safeTotalDebit)}</Text>
           </View>
@@ -1080,9 +1096,9 @@ export function GeneralLedgerPdfView({
             <Text style={styles.kpiValue}>PKR {formatMoney(safeTotalCredit)}</Text>
           </View>
           <View style={styles.kpiCardLast}>
-            <Text style={styles.kpiLabel}>Net Balance (Dr - Cr)</Text>
+            <Text style={styles.kpiLabel}>Closing Balance</Text>
             <Text style={styles.kpiValue}>
-              PKR {formatMoney(Math.abs(netBalance))} {netBalance >= 0 ? "(Debit)" : "(Credit)"}
+              PKR {formatMoney(Math.abs(safeClosingBalance))} {safeClosingBalance >= 0 ? "Dr" : "Cr"}
             </Text>
           </View>
         </View>
@@ -1090,44 +1106,78 @@ export function GeneralLedgerPdfView({
         {/* Ledger Table */}
         <View style={styles.table}>
           <View style={styles.tableHeader}>
-            <Text style={[{ width: "9%" }, styles.headerCell]}>Date</Text>
-            <Text style={[{ width: "11%" }, styles.headerCell]}>Account</Text>
-            <Text style={[{ width: "20%" }, styles.headerCell]}>Party / Counterparty</Text>
-            <Text style={[{ width: "16%" }, styles.headerCell]}>Ref (Type & ID)</Text>
-            <Text style={[{ width: "24%" }, styles.headerCell]}>Particulars</Text>
-            <Text style={[{ width: "10%", textAlign: "right" }, styles.headerCell]}>Debit (PKR)</Text>
-            <Text style={[{ width: "10%", textAlign: "right" }, styles.headerCell]}>Credit (PKR)</Text>
+            <Text style={[{ width: "14%" }, styles.headerCell]}>Date & Time</Text>
+            <Text style={[{ width: "32%" }, styles.headerCell]}>Particulars / Account</Text>
+            <Text style={[{ width: "18%" }, styles.headerCell]}>Voucher Type & No</Text>
+            <Text style={[{ width: "12%", textAlign: "right" }, styles.headerCell]}>Debit (PKR)</Text>
+            <Text style={[{ width: "12%", textAlign: "right" }, styles.headerCell]}>Credit (PKR)</Text>
+            <Text style={[{ width: "12%", textAlign: "right" }, styles.headerCell]}>Balance</Text>
           </View>
 
-          {entries.length === 0 ? (
+          {safeOpeningBalance !== 0 && (
+            <View style={styles.tableRowAlternate}>
+              <Text style={[{ width: "14%" }, styles.cell]}>Beginning</Text>
+              <Text style={[{ width: "32%" }, styles.cellBold]}>Opening Balance (b/f)</Text>
+              <Text style={[{ width: "18%" }, styles.cellMono]}>—</Text>
+              <Text style={[{ width: "12%", textAlign: "right" }, styles.cell]}>
+                {safeOpeningBalance > 0 ? formatMoney(safeOpeningBalance) : "—"}
+              </Text>
+              <Text style={[{ width: "12%", textAlign: "right" }, styles.cell]}>
+                {safeOpeningBalance < 0 ? formatMoney(Math.abs(safeOpeningBalance)) : "—"}
+              </Text>
+              <Text style={[{ width: "12%", textAlign: "right" }, styles.cellBold]}>
+                {formatMoney(Math.abs(safeOpeningBalance))} {safeOpeningBalance >= 0 ? "Dr" : "Cr"}
+              </Text>
+            </View>
+          )}
+
+          {entries.length === 0 && safeOpeningBalance === 0 ? (
             <View style={styles.tableRow}>
               <Text style={[{ width: "100%", textAlign: "center", color: "#6b7280" }, styles.cell]}>
                 No general ledger records found matching the applied criteria.
               </Text>
             </View>
           ) : (
-            entries.map((row, idx) => (
-              <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
-                <Text style={[{ width: "9%" }, styles.cell]}>{row.date}</Text>
-                <Text style={[{ width: "11%" }, styles.cellBold]}>{row.accountType}</Text>
-                <Text style={[{ width: "20%" }, styles.cell]}>{row.partyName}</Text>
-                <Text style={[{ width: "16%" }, styles.cellMono]}>{row.referenceType}: {row.referenceId}</Text>
-                <Text style={[{ width: "24%" }, styles.cell]}>{row.description}</Text>
-                <Text style={[{ width: "10%", textAlign: "right" }, styles.cell]}>
-                  {row.debit > 0 ? formatMoney(row.debit) : "—"}
-                </Text>
-                <Text style={[{ width: "10%", textAlign: "right" }, styles.cell]}>
-                  {row.credit > 0 ? formatMoney(row.credit) : "—"}
-                </Text>
-              </View>
-            ))
+            entries.map((row, idx) => {
+              const balance = typeof row.runningBalance === "number" ? row.runningBalance : 0;
+              const balanceStr = `${formatMoney(Math.abs(balance))} ${balance >= 0 ? "Dr" : "Cr"}`;
+              const voucherDisplay = row.voucherType && row.docNo
+                ? `${row.voucherType} ${row.docNo}`
+                : `${row.referenceType}: ${row.referenceId}`;
+
+              const particulars = [
+                row.partyName && row.partyName !== "—" ? row.partyName : null,
+                row.description || null,
+                `[${row.accountType}]`,
+              ].filter(Boolean).join(" — ");
+
+              return (
+                <View key={idx} style={idx % 2 === 1 ? styles.tableRowAlternate : styles.tableRow}>
+                  <Text style={[{ width: "14%" }, styles.cell]}>{row.date}</Text>
+                  <Text style={[{ width: "32%" }, styles.cell]}>{particulars}</Text>
+                  <Text style={[{ width: "18%" }, styles.cellMono]}>{voucherDisplay}</Text>
+                  <Text style={[{ width: "12%", textAlign: "right" }, styles.cell]}>
+                    {row.debit > 0 ? formatMoney(row.debit) : "—"}
+                  </Text>
+                  <Text style={[{ width: "12%", textAlign: "right" }, styles.cell]}>
+                    {row.credit > 0 ? formatMoney(row.credit) : "—"}
+                  </Text>
+                  <Text style={[{ width: "12%", textAlign: "right" }, styles.cellBold]}>
+                    {balanceStr}
+                  </Text>
+                </View>
+              );
+            })
           )}
 
           {/* Grand Totals */}
           <View style={styles.tableRowTotal}>
-            <Text style={[{ width: "80%" }, styles.cellBold]}>Total General Ledger Activity</Text>
-            <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>{formatMoney(safeTotalDebit)}</Text>
-            <Text style={[{ width: "10%", textAlign: "right" }, styles.cellBold]}>{formatMoney(safeTotalCredit)}</Text>
+            <Text style={[{ width: "64%" }, styles.cellBold]}>Period Total Activity & Net Position</Text>
+            <Text style={[{ width: "12%", textAlign: "right" }, styles.cellBold]}>{formatMoney(safeTotalDebit)}</Text>
+            <Text style={[{ width: "12%", textAlign: "right" }, styles.cellBold]}>{formatMoney(safeTotalCredit)}</Text>
+            <Text style={[{ width: "12%", textAlign: "right" }, styles.cellBold]}>
+              {formatMoney(Math.abs(safeClosingBalance))} {safeClosingBalance >= 0 ? "Dr" : "Cr"}
+            </Text>
           </View>
         </View>
 

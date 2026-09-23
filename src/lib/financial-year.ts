@@ -33,6 +33,28 @@ export function formatDocumentNumber(
 }
 
 /**
+ * Returns plain sequence number display (e.g. "001", "014") for screen tables and PDFs,
+ * extracting sequence from stored invoiceNo if sequenceNo is absent.
+ */
+export function formatSequenceDisplay(
+  sequenceNo?: number | null,
+  invoiceNo?: string | null
+): string {
+  if (typeof sequenceNo === "number" && sequenceNo > 0) {
+    return String(sequenceNo).padStart(3, "0");
+  }
+  if (invoiceNo) {
+    const parts = invoiceNo.split("-");
+    const lastPart = parts[parts.length - 1];
+    if (/^\d+$/.test(lastPart)) {
+      return lastPart.padStart(3, "0");
+    }
+    return invoiceNo;
+  }
+  return "001";
+}
+
+/**
  * Gets or initializes the currently active financial year.
  * If none exists, creates a default initial year (e.g. 2026-2027) and links any unassigned records.
  */

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const lineItem = z.object({
   productId: z.string().min(1, "Product is required"),
+  locationId: z.string().trim().optional().nullable(),
   warehouseLotId: z.string().trim().optional().nullable(),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unitCost: z.coerce.number().min(0),
@@ -14,8 +15,10 @@ export const purchaseInvoiceSchema = z
     oneTimeSupplierName: z.string().trim().max(200).optional().nullable(),
     oneTimeSupplierPhone: z.string().trim().max(50).optional().nullable(),
     saveSupplier: z.boolean().default(false),
-    locationId: z.string().min(1, "Location is required"),
+    locationId: z.string().optional().nullable(),
     warehouseLotId: z.string().trim().optional().nullable(),
+    amountPaid: z.coerce.number().min(0).default(0),
+    freightCharges: z.coerce.number().min(0).default(0),
     purchaseOrderId: z.string().optional().nullable(),
     date: z.coerce.date(),
     notes: z.string().trim().max(1000).optional().or(z.literal("")),

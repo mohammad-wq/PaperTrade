@@ -496,8 +496,8 @@ export async function createDeliveryOrderAction(raw: unknown) {
           date: input.date,
           status: input.status,
           vehicleNo: input.vehicleNo || null,
-          driverName: input.driverName || null,
-          deliveredTo: input.deliveredTo || null,
+          deliveredTo: input.deliveredTo || input.recipientName || null,
+          recipientName: input.recipientName || input.deliveredTo || null,
           notes: input.notes || null,
           createdById: session.user.id,
           items: {

@@ -8,6 +8,7 @@ import { DocumentPdfView, PaymentReceiptPdfView } from "@/pdf/documents";
 import { format } from "date-fns";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { verifyDocShareToken } from "@/lib/tokens";
+import { formatSequenceDisplay } from "@/lib/financial-year";
 
 export const dynamic = "force-dynamic";
 
@@ -60,9 +61,9 @@ export async function GET(
     let filename = `document-${id}.pdf`;
 
     const safeFormatDate = (val?: string | null | Date) => {
-      if (!val) return format(new Date(), "dd/MM/yyyy");
+      if (!val) return format(new Date(), "dd-MM-yyyy h:mm a");
       const d = new Date(val);
-      return isNaN(d.getTime()) ? format(new Date(), "dd/MM/yyyy") : format(d, "dd/MM/yyyy");
+      return isNaN(d.getTime()) ? format(new Date(), "dd-MM-yyyy h:mm a") : format(d, "dd-MM-yyyy h:mm a");
     };
 
     const formatSpecs = (product?: { length?: any; breadth?: any; gsm?: any } | null) => {
@@ -94,20 +95,23 @@ export async function GET(
         return new NextResponse("Sale invoice not found", { status: 404 });
       }
 
-      filename = `Invoice-${invoice.invoiceNo}.pdf`;
+      filename = `Estimate-${invoice.invoiceNo}.pdf`;
       docElement = React.createElement(DocumentPdfView, {
-        docType: "Sale Invoice",
+        docType: "Estimate",
         docNumber: invoice.invoiceNo,
+        sequenceNo: invoice.sequenceNo,
         financialYearLabel: invoice.financialYear?.label || null,
         date: safeFormatDate(invoice.date),
         partyLabel: "Bill To (Customer)",
         partyName: invoice.customer?.name || "Customer",
+        walkInName: invoice.walkInName || null,
         partyAddress: invoice.customer?.address || null,
         partyPhone: invoice.customer?.phone || null,
         locationName: invoice.location?.name || "Shop",
         referenceNo: invoice.deliveryOrder ? `DO: ${invoice.deliveryOrder.doNo}` : null,
         totalAmount: Number(invoice.totalAmount || 0),
         amountPaid: Number(invoice.amountPaid || 0),
+        freightCharges: Number(invoice.freightCharges || 0),
         notes: invoice.notes,
         signatures: { leftLabel: "Prepared By", rightLabel: "Authorized Signature" },
         items: invoice.items.map((item) => ({
@@ -140,6 +144,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: "Purchase Order",
         docNumber: po.orderNo,
+        sequenceNo: po.sequenceNo,
         financialYearLabel: po.financialYear?.label || null,
         date: safeFormatDate(po.date),
         partyLabel: "Supplier Details",
@@ -180,6 +185,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: doRecord.customer ? "Delivery Order" : "Internal Stock Transfer Order",
         docNumber: doRecord.doNo,
+        sequenceNo: doRecord.sequenceNo,
         financialYearLabel: doRecord.financialYear?.label || null,
         date: safeFormatDate(doRecord.date),
         partyLabel: doRecord.customer ? "Deliver To (Customer)" : "Destination Location",
@@ -192,6 +198,7 @@ export async function GET(
           vehicleNo: doRecord.vehicleNo,
           driverName: doRecord.driverName,
           deliveredTo: doRecord.deliveredTo,
+          recipientName: doRecord.recipientName,
         },
         notes: doRecord.notes,
         signatures: { leftLabel: "Dispatched / Delivered By", rightLabel: "Received By (Customer Stamp)" },
@@ -227,6 +234,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: "Purchase Invoice",
         docNumber: invoice.invoiceNo,
+        sequenceNo: invoice.sequenceNo,
         financialYearLabel: invoice.financialYear?.label || null,
         date: safeFormatDate(invoice.date),
         partyLabel: "Supplier",
@@ -236,6 +244,8 @@ export async function GET(
         locationName: invoice.location?.name || "Warehouse",
         referenceNo: invoice.purchaseOrder ? `PO: ${invoice.purchaseOrder.orderNo}` : null,
         totalAmount: Number(invoice.totalAmount || 0),
+        amountPaid: Number(invoice.amountPaid || 0),
+        freightCharges: Number(invoice.freightCharges || 0),
         notes: invoice.notes,
         signatures: { leftLabel: "Received By", rightLabel: "Verified By" },
         items: invoice.items.map((item) => {
@@ -272,6 +282,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: "Sale Credit Note / Return",
         docNumber: sReturn.returnNo,
+        sequenceNo: sReturn.sequenceNo,
         financialYearLabel: sReturn.financialYear?.label || null,
         date: safeFormatDate(sReturn.date),
         partyLabel: "Customer",
@@ -311,6 +322,7 @@ export async function GET(
       docElement = React.createElement(DocumentPdfView, {
         docType: "Purchase Debit Note / Return",
         docNumber: pReturn.returnNo,
+        sequenceNo: pReturn.sequenceNo,
         financialYearLabel: pReturn.financialYear?.label || null,
         date: safeFormatDate(pReturn.date),
         partyLabel: "Supplier",
@@ -339,6 +351,7 @@ export async function GET(
           saleInvoice: true,
           purchaseInvoice: true,
           createdBy: true,
+          splits: true,
         },
       });
 
@@ -350,6 +363,8 @@ export async function GET(
       filename = `Receipt-${receiptNo}.pdf`;
       docElement = React.createElement(PaymentReceiptPdfView, {
         receiptNo,
+        sequenceNo: payment.sequenceNo,
+        direction: payment.direction || (payment.party?.type === "CUSTOMER" ? "IN" : "OUT"),
         financialYearLabel: payment.financialYear?.label || null,
         date: safeFormatDate(payment.date),
         partyName: payment.party?.name || "Customer / Supplier",
@@ -357,10 +372,20 @@ export async function GET(
         partyPhone: payment.party?.phone || null,
         partyAddress: payment.party?.address || null,
         amount: Number(payment.amount || 0),
+        remainingBalance: payment.remainingBalance ? Number(payment.remainingBalance) : null,
         method: payment.method,
         notes: payment.notes,
-        invoiceNo: payment.saleInvoice?.invoiceNo || payment.purchaseInvoice?.invoiceNo || null,
+        invoiceNo: payment.saleInvoice
+          ? `Estimate #${formatSequenceDisplay(payment.saleInvoice.sequenceNo, payment.saleInvoice.invoiceNo)}`
+          : payment.purchaseInvoice
+            ? `Bill #${formatSequenceDisplay(payment.purchaseInvoice.sequenceNo, payment.purchaseInvoice.invoiceNo)}`
+            : null,
         createdByName: payment.createdBy?.name || "Accounts Dept",
+        splits: payment.splits?.map((s) => ({
+          method: s.method,
+          amount: Number(s.amount),
+          reference: s.reference || null,
+        })),
       });
     }
 

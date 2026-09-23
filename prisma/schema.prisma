@@ -366,6 +366,8 @@ model PurchaseInvoice {
   date            DateTime
   status          InvoiceStatus @default(OPEN)
   totalAmount     Decimal       @db.Decimal(14, 4)
+  amountPaid      Decimal       @default(0) @db.Decimal(14, 4)
+  freightCharges  Decimal       @default(0) @db.Decimal(14, 4)
   notes           String?
   createdById     String
   createdAt       DateTime      @default(now())
@@ -422,6 +424,7 @@ model DeliveryOrder {
   vehicleNo             String?
   driverName            String?
   deliveredTo           String?
+  recipientName         String?
   notes                 String?
   createdById           String
   createdAt             DateTime             @default(now())
@@ -473,6 +476,8 @@ model SaleInvoice {
   status          InvoiceStatus @default(OPEN)
   totalAmount     Decimal       @db.Decimal(14, 4)
   amountPaid      Decimal       @default(0) @db.Decimal(14, 4)
+  freightCharges  Decimal       @default(0) @db.Decimal(14, 4)
+  walkInName      String?
   notes           String?
   createdById     String
   createdAt       DateTime      @default(now())
@@ -496,12 +501,6 @@ model SaleInvoice {
 }
 
 model SaleInvoiceItem {
-  id        String  @id @default(cuid())
-  invoiceId String
-  productId String
-  quantity  Decimal @db.Decimal(14, 4)
-  unitPrice Decimal @db.Decimal(14, 4)
-  lineTotal Decimal @db.Decimal(14, 4)
   id             String        @id @default(cuid())
   invoiceId      String
   productId      String
@@ -511,8 +510,6 @@ model SaleInvoiceItem {
   unitPrice      Decimal       @db.Decimal(14, 4)
   lineTotal      Decimal       @db.Decimal(14, 4)
 
-  invoice SaleInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
-  product Product     @relation(fields: [productId], references: [id])
   invoice      SaleInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
   product      Product       @relation(fields: [productId], references: [id])
   location     Location?     @relation(fields: [locationId], references: [id])
@@ -643,6 +640,8 @@ model Payment {
   purchaseInvoiceId String?
   amount            Decimal       @db.Decimal(14, 4)
   method            PaymentMethod
+  direction         String        @default("IN")
+  remainingBalance  Decimal?      @db.Decimal(14, 4)
   date              DateTime
   notes             String?
   createdById       String
@@ -653,12 +652,26 @@ model Payment {
   saleInvoice     SaleInvoice?     @relation("SaleInvoicePayments", fields: [saleInvoiceId], references: [id])
   purchaseInvoice PurchaseInvoice? @relation(fields: [purchaseInvoiceId], references: [id])
   createdBy       User             @relation(fields: [createdById], references: [id])
+  splits          PaymentSplit[]
 
   @@index([financialYearId])
   @@index([partyId])
   @@index([date])
   @@index([saleInvoiceId])
   @@index([purchaseInvoiceId])
+  @@index([direction])
+}
+
+model PaymentSplit {
+  id        String        @id @default(cuid())
+  paymentId String
+  method    PaymentMethod
+  amount    Decimal       @db.Decimal(14, 4)
+  reference String?
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
 }
 
 model WarehouseStorageCharge {

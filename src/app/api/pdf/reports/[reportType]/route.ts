@@ -19,6 +19,8 @@ import {
 import { prisma } from "@/lib/db";
 import { format } from "date-fns";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { formatSequenceDisplay } from "@/lib/financial-year";
+import { formatDateTime } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -179,6 +181,28 @@ export async function GET(
         if (p) partyNameFilter = p.name;
       }
 
+      // 1. Calculate opening balance prior to startDate
+      let openingBalance = 0;
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+
+        const priorAgg = await prisma.ledgerEntry.aggregate({
+          where: {
+            ...(partyId && partyId !== "ALL" ? { partyId } : {}),
+            ...(accountType && accountType !== "ALL" ? { accountType: accountType as any } : {}),
+            ...(referenceType && referenceType !== "ALL" ? { referenceType } : {}),
+            date: { lt: start },
+          },
+          _sum: { debit: true, credit: true },
+        });
+
+        const priorDebit = Number(priorAgg._sum.debit ?? 0);
+        const priorCredit = Number(priorAgg._sum.credit ?? 0);
+        openingBalance = priorDebit - priorCredit;
+      }
+
+      // 2. Query entries chronologically
       const entries = await prisma.ledgerEntry.findMany({
         where: {
           ...(partyId && partyId !== "ALL" ? { partyId } : {}),
@@ -192,8 +216,104 @@ export async function GET(
         orderBy: { date: "asc" },
       });
 
-      const totalDebit = entries.reduce((s, e) => s + Number(e.debit), 0);
-      const totalCredit = entries.reduce((s, e) => s + Number(e.credit), 0);
+      // 3. Resolve human-readable voucher details
+      const saleInvoiceIds = entries.filter((e) => e.referenceType === "SALE_INVOICE").map((e) => e.referenceId);
+      const purchaseInvoiceIds = entries.filter((e) => e.referenceType === "PURCHASE_INVOICE").map((e) => e.referenceId);
+      const paymentIds = entries.filter((e) => e.referenceType === "PAYMENT").map((e) => e.referenceId);
+      const saleReturnIds = entries.filter((e) => e.referenceType === "SALE_RETURN").map((e) => e.referenceId);
+      const purchaseReturnIds = entries.filter((e) => e.referenceType === "PURCHASE_RETURN").map((e) => e.referenceId);
+      const expenseIds = entries.filter((e) => e.referenceType === "EXPENSE").map((e) => e.referenceId);
+
+      const [saleInvoices, purchaseInvoices, payments, saleReturns, purchaseReturns, expenses] = await Promise.all([
+        saleInvoiceIds.length > 0
+          ? prisma.saleInvoice.findMany({ where: { id: { in: saleInvoiceIds } }, select: { id: true, invoiceNo: true, sequenceNo: true } })
+          : [],
+        purchaseInvoiceIds.length > 0
+          ? prisma.purchaseInvoice.findMany({ where: { id: { in: purchaseInvoiceIds } }, select: { id: true, invoiceNo: true, sequenceNo: true } })
+          : [],
+        paymentIds.length > 0
+          ? prisma.payment.findMany({ where: { id: { in: paymentIds } }, select: { id: true, receiptNo: true, sequenceNo: true, direction: true } })
+          : [],
+        saleReturnIds.length > 0
+          ? prisma.saleReturn.findMany({ where: { id: { in: saleReturnIds } }, select: { id: true, returnNo: true, sequenceNo: true } })
+          : [],
+        purchaseReturnIds.length > 0
+          ? prisma.purchaseReturn.findMany({ where: { id: { in: purchaseReturnIds } }, select: { id: true, returnNo: true, sequenceNo: true } })
+          : [],
+        expenseIds.length > 0
+          ? prisma.expense.findMany({ where: { id: { in: expenseIds } }, select: { id: true, expenseNo: true } })
+          : [],
+      ]);
+
+      const docMap = new Map<string, { voucherType: string; docNo: string }>();
+
+      for (const s of saleInvoices) {
+        docMap.set(s.id, {
+          voucherType: "Estimate",
+          docNo: `#${formatSequenceDisplay(s.sequenceNo, s.invoiceNo)}`,
+        });
+      }
+      for (const p of purchaseInvoices) {
+        docMap.set(p.id, {
+          voucherType: "Purchase",
+          docNo: `#${formatSequenceDisplay(p.sequenceNo, p.invoiceNo)}`,
+        });
+      }
+      for (const pay of payments) {
+        const isOut = pay.direction === "OUT";
+        docMap.set(pay.id, {
+          voucherType: isOut ? "Payment Voucher" : "Receipt",
+          docNo: `#${formatSequenceDisplay(pay.sequenceNo, pay.receiptNo)}`,
+        });
+      }
+      for (const sr of saleReturns) {
+        docMap.set(sr.id, {
+          voucherType: "Sale Return",
+          docNo: `#${formatSequenceDisplay(sr.sequenceNo, sr.returnNo)}`,
+        });
+      }
+      for (const pr of purchaseReturns) {
+        docMap.set(pr.id, {
+          voucherType: "Purchase Return",
+          docNo: `#${formatSequenceDisplay(pr.sequenceNo, pr.returnNo)}`,
+        });
+      }
+      for (const exp of expenses) {
+        docMap.set(exp.id, {
+          voucherType: "Expense",
+          docNo: exp.expenseNo || `#${exp.id.slice(-6)}`,
+        });
+      }
+
+      let runningBalance = openingBalance;
+      const mappedEntries = entries.map((e) => {
+        const debit = Number(e.debit);
+        const credit = Number(e.credit);
+        runningBalance += debit - credit;
+
+        const docInfo = docMap.get(e.referenceId) || {
+          voucherType: e.referenceType.replace(/_/g, " "),
+          docNo: e.referenceId.length > 10 ? `#${e.referenceId.slice(-6)}` : e.referenceId,
+        };
+
+        return {
+          date: formatDateTime(e.date),
+          accountType: e.accountType,
+          partyName: e.party ? e.party.name : "—",
+          referenceType: e.referenceType,
+          referenceId: e.referenceId,
+          voucherType: docInfo.voucherType,
+          docNo: docInfo.docNo,
+          description: e.description,
+          debit,
+          credit,
+          runningBalance,
+        };
+      });
+
+      const totalDebit = mappedEntries.reduce((s, e) => s + e.debit, 0);
+      const totalCredit = mappedEntries.reduce((s, e) => s + e.credit, 0);
+      const closingBalance = openingBalance + totalDebit - totalCredit;
 
       const period = startDate && endDate
         ? `${startDate} to ${endDate}`
@@ -213,18 +333,11 @@ export async function GET(
       docElement = React.createElement(GeneralLedgerPdfView, {
         period,
         filterInfo: filters,
+        openingBalance,
         totalDebit,
         totalCredit,
-        entries: entries.map((e) => ({
-          date: safeFormatDate(e.date) || "",
-          accountType: e.accountType,
-          partyName: e.party ? `${e.party.name} (${e.party.id.slice(-6)})` : "—",
-          referenceType: e.referenceType,
-          referenceId: e.referenceId,
-          description: e.description,
-          debit: Number(e.debit),
-          credit: Number(e.credit),
-        })),
+        closingBalance,
+        entries: mappedEntries,
       });
     }
 

@@ -56,6 +56,7 @@ export const deliveryOrderSchema = z
     vehicleNo: z.string().trim().max(100).optional().nullable().or(z.literal("")),
     driverName: z.string().trim().max(100).optional().nullable().or(z.literal("")),
     deliveredTo: z.string().trim().max(255).optional().nullable().or(z.literal("")),
+    recipientName: z.string().trim().max(255).optional().nullable().or(z.literal("")),
     notes: z.string().trim().max(1000).optional().nullable().or(z.literal("")),
     items: z.array(deliveryOrderItemSchema).min(1, "At least one item is required"),
   })
