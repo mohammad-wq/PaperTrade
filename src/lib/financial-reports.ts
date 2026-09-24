@@ -443,6 +443,28 @@ export async function calculateCashFlow(params?: { startDate?: string; endDate?:
  * Statement of Account (Party Ledger)
  * Computes Opening Balance (b/f), chronological transactions, running balance, and Closing Balance.
  */
+function normalizeTransactionNo(rawNo?: string | null, prefix = "SV") {
+  if (!rawNo) return `${prefix} —`;
+  const digits = (rawNo.match(/\d+/g) || []).join("");
+  const fallback = String(rawNo).replace(/^[A-Z]+[-\s]*/i, "").trim();
+  const seq = digits || fallback || "—";
+  return `${prefix} ${seq}`;
+}
+
+function paymentMethodLabel(method: string | null | undefined) {
+  const value = (method || "CASH").toUpperCase();
+  if (value === "CHEQUE") return "Cheque";
+  if (value === "BANK_TRANSFER" || value === "BANK") return "Bank Transfer";
+  return "Cash";
+}
+
+function formatPaymentDocNo(payment: { method?: string | null; receiptNo?: string | null }, direction?: string | null) {
+  const method = payment?.method || "CASH";
+  const basePrefix = method.toUpperCase() === "CHEQUE" ? "BRV" : "CRV";
+  const docNo = payment?.receiptNo || `${basePrefix}-0001`;
+  return normalizeTransactionNo(docNo, basePrefix);
+}
+
 export async function calculatePartyStatement(params: {
   partyId: string;
   startDate?: string;
@@ -464,7 +486,6 @@ export async function calculatePartyStatement(params: {
     dateFilter.lte = end;
   }
 
-  // 1. Calculate Opening Balance before startDate
   let openingBalance = 0;
   let openingBalanceSourceYear: string | null = null;
   if (params.startDate) {
@@ -491,80 +512,220 @@ export async function calculatePartyStatement(params: {
     }
   }
 
-  // 2. Query period ledger entries
-  const entries = await prisma.ledgerEntry.findMany({
-    where: {
-      partyId: params.partyId,
-      ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
-    },
-    include: {
-      sourceFinancialYear: { select: { id: true, label: true } },
-    },
-    orderBy: { date: "asc" },
-  });
+  const baseWhere = {
+    partyId: params.partyId,
+    ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
+  };
 
-  // Resolve human-readable document references for transaction cross-referencing
-  const saleInvoiceIds = entries.filter((e) => e.referenceType === "SALE_INVOICE").map((e) => e.referenceId);
-  const purchaseInvoiceIds = entries.filter((e) => e.referenceType === "PURCHASE_INVOICE").map((e) => e.referenceId);
-  const paymentIds = entries.filter((e) => e.referenceType === "PAYMENT").map((e) => e.referenceId);
-  const saleReturnIds = entries.filter((e) => e.referenceType === "SALE_RETURN").map((e) => e.referenceId);
-  const purchaseReturnIds = entries.filter((e) => e.referenceType === "PURCHASE_RETURN").map((e) => e.referenceId);
-
-  const [saleInvoices, purchaseInvoices, paymentsList, saleReturns, purchaseReturns] = await Promise.all([
-    saleInvoiceIds.length > 0
-      ? prisma.saleInvoice.findMany({ where: { id: { in: saleInvoiceIds } }, select: { id: true, invoiceNo: true } })
-      : [],
-    purchaseInvoiceIds.length > 0
-      ? prisma.purchaseInvoice.findMany({ where: { id: { in: purchaseInvoiceIds } }, select: { id: true, invoiceNo: true } })
-      : [],
-    paymentIds.length > 0
-      ? prisma.payment.findMany({ where: { id: { in: paymentIds } }, select: { id: true, receiptNo: true } })
-      : [],
-    saleReturnIds.length > 0
-      ? prisma.saleReturn.findMany({ where: { id: { in: saleReturnIds } }, select: { id: true, returnNo: true } })
-      : [],
-    purchaseReturnIds.length > 0
-      ? prisma.purchaseReturn.findMany({ where: { id: { in: purchaseReturnIds } }, select: { id: true, returnNo: true } })
-      : [],
+  const [saleInvoices, purchaseInvoices, payments, saleReturns, purchaseReturns] = await Promise.all([
+    prisma.saleInvoice.findMany({
+      where: {
+        customerId: params.partyId,
+        ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
+      },
+      include: {
+        items: { include: { product: { select: { id: true, name: true, unit: true } } } },
+      },
+      orderBy: { date: "asc" },
+    }),
+    prisma.purchaseInvoice.findMany({
+      where: {
+        supplierId: params.partyId,
+        ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
+      },
+      include: {
+        items: { include: { product: { select: { id: true, name: true, unit: true } } } },
+      },
+      orderBy: { date: "asc" },
+    }),
+    prisma.payment.findMany({
+      where: {
+        partyId: params.partyId,
+        ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
+      },
+      orderBy: { date: "asc" },
+    }),
+    prisma.saleReturn.findMany({
+      where: {
+        customerId: params.partyId,
+        ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
+      },
+      orderBy: { date: "asc" },
+    }),
+    prisma.purchaseReturn.findMany({
+      where: {
+        supplierId: params.partyId,
+        ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
+      },
+      orderBy: { date: "asc" },
+    }),
   ]);
 
-  const docNoMap = new Map<string, string>();
-  for (const item of saleInvoices) docNoMap.set(item.id, item.invoiceNo);
-  for (const item of purchaseInvoices) docNoMap.set(item.id, item.invoiceNo);
-  for (const item of paymentsList) docNoMap.set(item.id, item.receiptNo || `RCT-${item.id.slice(0, 8)}`);
-  for (const item of saleReturns) docNoMap.set(item.id, item.returnNo);
-  for (const item of purchaseReturns) docNoMap.set(item.id, item.returnNo);
+  const customRows: Array<{
+    id: string;
+    date: Date;
+    description: string;
+    referenceType: string;
+    referenceId: string;
+    referenceDocNo: string;
+    debit: number;
+    credit: number;
+    runningBalance: number;
+    detailRows?: Array<{ productName: string; quantity: number; unit: string; rate: number; amount: number }>;
+  }> = [];
 
+  const pushRow = (row: {
+    id: string;
+    date: Date;
+    description: string;
+    referenceType: string;
+    referenceId: string;
+    referenceDocNo: string;
+    debit: number;
+    credit: number;
+    detailRows?: Array<{ productName: string; quantity: number; unit: string; rate: number; amount: number }>;
+  }) => {
+    customRows.push({
+      ...row,
+      runningBalance: 0,
+    });
+  };
+
+  if (params.startDate) {
+    pushRow({
+      id: `opening-${params.partyId}`,
+      date: new Date(params.startDate),
+      description: "Balance Brought Forward",
+      referenceType: "OPENING_BALANCE",
+      referenceId: params.partyId,
+      referenceDocNo: "B/F",
+      debit: openingBalance >= 0 ? Math.abs(openingBalance) : 0,
+      credit: openingBalance < 0 ? Math.abs(openingBalance) : 0,
+    });
+  }
+
+  for (const invoice of saleInvoices) {
+    const details = invoice.items.map((item) => ({
+      productName: item.product.name,
+      quantity: Number(item.quantity),
+      unit: item.product.unit,
+      rate: Number(item.unitPrice),
+      amount: Number(item.lineTotal),
+    }));
+
+    pushRow({
+      id: `sale-${invoice.id}`,
+      date: invoice.date,
+      description: `Sale Invoice`,
+      referenceType: "SALE_INVOICE",
+      referenceId: invoice.id,
+      referenceDocNo: normalizeTransactionNo(invoice.invoiceNo, "SV"),
+      debit: Number(invoice.totalAmount),
+      credit: 0,
+      detailRows: details,
+    });
+  }
+
+  for (const invoice of purchaseInvoices) {
+    const details = invoice.items.map((item) => ({
+      productName: item.product.name,
+      quantity: Number(item.quantity),
+      unit: item.product.unit,
+      rate: Number(item.unitCost),
+      amount: Number(item.lineTotal),
+    }));
+
+    pushRow({
+      id: `purchase-${invoice.id}`,
+      date: invoice.date,
+      description: `Purchase Invoice`,
+      referenceType: "PURCHASE_INVOICE",
+      referenceId: invoice.id,
+      referenceDocNo: normalizeTransactionNo(invoice.invoiceNo, "PV"),
+      debit: Number(invoice.totalAmount),
+      credit: 0,
+      detailRows: details,
+    });
+  }
+
+  for (const payment of payments) {
+    const paymentLabel = payment.direction === "IN" ? "Cash Rcvd - Invoices" : "Cash Paid - Invoices";
+    const methodText = paymentMethodLabel(payment.method);
+    const description = payment.direction === "IN"
+      ? `${methodText} Rcvd - Invoices`
+      : `${methodText} Paid - Invoices`;
+
+    pushRow({
+      id: `payment-${payment.id}`,
+      date: payment.date,
+      description,
+      referenceType: "PAYMENT",
+      referenceId: payment.id,
+      referenceDocNo: formatPaymentDocNo(payment, payment.direction),
+      debit: 0,
+      credit: Number(payment.amount),
+    });
+  }
+
+  for (const saleReturn of saleReturns) {
+    pushRow({
+      id: `sale-return-${saleReturn.id}`,
+      date: saleReturn.date,
+      description: `Sale Return`,
+      referenceType: "SALE_RETURN",
+      referenceId: saleReturn.id,
+      referenceDocNo: normalizeTransactionNo(saleReturn.returnNo, "SR"),
+      debit: 0,
+      credit: Number(saleReturn.totalAmount),
+    });
+  }
+
+  for (const purchaseReturn of purchaseReturns) {
+    pushRow({
+      id: `purchase-return-${purchaseReturn.id}`,
+      date: purchaseReturn.date,
+      description: `Purchase Return`,
+      referenceType: "PURCHASE_RETURN",
+      referenceId: purchaseReturn.id,
+      referenceDocNo: normalizeTransactionNo(purchaseReturn.returnNo, "PR"),
+      debit: 0,
+      credit: Number(purchaseReturn.totalAmount),
+    });
+  }
+
+  const statementRows = customRows.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  let runningBalance = openingBalance;
   let totalPeriodDebits = 0;
   let totalPeriodCredits = 0;
-  let runningBalance = openingBalance;
 
-  const ledgerRows = entries.map((entry) => {
-    const debit = Number(entry.debit);
-    const credit = Number(entry.credit);
+  for (const row of statementRows) {
+    const debit = Number(row.debit) || 0;
+    const credit = Number(row.credit) || 0;
     totalPeriodDebits += debit;
     totalPeriodCredits += credit;
     runningBalance += debit - credit;
-
-    return {
-      id: entry.id,
-      date: entry.date,
-      partyId: party.id,
-      partyName: party.name,
-      description: entry.description,
-      referenceType: entry.referenceType,
-      referenceId: entry.referenceId,
-      referenceDocNo: docNoMap.get(entry.referenceId) || null,
-      sourceFinancialYear: entry.sourceFinancialYear?.label || null,
-      debit,
-      credit,
-      runningBalance,
-    };
-  });
+    row.runningBalance = runningBalance;
+  }
 
   const closingBalance = runningBalance;
 
-  // 3. Product transaction history if filtered
+  const ledgerRows = statementRows.map((row) => ({
+    id: row.id,
+    date: row.date,
+    partyId: party.id,
+    partyName: party.name,
+    description: row.description,
+    referenceType: row.referenceType,
+    referenceId: row.referenceId,
+    referenceDocNo: row.referenceDocNo,
+    sourceFinancialYear: openingBalanceSourceYear,
+    debit: Number(row.debit) || 0,
+    credit: Number(row.credit) || 0,
+    runningBalance: row.runningBalance,
+    detailRows: row.detailRows,
+  }));
+
   let productTransactions: Array<{
     date: Date;
     docNo: string;
