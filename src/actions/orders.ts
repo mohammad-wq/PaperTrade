@@ -198,48 +198,20 @@ export async function createPurchaseOrderAction(raw: unknown) {
     const res = await withResourceQueue(lockKeys, async (tx) => {
       let targetSupplierId = input.supplierId;
       if (input.supplierType === "ONE_TIME") {
-        const rawName = input.oneTimeSupplierName?.trim();
-        const isGeneric =
-          !rawName ||
-          rawName.toLowerCase() === "market vendor" ||
-          rawName.toLowerCase() === "cash vendor" ||
-          rawName.toLowerCase() === "cash supplier";
-        const finalName = isGeneric ? "Market Vendor" : rawName;
-
-        if (isGeneric) {
-          let genericParty = await tx.party.findFirst({
-            where: { name: "Market Vendor", type: PartyType.SUPPLIER },
+        let genericParty = await tx.party.findFirst({
+          where: { name: "Market Vendor" },
+        });
+        if (!genericParty) {
+          genericParty = await tx.party.create({
+            data: {
+              name: "Market Vendor",
+              type: PartyType.SUPPLIER,
+              email: "vendor@internal.local",
+              isActive: true,
+            },
           });
-          if (!genericParty) {
-            genericParty = await tx.party.create({
-              data: {
-                name: "Market Vendor",
-                type: PartyType.SUPPLIER,
-                email: "vendor@internal.local",
-                phone: input.oneTimeSupplierPhone?.trim() || null,
-                isActive: true,
-              },
-            });
-          }
-          targetSupplierId = genericParty.id;
-        } else {
-          let existingParty = await tx.party.findFirst({
-            where: { name: { equals: finalName, mode: "insensitive" } },
-          });
-          if (existingParty) {
-            targetSupplierId = existingParty.id;
-          } else {
-            const newParty = await tx.party.create({
-              data: {
-                name: finalName,
-                type: PartyType.SUPPLIER,
-                phone: input.oneTimeSupplierPhone?.trim() || null,
-                isActive: true,
-              },
-            });
-            targetSupplierId = newParty.id;
-          }
         }
+        targetSupplierId = genericParty.id;
       } else {
         if (!input.supplierId) {
           throw userError("Please select a supplier.");

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import React, { useEffect, useState, useMemo, useRef, createRef } from "react";
 import {
   CreditCard,
   Plus,
@@ -96,6 +96,15 @@ export default function PaymentsPage() {
   const [isExpenseDialogOpen, setIsExpenseDialogOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // Form input refs for sequential Enter-key navigation
+  const partyRef = useRef<HTMLInputElement>(null);
+  const dateRef = useRef<HTMLInputElement>(null);
+  const notesRef = useRef<HTMLInputElement>(null);
+  const splitAmountRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const splitRefRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+
+  const handleSubmitRef = useRef<(e: React.FormEvent) => Promise<void>>(() => Promise.resolve());
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "F2" || e.key === "Insert") {
@@ -108,11 +117,18 @@ export default function PaymentsPage() {
       ) {
         e.preventDefault();
         searchInputRef.current?.focus();
+      } else if (e.key === "Escape" && isDialogOpen) {
+        e.preventDefault();
+        setIsDialogOpen(false);
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && isDialogOpen) {
+        e.preventDefault();
+        const fakeEv = { preventDefault: () => {} } as React.FormEvent;
+        void handleSubmitRef.current(fakeEv);
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [isDialogOpen]);
 
   // Form state
   const [direction, setDirection] = useState<"IN" | "OUT">("IN");
@@ -175,25 +191,26 @@ export default function PaymentsPage() {
 
   const selectedParty = useMemo(() => parties.find((p) => p.id === partyId), [parties, partyId]);
 
-  // Filter parties by direction: Customers for IN, Suppliers for OUT
+  // Parties can act as both customer and supplier: all parties available regardless of direction
   const availableParties = useMemo(() => {
-    if (direction === "IN") {
-      return parties.filter((p) => p.type === PartyType.CUSTOMER);
-    } else {
-      return parties.filter((p) => p.type === PartyType.SUPPLIER);
-    }
-  }, [parties, direction]);
+    return parties;
+  }, [parties]);
 
   const candidateInvoices = useMemo(() => {
     if (!selectedParty) return [];
+    const sales = saleInvoices
+      .filter((i) => i.customerId === selectedParty.id)
+      .map((i) => ({ ...i, invType: "SALE" as const }));
+    const purchases = purchaseInvoices
+      .filter((i) => i.supplierId === selectedParty.id)
+      .map((i) => ({ ...i, invType: "PURCHASE" as const }));
+
     if (direction === "IN") {
-      return saleInvoices
-        .filter((i) => i.customerId === selectedParty.id)
-        .map((i) => ({ ...i, invType: "SALE" as const }));
+      // Receiving money: prioritize sales invoices, but also show any purchase invoices
+      return [...sales, ...purchases];
     } else {
-      return purchaseInvoices
-        .filter((i) => i.supplierId === selectedParty.id)
-        .map((i) => ({ ...i, invType: "PURCHASE" as const }));
+      // Paying money: prioritize purchase invoices, but also show any sale invoices
+      return [...purchases, ...sales];
     }
   }, [selectedParty, direction, saleInvoices, purchaseInvoices]);
 
@@ -342,6 +359,23 @@ export default function PaymentsPage() {
       setSubmitting(false);
     }
   }
+
+  handleSubmitRef.current = handleSubmit;
+
+  // Initialize and synchronize split input refs
+  splits.forEach((_, idx) => {
+    if (!splitAmountRefs.current[idx]) splitAmountRefs.current[idx] = { current: null };
+    if (!splitRefRefs.current[idx]) splitRefRefs.current[idx] = { current: null };
+  });
+
+  // Autofocus party input on dialog open
+  useEffect(() => {
+    if (isDialogOpen) {
+      setTimeout(() => {
+        partyRef.current?.focus();
+      }, 80);
+    }
+  }, [isDialogOpen]);
 
   async function handleExpenseSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -742,24 +776,25 @@ export default function PaymentsPage() {
 
               {/* Party Selection with Live Balance */}
               <div className="space-y-1">
-                <Label className="text-xs font-semibold">
-                  {direction === "IN" ? "Customer" : "Supplier"} <span className="text-rose-500">*</span>
-                </Label>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold">
+                    Party (Customer or Supplier) <span className="text-rose-500">*</span>
+                  </Label>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    {direction === "IN" ? "Receiving from party" : "Paying to party"}
+                  </span>
+                </div>
                 <SearchCombobox
                   options={availableParties.map((p) => {
-                    const isCust = p.type === PartyType.CUSTOMER;
-                    const balLabel =
-                      p.balance > 0
-                        ? isCust ? "Receivable" : "Payable"
-                        : p.balance < 0
-                          ? isCust ? "Advance" : "Debit"
-                          : "Settled";
+                    const isReceivable = p.balance > 0;
+                    const isPayable = p.balance < 0;
+                    const balLabel = isReceivable ? "Receivable" : isPayable ? "Payable" : "Settled";
                     return {
                       id: p.id,
                       label: p.name,
                       sublabel: `${p.type} • Bal: PKR ${Math.abs(p.balance).toLocaleString()} (${balLabel})`,
-                      badge: p.type,
-                      badgeColor: isCust ? "green" : "amber",
+                      badge: p.type === PartyType.CUSTOMER ? "Customer" : "Supplier",
+                      badgeColor: p.type === PartyType.CUSTOMER ? "green" : "amber",
                     };
                   })}
                   value={partyId}
@@ -767,7 +802,11 @@ export default function PaymentsPage() {
                     setPartyId(val);
                     setInvoiceId("");
                   }}
-                  placeholder={`Search ${direction === "IN" ? "customer" : "supplier"} name...`}
+                  inputRef={partyRef}
+                  onEnterPress={() => {
+                    dateRef.current?.focus();
+                  }}
+                  placeholder="Search party by name (Customer or Supplier)..."
                   className="text-xs h-9"
                 />
                 {selectedParty && (
@@ -778,8 +817,10 @@ export default function PaymentsPage() {
                         className={cn(
                           "font-bold text-sm",
                           selectedParty.balance > 0
-                            ? selectedParty.type === PartyType.CUSTOMER ? "text-emerald-700" : "text-amber-700"
-                            : "text-slate-700"
+                            ? "text-emerald-700 dark:text-emerald-400"
+                            : selectedParty.balance < 0
+                            ? "text-rose-700 dark:text-rose-400"
+                            : "text-slate-700 dark:text-slate-300"
                         )}
                       >
                         PKR {Math.abs(selectedParty.balance).toLocaleString()}
@@ -788,17 +829,17 @@ export default function PaymentsPage() {
                         className={cn(
                           "text-[10px] font-bold px-1.5 py-0.5 rounded",
                           selectedParty.balance > 0
-                            ? selectedParty.type === PartyType.CUSTOMER
-                              ? "bg-emerald-100 text-emerald-800"
-                              : "bg-amber-100 text-amber-800"
+                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
                             : selectedParty.balance < 0
-                              ? "bg-sky-100 text-sky-800"
-                              : "bg-slate-100 text-slate-700"
+                            ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
+                            : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
                         )}
                       >
                         {selectedParty.balance > 0
-                          ? selectedParty.type === PartyType.CUSTOMER ? "RECEIVABLE (OWES YOU)" : "PAYABLE (YOU OWE)"
-                          : selectedParty.balance < 0 ? "ADVANCE BALANCE" : "SETTLED / ZERO"}
+                          ? "RECEIVABLE (OWES YOU)"
+                          : selectedParty.balance < 0
+                          ? "PAYABLE (YOU OWE)"
+                          : "SETTLED / ZERO"}
                       </span>
                     </div>
                     {selectedParty.phone && (
@@ -836,10 +877,18 @@ export default function PaymentsPage() {
                   Date & Time <span className="text-rose-500">*</span>
                 </Label>
                 <Input
+                  ref={dateRef}
                   id="paydate"
                   type="datetime-local"
                   value={paymentDate}
                   onChange={(e) => setPaymentDate(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      splitAmountRefs.current[0]?.current?.focus();
+                      splitAmountRefs.current[0]?.current?.select();
+                    }
+                  }}
                   className="text-xs h-8"
                   required
                 />
@@ -880,6 +929,7 @@ export default function PaymentsPage() {
                       </select>
 
                       <Input
+                        ref={splitAmountRefs.current[idx]}
                         type="number"
                         min="0.01"
                         step="any"
@@ -887,15 +937,35 @@ export default function PaymentsPage() {
                         onChange={(e) =>
                           handleSplitChange(idx, "amount", e.target.value === "" ? "" : Number(e.target.value))
                         }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            splitRefRefs.current[idx]?.current?.focus();
+                            splitRefRefs.current[idx]?.current?.select();
+                          }
+                        }}
                         placeholder="Amount (PKR) *"
                         className="h-8 text-xs font-mono text-right"
                         required
                       />
 
                       <Input
+                        ref={splitRefRefs.current[idx]}
                         type="text"
                         value={split.reference}
                         onChange={(e) => handleSplitChange(idx, "reference", e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            if (idx === splits.length - 1) {
+                              notesRef.current?.focus();
+                              notesRef.current?.select();
+                            } else {
+                              splitAmountRefs.current[idx + 1]?.current?.focus();
+                              splitAmountRefs.current[idx + 1]?.current?.select();
+                            }
+                          }
+                        }}
                         placeholder={
                           split.method === PaymentMethod.CHEQUE
                             ? "Cheque # (e.g. HBL-91823)"
@@ -930,9 +1000,16 @@ export default function PaymentsPage() {
                   Remarks / Internal Notes <span className="text-slate-400 font-normal text-xs">(Optional)</span>
                 </Label>
                 <Input
+                  ref={notesRef}
                   id="paynotes"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleSubmit(e);
+                    }
+                  }}
                   placeholder="e.g. Received by cashier Ali, cleared bank deposit"
                   className="text-xs h-8"
                 />

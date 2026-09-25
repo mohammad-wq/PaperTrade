@@ -51,27 +51,34 @@ function formatBytes(bytes) {
  * Read and parse .env file
  */
 function parseEnv(root = PROJECT_ROOT) {
-  const envPath = path.join(root, '.env');
+  const envCandidates = [
+    path.join(root, '.env'),
+    path.resolve(root, '..', '..', '.env'),
+    'C:\\Users\\dell\\Desktop\\PaperTrade\\.env',
+  ];
+
   const envVars = { ...process.env };
 
-  if (fs.existsSync(envPath)) {
-    const content = fs.readFileSync(envPath, 'utf8');
-    const lines = content.split(/\r?\n/);
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eqIdx = trimmed.indexOf('=');
-      if (eqIdx > 0) {
-        const key = trimmed.slice(0, eqIdx).trim();
-        let val = trimmed.slice(eqIdx + 1).trim();
-        // Remove surrounding quotes if present
-        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-          val = val.slice(1, -1);
-        }
-        if (!envVars[key]) {
-          envVars[key] = val;
+  for (const envPath of envCandidates) {
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, 'utf8');
+      const lines = content.split(/\r?\n/);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx > 0) {
+          const key = trimmed.slice(0, eqIdx).trim();
+          let val = trimmed.slice(eqIdx + 1).trim();
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          if (!envVars[key]) {
+            envVars[key] = val;
+          }
         }
       }
+      break;
     }
   }
 
@@ -135,6 +142,7 @@ function findPgDump() {
   // Standard Windows installation paths
   if (process.platform === 'win32') {
     const standardPaths = [
+      'C:\\Program Files\\PostgreSQL\\18\\bin\\pg_dump.exe',
       'C:\\Program Files\\PostgreSQL\\17\\bin\\pg_dump.exe',
       'C:\\Program Files\\PostgreSQL\\16\\bin\\pg_dump.exe',
       'C:\\Program Files\\PostgreSQL\\15\\bin\\pg_dump.exe',

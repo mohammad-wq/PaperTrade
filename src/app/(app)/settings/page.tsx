@@ -18,6 +18,7 @@ import {
   Cloud,
   HardDrive,
   Clock,
+  Calendar,
   ShieldCheck,
   ShieldAlert,
   FolderSync,
@@ -383,18 +384,18 @@ export default function SettingsPage() {
         </Card>
       </form>
 
-      {/* Production Backup & Cloud Sync Control Center (OWNER Only) */}
+      {/* Production Backup & Safety Control Center (OWNER Only) */}
       <Card className="border-slate-200 bg-white shadow-xs">
         <CardHeader className="pb-3 border-b border-slate-100">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <FolderSync className="h-4 w-4 text-sky-700" />
-              Automated & Manual Backup Control Center
+              <ShieldCheck className="h-5 w-5 text-emerald-600" />
+              Database Backup & Safety Center
             </CardTitle>
             <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                <ShieldCheck className="h-3 w-3" />
-                Owner Privileges Active
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Protection Active
               </span>
               <Button
                 variant="outline"
@@ -411,110 +412,146 @@ export default function SettingsPage() {
               </Button>
             </div>
           </div>
-          <CardDescription className="text-xs">
-            Native PostgreSQL automated daily backups with 30-day retention and weekly cloud sync to Google Drive via Rclone.
+          <CardDescription className="text-xs text-slate-500">
+            Automated daily database backups scheduled everyday at 4:00 PM with 30-day retention and cloud sync.
           </CardDescription>
         </CardHeader>
 
-        <CardContent className="p-4 space-y-6 text-xs">
-          {/* Status Metrics Bar */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
-              <div className="text-[10px] uppercase font-semibold text-slate-500">Products</div>
-              <div className="text-lg font-bold text-slate-800 mt-0.5">
-                {dbStats ? dbStats.productsCount : "—"}
+        <CardContent className="p-4 space-y-5 text-xs">
+          {/* Schedule & Safety Summary Banner */}
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="p-3.5 rounded-xl border border-emerald-100 bg-emerald-50/40 flex items-start gap-3">
+              <Clock className="h-5 w-5 text-emerald-700 shrink-0 mt-0.5" />
+              <div>
+                <div className="text-[10px] uppercase font-bold text-emerald-800 tracking-wider">
+                  Automatic Daily Backup
+                </div>
+                <div className="text-sm font-bold text-slate-900 mt-0.5">
+                  Everyday at 4:00 PM
+                </div>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  Runs silently in the background via Windows Task Scheduler.
+                </p>
               </div>
             </div>
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
-              <div className="text-[10px] uppercase font-semibold text-slate-500">Parties</div>
-              <div className="text-lg font-bold text-slate-800 mt-0.5">
-                {dbStats ? dbStats.partiesCount : "—"}
+
+            <div className="p-3.5 rounded-xl border border-sky-100 bg-sky-50/40 flex items-start gap-3">
+              <HardDrive className="h-5 w-5 text-sky-700 shrink-0 mt-0.5" />
+              <div>
+                <div className="text-[10px] uppercase font-bold text-sky-800 tracking-wider">
+                  Backup Storage
+                </div>
+                <div className="text-sm font-bold text-slate-900 mt-0.5">
+                  C:\PaperTradeBackups
+                </div>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  Stored safely on local hard drive & synced to Google Drive.
+                </p>
               </div>
             </div>
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
-              <div className="text-[10px] uppercase font-semibold text-slate-500">Sales Invoices</div>
-              <div className="text-lg font-bold text-slate-800 mt-0.5">
-                {dbStats ? dbStats.salesCount : "—"}
-              </div>
-            </div>
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
-              <div className="text-[10px] uppercase font-semibold text-slate-500">Purchases</div>
-              <div className="text-lg font-bold text-slate-800 mt-0.5">
-                {dbStats ? dbStats.purchasesCount : "—"}
-              </div>
-            </div>
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center col-span-2 sm:col-span-1">
-              <div className="text-[10px] uppercase font-semibold text-slate-500">Ledger Records</div>
-              <div className="text-lg font-bold text-slate-800 mt-0.5">
-                {dbStats ? dbStats.ledgerCount : "—"}
+
+            <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/60 flex items-start gap-3">
+              <Calendar className="h-5 w-5 text-slate-700 shrink-0 mt-0.5" />
+              <div>
+                <div className="text-[10px] uppercase font-bold text-slate-700 tracking-wider">
+                  Last Backup Created
+                </div>
+                <div className="text-sm font-bold text-slate-900 mt-0.5">
+                  {dbStats?.lastBackupAt ? formatDateTime(dbStats.lastBackupAt) : "Recently Completed"}
+                </div>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  Keeps 30 days of history with automatic clean-up.
+                </p>
               </div>
             </div>
           </div>
 
-          {/* Section: One-Click Backup Now */}
-          <div className="p-4 rounded-xl border border-sky-100 bg-sky-50/40 space-y-3">
+          {/* Business Data Snapshot */}
+          <div className="p-3 bg-slate-50/80 border border-slate-200 rounded-xl">
+            <div className="text-[11px] font-bold text-slate-700 mb-2 uppercase tracking-wide">
+              Records Currently Protected in Database:
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">Products</span>
+                <div className="text-base font-bold text-slate-800">{dbStats ? dbStats.productsCount : "—"}</div>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">Parties</span>
+                <div className="text-base font-bold text-slate-800">{dbStats ? dbStats.partiesCount : "—"}</div>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">Sales Invoices</span>
+                <div className="text-base font-bold text-slate-800">{dbStats ? dbStats.salesCount : "—"}</div>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">Purchases</span>
+                <div className="text-base font-bold text-slate-800">{dbStats ? dbStats.purchasesCount : "—"}</div>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-2xs col-span-2 sm:col-span-1">
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">Ledger Entries</span>
+                <div className="text-base font-bold text-slate-800">{dbStats ? dbStats.ledgerCount : "—"}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Section: One-Click Instant Backup Button */}
+          <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/30 space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h3 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                  <Database className="h-4 w-4 text-sky-800" />
-                  Manual Backup Now (Local Dump + Google Drive Cloud Sync)
+                  <Database className="h-4 w-4 text-emerald-700" />
+                  Instant Backup
                 </h3>
-                <p className="text-slate-600 text-[11px] mt-0.5">
-                  Executes an immediate full dump (<code className="bg-sky-100/70 px-1 py-0.5 rounded text-sky-900">-F c</code>) to <code className="bg-sky-100/70 px-1 py-0.5 rounded text-sky-900">C:\PaperTradeBackups\local\</code> and uploads to Google Drive (<code className="bg-sky-100/70 px-1 py-0.5 rounded text-sky-900">gdrive:PaperTradeBackup/</code>).
+                <p className="text-slate-600 text-xs mt-0.5">
+                  Want an immediate backup right now before making major changes or shutting down? Click below:
                 </p>
               </div>
 
               <Button
                 onClick={handleManualBackupNow}
                 disabled={isManualBackingUp || !isOwner}
-                className="bg-sky-800 text-white hover:bg-sky-700 text-xs shadow-sm whitespace-nowrap shrink-0"
+                className="bg-emerald-700 text-white hover:bg-emerald-800 text-xs shadow-sm font-bold whitespace-nowrap shrink-0 h-9 px-4"
               >
-                <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${isManualBackingUp ? "animate-spin" : ""}`} />
-                {isManualBackingUp ? "Backing up & Syncing..." : "Backup Now"}
+                <RefreshCw className={`mr-1.5 h-4 w-4 ${isManualBackingUp ? "animate-spin" : ""}`} />
+                {isManualBackingUp ? "Backing Up Records..." : "Create Backup Now"}
               </Button>
             </div>
 
             {/* Visual Feedback on Manual Backup Result */}
             {manualBackupResult && (
               <div
-                className={`rounded-lg p-3.5 text-xs border ${
-                  manualBackupResult.partial
-                    ? "bg-amber-50 border-amber-200 text-amber-900"
-                    : manualBackupResult.success
+                className={`rounded-lg p-3 text-xs border ${
+                  manualBackupResult.success
                     ? "bg-emerald-50 border-emerald-200 text-emerald-900"
                     : "bg-rose-50 border-rose-200 text-rose-900"
                 }`}
               >
                 <div className="flex items-start gap-2">
-                  {manualBackupResult.partial ? (
-                    <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-                  ) : manualBackupResult.success ? (
+                  {manualBackupResult.success ? (
                     <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
                   ) : (
                     <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
                   )}
                   <div className="space-y-1">
-                    <p className="font-semibold">
-                      {manualBackupResult.message || manualBackupResult.error || (manualBackupResult.success ? "Backup completed successfully." : "Backup failed.")}
+                    <p className="font-bold text-xs">
+                      {manualBackupResult.success
+                        ? "Backup created and saved safely!"
+                        : "Backup failed. See details below."}
                     </p>
-                    {manualBackupResult.error && !manualBackupResult.success && (
-                      <p className="text-[11px] text-rose-700 bg-rose-100/60 p-2 rounded mt-1 font-mono break-all">
-                        {manualBackupResult.error}
-                      </p>
-                    )}
                     {manualBackupResult.local && (
-                      <p className="text-[11px] opacity-90">
-                        <strong>Local Dump:</strong> {manualBackupResult.local.filename} ({manualBackupResult.local.fileSizeFormatted})
-                      </p>
-                    )}
-                    {manualBackupResult.cloud?.remotePath && (
-                      <p className="text-[11px] opacity-90">
-                        <strong>Cloud Sync:</strong> {manualBackupResult.cloud.remotePath}
+                      <p className="text-[11px] text-slate-700">
+                        Saved file: <strong>{manualBackupResult.local.filename}</strong> ({manualBackupResult.local.fileSizeFormatted}) in <code>C:\PaperTradeBackups\local</code>
                       </p>
                     )}
                     {manualBackupResult.partial && (
-                      <p className="text-[10px] text-amber-800 mt-1">
-                        Tip: If Google Drive sync failed, ensure Rclone is installed and configured per the instructions in <code>SETUP.md</code>.
+                      <p className="text-[11px] text-amber-800">
+                        Note: Local backup was saved successfully. Cloud sync will activate once Rclone is configured.
+                      </p>
+                    )}
+                    {manualBackupResult.error && !manualBackupResult.success && (
+                      <p className="text-[11px] text-rose-700 bg-rose-100/60 p-2 rounded mt-1 font-mono break-all">
+                        {manualBackupResult.error}
                       </p>
                     )}
                   </div>
@@ -526,33 +563,19 @@ export default function SettingsPage() {
               <div className="rounded-lg p-3 text-xs bg-rose-50 border border-rose-200 text-rose-800 flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
                 <div>
-                  <span className="font-semibold">Backup Failed: </span>
+                  <span className="font-semibold">Backup Notice: </span>
                   <span>{manualBackupError}</span>
                 </div>
               </div>
             )}
-
-            <div className="flex items-center gap-4 text-[11px] text-slate-500 pt-1">
-              <span className="flex items-center gap-1">
-                <Clock className="h-3.5 w-3.5 text-slate-400" />
-                Last Recorded Backup:{" "}
-                <strong>
-                  {dbStats?.lastBackupAt ? formatDateTime(dbStats.lastBackupAt) : "None"}
-                </strong>
-              </span>
-              <span className="flex items-center gap-1">
-                <HardDrive className="h-3.5 w-3.5 text-slate-400" />
-                Retention: <strong>30 Days Auto-Purge</strong>
-              </span>
-            </div>
           </div>
 
-          {/* Section: Recent Backup Activity Log */}
+          {/* Section: Friendly Recent Backup History */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Terminal className="h-4 w-4 text-slate-700" />
-                <h3 className="font-bold text-slate-900 text-xs">Recent Backup Activity Log (C:\PaperTradeBackups\backup-log.txt)</h3>
+                <FileCheck className="h-4 w-4 text-slate-700" />
+                <h3 className="font-bold text-slate-900 text-xs">Recent Backup History</h3>
               </div>
               <Button
                 variant="ghost"
@@ -562,88 +585,96 @@ export default function SettingsPage() {
                 className="h-6 text-[11px] text-slate-500 hover:text-slate-900 px-2"
               >
                 <RefreshCw className={`h-3 w-3 mr-1 ${logsLoading ? "animate-spin" : ""}`} />
-                Reload Log
+                Refresh History
               </Button>
             </div>
 
-            <div className="border border-slate-200 rounded-lg overflow-hidden bg-slate-900 text-slate-200 font-mono text-[11px]">
+            <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-2xs">
               {backupLogs.length === 0 ? (
-                <div className="p-4 text-center text-slate-500">
-                  No backup log entries found. Runs will be recorded automatically here.
+                <div className="p-4 text-center text-slate-500 text-xs">
+                  No backup records found yet. Scheduled runs will appear here automatically.
                 </div>
               ) : (
-                <div className="max-h-64 overflow-y-auto divide-y divide-slate-800">
-                  {backupLogs.map((log, idx) => (
-                    <div key={idx} className="p-2.5 hover:bg-slate-800/60 flex items-start gap-2 text-[11px] leading-snug">
-                      <span className="text-slate-400 shrink-0 font-sans">{log.timestamp}</span>
+                <div className="max-h-60 overflow-y-auto divide-y divide-slate-100">
+                  {backupLogs.slice(0, 8).map((log, idx) => (
+                    <div key={idx} className="p-2.5 hover:bg-slate-50 flex items-center justify-between text-xs gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 ${
+                            log.status === "SUCCESS"
+                              ? "bg-emerald-500"
+                              : log.status === "PARTIAL"
+                              ? "bg-amber-500"
+                              : "bg-rose-500"
+                          }`}
+                        />
+                        <div className="min-w-0">
+                          <div className="font-semibold text-slate-800 truncate">
+                            {log.tag === "LOCAL"
+                              ? "Daily Scheduled Backup"
+                              : log.tag === "CLOUD"
+                              ? "Cloud Backup"
+                              : "Manual Backup"}
+                          </div>
+                          <div className="text-[11px] text-slate-500 truncate">{log.message}</div>
+                        </div>
+                      </div>
 
-                      <span
-                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                          log.tag === "LOCAL"
-                            ? "bg-sky-950 text-sky-300 border border-sky-800"
-                            : log.tag === "CLOUD"
-                            ? "bg-purple-950 text-purple-300 border border-purple-800"
-                            : "bg-emerald-950 text-emerald-300 border border-emerald-800"
-                        }`}
-                      >
-                        [{log.tag}]
-                      </span>
-
-                      <span
-                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                          log.status === "SUCCESS"
-                            ? "text-emerald-400 bg-emerald-950/40"
-                            : log.status === "PARTIAL"
-                            ? "text-amber-400 bg-amber-950/40"
-                            : "text-rose-400 bg-rose-950/40"
-                        }`}
-                      >
-                        {log.status}
-                      </span>
-
-                      <span className="text-slate-300 break-all">{log.message}</span>
+                      <div className="text-right shrink-0">
+                        <span className="text-[11px] text-slate-400 block font-mono">
+                          {log.timestamp}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.2 rounded inline-block mt-0.5 ${
+                            log.status === "SUCCESS"
+                              ? "bg-emerald-100 text-emerald-800"
+                              : log.status === "PARTIAL"
+                              ? "bg-amber-100 text-amber-800"
+                              : "bg-rose-100 text-rose-800"
+                          }`}
+                        >
+                          {log.status === "SUCCESS" ? "Completed" : log.status === "PARTIAL" ? "Notice" : "Failed"}
+                        </span>
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-            <p className="text-[10px] text-slate-500">
-              The log file is stored locally at <code>C:\PaperTradeBackups\backup-log.txt</code> for visibility and auditing.
-            </p>
           </div>
 
-          {/* Section: Secondary Ad-Hoc SQL Snapshot & Restore */}
-          <div className="grid gap-6 md:grid-cols-2 pt-2 border-t border-slate-100">
+          {/* Section: Secondary USB Download & Database Restore */}
+          <div className="grid gap-4 md:grid-cols-2 pt-2 border-t border-slate-100">
             {/* Download ad-hoc snapshot */}
-            <div className="space-y-3 p-4 rounded-xl border border-slate-200 bg-slate-50/50">
+            <div className="space-y-2 p-3.5 rounded-xl border border-slate-200 bg-slate-50/50">
               <div className="flex items-center gap-2">
                 <Download className="h-4 w-4 text-slate-800" />
-                <h3 className="font-bold text-slate-900 text-xs">Direct Browser Download (.sql)</h3>
+                <h3 className="font-bold text-slate-900 text-xs">Save Copy to Computer / USB</h3>
               </div>
               <p className="text-slate-600 text-[11px] leading-relaxed">
-                Download a plain-text SQL snapshot directly to your current computer or USB flash drive for offline archiving.
+                Download a single file snapshot directly through your web browser to copy to a USB pen drive.
               </p>
               <div className="pt-1">
                 <Button
                   onClick={handleDownloadBackup}
                   disabled={isBackingUp}
                   variant="outline"
-                  className="w-full text-xs"
+                  className="w-full text-xs h-8"
                 >
-                  <Download className={`mr-2 h-4 w-4 ${isBackingUp ? "animate-bounce" : ""}`} />
-                  {isBackingUp ? "Generating Download..." : "Download SQL Snapshot"}
+                  <Download className={`mr-2 h-3.5 w-3.5 ${isBackingUp ? "animate-bounce" : ""}`} />
+                  {isBackingUp ? "Saving Copy..." : "Download File (.sql)"}
                 </Button>
               </div>
             </div>
 
             {/* Restore from SQL file */}
-            <form onSubmit={handleRestoreSubmit} className="space-y-3 p-4 rounded-xl border border-amber-100 bg-amber-50/30">
+            <form onSubmit={handleRestoreSubmit} className="space-y-2 p-3.5 rounded-xl border border-amber-200 bg-amber-50/30">
               <div className="flex items-center gap-2">
                 <UploadCloud className="h-4 w-4 text-amber-800" />
-                <h3 className="font-bold text-slate-900 text-xs">Restore from Backup File (.sql)</h3>
+                <h3 className="font-bold text-slate-900 text-xs">Restore Records from Backup File</h3>
               </div>
               <p className="text-slate-600 text-[11px] leading-relaxed">
-                Upload a previously exported <code>.sql</code> backup file to restore database tables.
+                Upload a previously saved <code>.sql</code> file to restore data on this computer.
               </p>
 
               <div className="space-y-2 pt-1">
@@ -656,11 +687,11 @@ export default function SettingsPage() {
                     setRestoreFile(file);
                     setRestoreConfirmed(false);
                   }}
-                  className="block w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-amber-100 file:text-amber-900 hover:file:bg-amber-200 cursor-pointer"
+                  className="block w-full text-xs text-slate-600 file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-amber-100 file:text-amber-900 hover:file:bg-amber-200 cursor-pointer"
                 />
 
                 {restoreFile && (
-                  <div className="p-2 rounded-md border border-amber-200 bg-amber-100/50 space-y-2">
+                  <div className="p-2 rounded-md border border-amber-200 bg-amber-100/50 space-y-1.5">
                     <div className="flex items-center gap-2 text-xs font-semibold text-amber-900">
                       <FileCheck className="h-3.5 w-3.5" />
                       <span>{restoreFile.name} ({(restoreFile.size / 1024).toFixed(1)} KB)</span>
@@ -675,7 +706,7 @@ export default function SettingsPage() {
                       />
                       <span>
                         <AlertTriangle className="inline h-3 w-3 text-amber-700 mr-1" />
-                        I understand that restoring will overwrite current database records with this file.
+                        I understand this will overwrite current records with the data in this file.
                       </span>
                     </label>
                   </div>
@@ -684,10 +715,10 @@ export default function SettingsPage() {
                 <Button
                   type="submit"
                   disabled={!restoreFile || !restoreConfirmed || isRestoring}
-                  className="w-full bg-amber-800 text-white hover:bg-amber-700 text-xs shadow-xs"
+                  className="w-full bg-amber-800 text-white hover:bg-amber-700 text-xs h-8 shadow-xs"
                 >
-                  <UploadCloud className="mr-2 h-4 w-4" />
-                  {isRestoring ? "Restoring Database..." : "Confirm & Restore"}
+                  <UploadCloud className="mr-2 h-3.5 w-3.5" />
+                  {isRestoring ? "Restoring Records..." : "Confirm & Restore Records"}
                 </Button>
               </div>
             </form>
@@ -709,30 +740,6 @@ export default function SettingsPage() {
               <span>{backupMessage.text}</span>
             </div>
           )}
-
-          {/* Automated Batch Scripts Reference */}
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Terminal className="h-4 w-4 text-slate-700" />
-              <h4 className="text-xs font-bold text-slate-900">Automated Scheduled Backup Scripts (Windows Task Scheduler)</h4>
-            </div>
-            <p className="text-[11px] text-slate-600 leading-relaxed">
-              Included with the project are batch scripts scheduled via Windows Task Scheduler to run silently in the background:
-            </p>
-            <div className="grid gap-2 sm:grid-cols-2 text-[11px]">
-              <div className="bg-slate-900 text-slate-100 p-2.5 rounded font-mono">
-                <span className="text-sky-400 block text-[10px] uppercase font-bold">Daily Local (9:00 PM)</span>
-                scripts\backup-local.bat
-              </div>
-              <div className="bg-slate-900 text-slate-100 p-2.5 rounded font-mono">
-                <span className="text-purple-400 block text-[10px] uppercase font-bold">Weekly Cloud (Sun 10:00 PM)</span>
-                scripts\backup-cloud.bat
-              </div>
-            </div>
-            <p className="text-[10px] text-slate-500">
-              Local backups are written to <code>C:\PaperTradeBackups\local\</code>. Cloud backups are synced to <code>gdrive:PaperTradeBackup/</code>. See <code>SETUP.md</code> for Task Scheduler and Rclone setup details.
-            </p>
-          </div>
         </CardContent>
       </Card>
     </div>

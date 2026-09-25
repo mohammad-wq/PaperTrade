@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, Check, X } from "lucide-react";
 
 export interface ComboboxOption {
@@ -44,6 +45,7 @@ export function SearchCombobox({
   required = false,
   inputRef: externalInputRef,
 }: SearchComboboxProps) {
+  const [mounted, setMounted] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -53,23 +55,15 @@ export function SearchCombobox({
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   // Find currently selected option
   const selectedOption = useMemo(
     () => options.find((opt) => opt.id === value),
     [options, value]
   );
-
-  // Filter options based on search query
-  const filteredOptions = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return options;
-    return options.filter(
-      (opt) =>
-        opt.label.toLowerCase().includes(q) ||
-        (opt.sublabel && opt.sublabel.toLowerCase().includes(q)) ||
-        (opt.badge && opt.badge.toLowerCase().includes(q))
-    );
-  }, [options, searchQuery]);
 
   // Sync search query when value changes
   useEffect(() => {
@@ -80,17 +74,98 @@ export function SearchCombobox({
     }
   }, [selectedOption, value]);
 
-  // Reset highlighted index when filtered list changes
-  useEffect(() => {
-    setHighlightedIndex(0);
-  }, [filteredOptions]);
+  // Check if current search query simply reflects the currently selected option
+  const isQueryMatchingSelection = useMemo(() => {
+    if (!selectedOption) return false;
+    return searchQuery.trim().toLowerCase() === selectedOption.label.trim().toLowerCase();
+  }, [selectedOption, searchQuery]);
 
-  // Click outside listener
+  // Filter options based on search query
+  const filteredOptions = useMemo(() => {
+    // When the input has not been modified by the user (matches current selection),
+    // show ALL available options so the user can see everything (e.g. Shop AND Main Warehouse).
+    if (isQueryMatchingSelection) {
+      return options;
+    }
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(
+      (opt) =>
+        opt.label.toLowerCase().includes(q) ||
+        (opt.sublabel && opt.sublabel.toLowerCase().includes(q)) ||
+        (opt.badge && opt.badge.toLowerCase().includes(q))
+    );
+  }, [options, searchQuery, isQueryMatchingSelection]);
+
+  // Sync highlighted item to selected value when opened
+  useEffect(() => {
+    if (isOpen) {
+      const idx = filteredOptions.findIndex((opt) => opt.id === value);
+      setHighlightedIndex(idx >= 0 ? idx : 0);
+    }
+  }, [isOpen, value, filteredOptions]);
+
+  // Float positioning state for portal
+  const [coords, setCoords] = useState<{
+    top: number;
+    bottom: number;
+    left: number;
+    width: number;
+    placeAbove: boolean;
+  }>({
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: 0,
+    placeAbove: false,
+  });
+
+  const updatePosition = () => {
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const dropdownHeight = 224;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const spaceAbove = rect.top;
+      const placeAbove = spaceBelow < dropdownHeight && spaceAbove > spaceBelow;
+      const calculatedWidth = Math.max(rect.width, 200);
+
+      const maxLeft = Math.max(8, window.innerWidth - calculatedWidth - 8);
+      const left = Math.max(8, Math.min(rect.left, maxLeft));
+
+      setCoords({
+        top: rect.bottom + 4,
+        bottom: window.innerHeight - rect.top + 4,
+        left,
+        width: calculatedWidth,
+        placeAbove,
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      updatePosition();
+      const onScrollOrResize = () => updatePosition();
+      window.addEventListener("scroll", onScrollOrResize, true);
+      window.addEventListener("resize", onScrollOrResize);
+      return () => {
+        window.removeEventListener("scroll", onScrollOrResize, true);
+        window.removeEventListener("resize", onScrollOrResize);
+      };
+    }
+  }, [isOpen]);
+
+  // Click outside listener that checks both container and portalled list
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(target) &&
+        listRef.current &&
+        !listRef.current.contains(target)
+      ) {
         setIsOpen(false);
-        // Reset query text to selected option label if closed without selecting
         if (selectedOption) {
           setSearchQuery(selectedOption.label);
         } else if (!value) {
@@ -146,14 +221,13 @@ export function SearchCombobox({
         setHighlightedIndex((prev) => (prev > 0 ? prev - 1 : filteredOptions.length - 1));
       }
     } else if (e.key === "Enter") {
-      e.preventDefault(); // Prevent form submission
+      e.preventDefault();
       if (isOpen && filteredOptions.length > 0) {
         const option = filteredOptions[highlightedIndex];
         if (option && !option.disabled) {
           handleSelect(option);
         }
       } else if (!isOpen && selectedOption) {
-        // Dropdown is closed, Enter advances to next field
         if (onEnterPress) {
           onEnterPress(selectedOption);
         } else if (nextRef?.current) {
@@ -161,7 +235,6 @@ export function SearchCombobox({
           if (nextRef.current?.select) nextRef.current.select();
         }
       } else if (!isOpen && filteredOptions.length > 0) {
-        // Open and select first matching item
         handleSelect(filteredOptions[0]);
       }
     } else if (e.key === "Escape") {
@@ -219,28 +292,58 @@ export function SearchCombobox({
           required={required && !value}
           autoFocus={autoFocus}
           autoComplete="off"
-          className={`w-full rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-hidden focus:ring-1 focus:ring-sky-600 focus:border-sky-600 disabled:opacity-50 pr-7 ${inputClassName}`}
+          className={`w-full rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-hidden focus:ring-1 focus:ring-sky-600 focus:border-sky-600 disabled:opacity-50 ${
+            searchQuery && !disabled ? "pr-12" : "pr-7"
+          } ${inputClassName}`}
         />
+
+        {searchQuery && !disabled && (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSearchQuery("");
+              onChange("", undefined);
+              setIsOpen(true);
+              inputRef.current?.focus();
+            }}
+            className="absolute right-6 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+            title="Clear selection"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
 
         <button
           type="button"
           tabIndex={-1}
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation();
             if (!disabled) {
               setIsOpen((prev) => !prev);
               inputRef.current?.focus();
             }
           }}
-          className="absolute right-1.5 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+          className="absolute right-1 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
         >
           <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-180" : ""}`} />
         </button>
       </div>
 
-      {isOpen && (
+      {isOpen && mounted && typeof document !== "undefined" && createPortal(
         <ul
           ref={listRef}
-          className="absolute z-50 mt-1 max-h-56 w-full overflow-auto rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 py-1 shadow-lg text-xs"
+          style={{
+            position: "fixed",
+            top: coords.placeAbove ? undefined : `${coords.top}px`,
+            bottom: coords.placeAbove ? `${coords.bottom}px` : undefined,
+            left: `${coords.left}px`,
+            width: `${coords.width}px`,
+            maxWidth: "96vw",
+            zIndex: 99999,
+          }}
+          className="max-h-56 overflow-auto rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 py-1 shadow-2xl text-xs ring-1 ring-black/5 dark:ring-white/10"
         >
           {filteredOptions.length === 0 ? (
             <li className="px-3 py-2 text-slate-400 dark:text-slate-500 italic">No matches found</li>
@@ -258,12 +361,12 @@ export function SearchCombobox({
                     option.disabled
                       ? "opacity-40 cursor-not-allowed"
                       : isHighlighted
-                      ? "bg-sky-50 dark:bg-sky-950/60 text-sky-900 dark:text-sky-100"
+                      ? "bg-sky-50 dark:bg-sky-950/60 text-sky-900 dark:text-sky-100 font-semibold"
                       : "text-slate-800 dark:text-slate-200"
                   }`}
                 >
                   <div className="flex items-center gap-1.5 min-w-0 pr-2">
-                    <span className="font-medium truncate">{option.label}</span>
+                    <span className="truncate">{option.label}</span>
                     {option.sublabel && (
                       <span className="text-[10px] text-slate-400 truncate">({option.sublabel})</span>
                     )}
@@ -272,22 +375,22 @@ export function SearchCombobox({
                   <div className="flex items-center gap-1.5 shrink-0">
                     {option.badge && (
                       <span
-                        className={`rounded border px-1.5 py-0.2 text-[9px] font-semibold uppercase ${getBadgeClasses(
+                        className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${getBadgeClasses(
                           option.badgeColor
                         )}`}
                       >
                         {option.badge}
                       </span>
                     )}
-                    {isSelected && <Check className="h-3 w-3 text-sky-700 dark:text-sky-400" />}
+                    {isSelected && <Check className="h-3.5 w-3.5 text-sky-700 dark:text-sky-400 shrink-0" />}
                   </div>
                 </li>
               );
             })
           )}
-        </ul>
+        </ul>,
+        document.body
       )}
     </div>
   );
 }
-

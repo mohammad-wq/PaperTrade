@@ -10,12 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Lock, Mail, AlertCircle, ArrowRight, ShieldCheck } from "lucide-react";
+import { Lock, Mail, AlertCircle, ArrowRight, ShieldCheck, Eye, EyeOff } from "lucide-react";
 
 export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [formError, setFormError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const reason = searchParams.get("reason");
   const reasonMessage =
@@ -138,12 +139,21 @@ export function LoginForm() {
               <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <Input
                 id="password"
-                type="password"
+                type={showPassword ? "text" : "password"}
                 placeholder="••••••••"
                 autoComplete="current-password"
-                className="pl-9 text-xs h-9 border-slate-200 focus-visible:ring-emerald-700"
+                className="pl-9 pr-9 text-xs h-9 border-slate-200 focus-visible:ring-emerald-700"
                 {...register("password")}
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 focus:outline-hidden"
+                tabIndex={-1}
+                title={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
             </div>
             {errors.password && (
               <p className="text-[11px] font-medium text-rose-600">{errors.password.message}</p>

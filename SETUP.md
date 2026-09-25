@@ -424,12 +424,16 @@ The cloud backup script (`scripts\backup-cloud.bat`) automatically maintains the
 
 Set up two non-interactive background tasks using **Task Scheduler**:
 
-#### Task A: Daily Local Backup (Every Night at 9:00 PM)
+#### Task A: Daily Local Backup (Everyday at 4:00 PM)
+
+> **Quick 1-Click Setup**: You can run `scripts\register-backup-task.bat` to automatically register this task in Task Scheduler for 4:00 PM daily with zero manual configuration.
+
+Or configure manually via Windows Task Scheduler:
 1. Press `Win + R`, type `taskschd.msc`, and press **Enter**.
 2. In the right panel, click **Create Task...** (do NOT choose *Create Basic Task*).
 3. **General Tab**:
    - **Name**: `PaperTrade_Daily_Local_Backup`
-   - **Description**: `Creates nightly compressed PostgreSQL dump with 30-day retention`
+   - **Description**: `Creates daily compressed PostgreSQL dump with 30-day retention at 4:00 PM`
    - Select **Run whether user is logged on or not**
    - Check **Run with highest privileges**
    - Configure for: **Windows 10 / Windows 11 / Windows Server**
@@ -437,13 +441,13 @@ Set up two non-interactive background tasks using **Task Scheduler**:
    - Click **New...**
    - **Begin the task**: `On a schedule`
    - Select **Daily**, recur every `1` days
-   - **Start time**: `21:00:00` (9:00 PM)
+   - **Start time**: `16:00:00` (4:00 PM)
    - Click **OK**
 5. **Actions Tab**:
    - Click **New...**
    - **Action**: `Start a program`
-   - **Program/script**: `C:\PaperTrade\scripts\backup-local.bat`
-   - **Start in (optional)**: `C:\PaperTrade` *(CRITICAL: Must point to project root)*
+   - **Program/script**: `C:\Users\dell\Desktop\PaperTrade\scripts\backup-local.bat`
+   - **Start in (optional)**: `C:\Users\dell\Desktop\PaperTrade` *(CRITICAL: Must point to project root)*
    - Click **OK**
 6. **Conditions Tab**:
    - Uncheck **Start the task only if the computer is on AC power**

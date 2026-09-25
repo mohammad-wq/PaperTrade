@@ -82,52 +82,23 @@ export async function createSaleInvoiceAction(raw: unknown) {
           rawName.toLowerCase() === "cash customer";
         const finalName = isGeneric ? "Walk-in Customer" : rawName;
 
-        if (isGeneric) {
-          let walkInParty = await tx.party.findFirst({
-            where: { name: "Walk-in Customer", type: PartyType.CUSTOMER },
-          });
-          if (!walkInParty) {
-            walkInParty = await tx.party.create({
-              data: {
-                name: "Walk-in Customer",
-                type: PartyType.CUSTOMER,
-                email: "walkin@internal.local",
-                phone: input.walkInPhone?.trim() || null,
-                address: input.walkInAddress?.trim() || null,
-                isActive: true,
-              },
-            });
-          }
-          targetCustomerId = walkInParty.id;
-          customerName = walkInParty.name;
-        } else {
-          // Named Walk-in / New Customer (e.g. "Bilal Printers")
-          let existingParty = await tx.party.findFirst({
-            where: {
-              name: { equals: finalName, mode: "insensitive" },
+        let walkInParty = await tx.party.findFirst({
+          where: { name: "Walk-in Customer" },
+        });
+        if (!walkInParty) {
+          walkInParty = await tx.party.create({
+            data: {
+              name: "Walk-in Customer",
               type: PartyType.CUSTOMER,
+              email: "walkin@internal.local",
+              isActive: true,
             },
           });
-
-          if (existingParty) {
-            targetCustomerId = existingParty.id;
-            customerName = existingParty.name;
-            customerCreditLimit = existingParty.creditLimit ? Number(existingParty.creditLimit) : null;
-            customerBalance = await getPartyBalance(existingParty.id, tx);
-          } else {
-            const newParty = await tx.party.create({
-              data: {
-                name: finalName,
-                type: PartyType.CUSTOMER,
-                phone: input.walkInPhone?.trim() || null,
-                address: input.walkInAddress?.trim() || null,
-                isActive: true,
-              },
-            });
-            targetCustomerId = newParty.id;
-            customerName = newParty.name;
-          }
         }
+        targetCustomerId = walkInParty.id;
+        customerName = finalName;
+        customerCreditLimit = null;
+        customerBalance = 0;
       } else {
         // Long-term registered party
         if (!input.customerId) {
@@ -800,45 +771,21 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           rawName.toLowerCase() === "cash supplier";
         const finalName = isGeneric ? "Market Vendor" : rawName;
 
-        if (isGeneric) {
-          let genericParty = await tx.party.findFirst({
-            where: { name: "Market Vendor", type: PartyType.SUPPLIER },
-          });
-          if (!genericParty) {
-            genericParty = await tx.party.create({
-              data: {
-                name: "Market Vendor",
-                type: PartyType.SUPPLIER,
-                email: "vendor@internal.local",
-                phone: input.oneTimeSupplierPhone?.trim() || null,
-                isActive: true,
-              },
-            });
-          }
-          targetSupplierId = genericParty.id;
-          supplierName = genericParty.name;
-        } else {
-          let existingParty = await tx.party.findFirst({
-            where: {
-              name: { equals: finalName, mode: "insensitive" },
+        let genericParty = await tx.party.findFirst({
+          where: { name: "Market Vendor" },
+        });
+        if (!genericParty) {
+          genericParty = await tx.party.create({
+            data: {
+              name: "Market Vendor",
+              type: PartyType.SUPPLIER,
+              email: "vendor@internal.local",
+              isActive: true,
             },
           });
-          if (existingParty) {
-            targetSupplierId = existingParty.id;
-            supplierName = existingParty.name;
-          } else {
-            const newParty = await tx.party.create({
-              data: {
-                name: finalName,
-                type: PartyType.SUPPLIER,
-                phone: input.oneTimeSupplierPhone?.trim() || null,
-                isActive: true,
-              },
-            });
-            targetSupplierId = newParty.id;
-            supplierName = newParty.name;
-          }
         }
+        targetSupplierId = genericParty.id;
+        supplierName = finalName;
       } else {
         if (!input.supplierId) {
           throw userError("Please select a supplier.");

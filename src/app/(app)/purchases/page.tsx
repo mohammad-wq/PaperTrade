@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import React, { useEffect, useState, useMemo, useRef, createRef } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   ShoppingCart,
@@ -62,6 +62,8 @@ type PartyOption = {
   name: string;
   type: string;
   balance?: number;
+  phone?: string | null;
+  address?: string | null;
 };
 
 type ProductOption = {
@@ -116,20 +118,17 @@ export default function PurchasesPage() {
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "F2" || e.key === "Insert") {
-        e.preventDefault();
-        setIsDialogOpen(true);
-      } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  const invoiceDateRef = useRef<HTMLInputElement>(null);
+  const oneTimeNameRef = useRef<HTMLInputElement>(null);
+  const oneTimePhoneRef = useRef<HTMLInputElement>(null);
+  const amountPaidRef = useRef<HTMLInputElement>(null);
+  const freightRef = useRef<HTMLInputElement>(null);
+  const notesRef = useRef<HTMLInputElement>(null);
+  const productRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const locationRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const lotRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const qtyRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const costRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
 
   // Quick lot creation modal state
   const [quickLotModalOpen, setQuickLotModalOpen] = useState(false);
@@ -156,6 +155,29 @@ export default function PurchasesPage() {
   const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Global keydown with Ctrl+Enter save support
+  const handleSubmitRef = useRef<(e: React.FormEvent) => Promise<void>>(async () => {});
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "F2" || e.key === "Insert") {
+        e.preventDefault();
+        setIsDialogOpen(true);
+      } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      } else if (e.key === "Escape" && isDialogOpen) {
+        e.preventDefault();
+        setIsDialogOpen(false);
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && isDialogOpen) {
+        e.preventDefault();
+        const fakeEv = { preventDefault: () => {} } as React.FormEvent;
+        void handleSubmitRef.current(fakeEv);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isDialogOpen]);
 
   const searchParams = useSearchParams();
 
@@ -447,7 +469,12 @@ export default function PurchasesPage() {
 
   function addItem() {
     const lastLocId = items[items.length - 1]?.locationId || locationId || (locations[0]?.id ?? "");
-    setItems([...items, { productId: "", locationId: lastLocId, warehouseLotId: "", quantity: 1, unitCost: 0 }]);
+    const nextIdx = items.length;
+    setItems((prev) => [...prev, { productId: "", locationId: lastLocId, warehouseLotId: "", quantity: 1, unitCost: 0 }]);
+    setTimeout(() => {
+      productRefs.current[nextIdx]?.current?.focus();
+      productRefs.current[nextIdx]?.current?.select();
+    }, 60);
   }
 
   function removeItem(index: number) {
@@ -895,26 +922,31 @@ export default function PurchasesPage() {
                         </span>
                       )}
                     </div>
-                    <select
-                      id="supplier"
+                    <SearchCombobox
+                      options={suppliers
+                        .filter((s) => !s.name.toLowerCase().includes("market vendor") && !s.name.toLowerCase().includes("walk-in"))
+                        .map((s) => ({
+                          id: s.id,
+                          label: s.name,
+                          badge: s.type === "SUPPLIER" ? "Supplier" : "Customer",
+                          badgeColor: s.type === "SUPPLIER" ? "amber" : "green",
+                          sublabel: s.phone || undefined,
+                        }))}
                       value={supplierId}
-                      onChange={(e) => setSupplierId(e.target.value)}
-                      className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium"
-                      required={supplierType === "REGISTERED"}
-                    >
-                      <option value="">Select party from directory</option>
-                      {suppliers.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name} {s.type ? `[${s.type}]` : ""}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setSupplierId(val)}
+                      onEnterPress={() => {
+                        invoiceDateRef.current?.focus();
+                      }}
+                      placeholder="Search party by name (Supplier or Customer)..."
+                      className="w-full text-xs"
+                      inputClassName="h-8 text-xs font-medium"
+                    />
                   </div>
                 ) : (
                   <div className="space-y-1 sm:col-span-2">
                     <div className="flex items-center justify-between">
                       <Label className="text-xs font-semibold">
-                        Vendor Name <span className="text-rose-500">*</span>
+                        Vendor Name <span className="text-slate-400 font-normal">(Optional)</span>
                       </Label>
                       <div className="flex gap-1">
                         {["Market Vendor", "Cash Supplier"].map((preset) => (
@@ -930,12 +962,21 @@ export default function PurchasesPage() {
                       </div>
                     </div>
                     <Input
+                      ref={oneTimeNameRef}
                       value={oneTimeSupplierName}
                       onChange={(e) => setOneTimeSupplierName(e.target.value)}
-                      placeholder="e.g. Market Vendor, Cash Supplier"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          invoiceDateRef.current?.focus();
+                        }
+                      }}
+                      placeholder="Vendor / Market Name (optional — defaults to 'Market Vendor')"
                       className="h-8 text-xs bg-white"
-                      required={supplierType === "ONE_TIME"}
                     />
+                    <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+                      Defaults to 'Market Vendor' if blank (counter cash purchase)
+                    </p>
                   </div>
                 )}
 
@@ -963,10 +1004,18 @@ export default function PurchasesPage() {
                     Invoice Date & Time <span className="text-rose-500">*</span>
                   </Label>
                   <Input
+                    ref={invoiceDateRef}
                     id="pdate"
                     type="datetime-local"
                     value={invoiceDate}
                     onChange={(e) => setInvoiceDate(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        productRefs.current[0]?.current?.focus();
+                        productRefs.current[0]?.current?.select();
+                      }
+                    }}
                     className="text-xs"
                     required
                   />
@@ -989,6 +1038,12 @@ export default function PurchasesPage() {
 
                 <div className="space-y-3">
                   {items.map((item, idx) => {
+                    while (productRefs.current.length <= idx) productRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (locationRefs.current.length <= idx) locationRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (lotRefs.current.length <= idx) lotRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (qtyRefs.current.length <= idx) qtyRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (costRefs.current.length <= idx) costRefs.current.push(React.createRef<HTMLInputElement>());
+
                     const itemLocId = item.locationId || locationId || (locations[0]?.id ?? "");
                     const itemLocObj = locations.find((l) => l.id === itemLocId);
                     const rowLots = warehouseLots.filter((lot) => lot.locationId === itemLocId);
@@ -1010,6 +1065,11 @@ export default function PurchasesPage() {
                             }))}
                             value={item.productId}
                             onChange={(val) => handleProductChange(idx, val)}
+                            inputRef={productRefs.current[idx]}
+                            onEnterPress={() => {
+                              locationRefs.current[idx]?.current?.focus();
+                              locationRefs.current[idx]?.current?.select();
+                            }}
                             placeholder="Select product..."
                             className="w-full text-xs"
                           />
@@ -1027,6 +1087,16 @@ export default function PurchasesPage() {
                             }))}
                             value={itemLocId}
                             onChange={(val) => handleItemLocationChange(idx, val)}
+                            inputRef={locationRefs.current[idx]}
+                            onEnterPress={() => {
+                              if (isRowWarehouse && rowLots.length > 0) {
+                                lotRefs.current[idx]?.current?.focus();
+                                lotRefs.current[idx]?.current?.select();
+                              } else {
+                                qtyRefs.current[idx]?.current?.focus();
+                                qtyRefs.current[idx]?.current?.select();
+                              }
+                            }}
                             placeholder="Location"
                             className="w-full text-xs"
                           />
@@ -1047,6 +1117,11 @@ export default function PurchasesPage() {
                                 ]}
                                 value={item.warehouseLotId || ""}
                                 onChange={(val) => handleLotChange(idx, val)}
+                                inputRef={lotRefs.current[idx]}
+                                onEnterPress={() => {
+                                  qtyRefs.current[idx]?.current?.focus();
+                                  qtyRefs.current[idx]?.current?.select();
+                                }}
                                 placeholder="Lot #"
                                 className="w-full text-xs font-mono"
                               />
@@ -1073,11 +1148,19 @@ export default function PurchasesPage() {
                         <div>
                           <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Quantity</Label>
                           <Input
+                            ref={qtyRefs.current[idx]}
                             type="number"
                             min="0.0001"
                             step="any"
                             value={item.quantity}
                             onChange={(e) => handleQuantityChange(idx, parseFloat(e.target.value) || 0)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                costRefs.current[idx]?.current?.focus();
+                                costRefs.current[idx]?.current?.select();
+                              }
+                            }}
                             className="h-8 text-xs text-right font-mono"
                             placeholder="Qty"
                             required
@@ -1088,11 +1171,23 @@ export default function PurchasesPage() {
                         <div>
                           <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Unit Cost</Label>
                           <Input
+                            ref={costRefs.current[idx]}
                             type="number"
                             min="0"
                             step="0.01"
                             value={item.unitCost}
                             onChange={(e) => handleCostChange(idx, Number(e.target.value) || 0)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                if (idx === items.length - 1) {
+                                  addItem();
+                                } else {
+                                  productRefs.current[idx + 1]?.current?.focus();
+                                  productRefs.current[idx + 1]?.current?.select();
+                                }
+                              }
+                            }}
                             className="h-8 text-xs text-right font-mono"
                             placeholder="Cost"
                             required
@@ -1135,11 +1230,19 @@ export default function PurchasesPage() {
                         </button>
                       </div>
                       <Input
+                        ref={amountPaidRef}
                         type="number"
                         min="0"
                         step="0.01"
                         value={amountPaid}
                         onChange={(e) => setAmountPaid(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            freightRef.current?.focus();
+                            freightRef.current?.select();
+                          }
+                        }}
                         placeholder="0.00"
                         className="mt-1 h-8 text-xs text-right font-mono font-bold"
                       />
@@ -1163,11 +1266,19 @@ export default function PurchasesPage() {
                     <div>
                       <Label className="text-[10px] uppercase font-bold text-slate-700">Freight / Packing (PKR)</Label>
                       <Input
+                        ref={freightRef}
                         type="number"
                         min="0"
                         step="0.01"
                         value={freightCharges}
                         onChange={(e) => setFreightCharges(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            notesRef.current?.focus();
+                            notesRef.current?.select();
+                          }
+                        }}
                         placeholder="0.00"
                         className="mt-1 h-8 text-xs text-right font-mono"
                       />
@@ -1179,10 +1290,18 @@ export default function PurchasesPage() {
                       Supplier Notes / Bill Reference <span className="text-slate-400 font-normal text-xs">(Optional)</span>
                     </Label>
                     <Input
+                      ref={notesRef}
                       id="pnotes"
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
-                      placeholder="e.g. Mill consignment #442"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const fakeEv = { preventDefault: () => {} } as React.FormEvent;
+                          void handleSubmit(fakeEv);
+                        }
+                      }}
+                      placeholder="e.g. Mill consignment #442 (press Enter to save)"
                       className="text-xs mt-1"
                     />
                   </div>

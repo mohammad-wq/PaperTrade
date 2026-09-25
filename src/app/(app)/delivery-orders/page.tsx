@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import React, { useEffect, useState, useMemo, useRef, createRef } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Truck,
@@ -81,6 +81,8 @@ type PartyOption = {
   id: string;
   name: string;
   type: string;
+  phone?: string | null;
+  address?: string | null;
 };
 
 type ProductOption = {
@@ -111,6 +113,25 @@ export default function DeliveryOrdersPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // Form input refs for sequential Enter-key navigation
+  const customerRef = useRef<HTMLInputElement>(null);
+  const recipientRef = useRef<HTMLInputElement>(null);
+  const sourceLocationRef = useRef<HTMLInputElement>(null);
+  const destLocationRef = useRef<HTMLInputElement>(null);
+  const orderDateRef = useRef<HTMLInputElement>(null);
+  const vehicleNoRef = useRef<HTMLInputElement>(null);
+  const driverNameRef = useRef<HTMLInputElement>(null);
+  const deliveredToRef = useRef<HTMLInputElement>(null);
+  const notesRef = useRef<HTMLInputElement>(null);
+
+  const productRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const lotRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const qtyRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const unitRefs = useRef<React.RefObject<HTMLSelectElement>[]>([]);
+
+  // Ref to hold handleSubmit for key listener
+  const handleSubmitRef = useRef<(e: React.FormEvent) => Promise<void>>(() => Promise.resolve());
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "F2" || e.key === "Insert") {
@@ -119,11 +140,18 @@ export default function DeliveryOrdersPage() {
       } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
         e.preventDefault();
         searchInputRef.current?.focus();
+      } else if (e.key === "Escape" && isDialogOpen) {
+        e.preventDefault();
+        setIsDialogOpen(false);
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && isDialogOpen) {
+        e.preventDefault();
+        const fakeEv = { preventDefault: () => {} } as React.FormEvent;
+        void handleSubmitRef.current(fakeEv);
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [isDialogOpen]);
 
   // Quick lot creation modal state
   const [quickLotModalOpen, setQuickLotModalOpen] = useState(false);
@@ -469,8 +497,8 @@ export default function DeliveryOrdersPage() {
     e.preventDefault();
     setFormError(null);
 
-    if (orderType === "CUSTOMER" && !customerId) {
-      setFormError("Please select a customer.");
+    if (orderType === "CUSTOMER" && !customerId && !recipientName.trim()) {
+      setFormError("Please select a customer or provide a recipient name.");
       return;
     }
     if (!locationId) {
@@ -560,6 +588,29 @@ export default function DeliveryOrdersPage() {
       setSubmitting(false);
     }
   }
+
+  handleSubmitRef.current = handleSubmit;
+
+  // Initialize and synchronize ref arrays with items
+  items.forEach((_, idx) => {
+    if (!productRefs.current[idx]) productRefs.current[idx] = { current: null };
+    if (!lotRefs.current[idx]) lotRefs.current[idx] = { current: null };
+    if (!qtyRefs.current[idx]) qtyRefs.current[idx] = { current: null };
+    if (!unitRefs.current[idx]) unitRefs.current[idx] = { current: null };
+  });
+
+  // Autofocus first input when dialog opens
+  useEffect(() => {
+    if (isDialogOpen) {
+      setTimeout(() => {
+        if (orderType === "CUSTOMER") {
+          customerRef.current?.focus();
+        } else {
+          sourceLocationRef.current?.focus();
+        }
+      }, 80);
+    }
+  }, [isDialogOpen, orderType]);
 
   async function handleWhatsAppShare(doId: string) {
     try {
@@ -939,17 +990,24 @@ export default function DeliveryOrdersPage() {
                   <>
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold">
-                        Customer <span className="text-rose-500">*</span>
+                        Customer <span className="text-slate-400 font-normal">(Optional if Recipient Name provided)</span>
                       </Label>
                       <SearchCombobox
                         options={customers.map((c) => ({
                           id: c.id,
                           label: c.name,
-                          sublabel: c.type || undefined,
+                          badge: c.type === "CUSTOMER" ? "Customer" : "Supplier",
+                          badgeColor: c.type === "CUSTOMER" ? "green" : "amber",
+                          sublabel: c.phone || undefined,
                         }))}
                         value={customerId}
                         onChange={(val) => setCustomerId(val)}
-                        placeholder="Select customer..."
+                        inputRef={customerRef}
+                        onEnterPress={() => {
+                          recipientRef.current?.focus();
+                          recipientRef.current?.select();
+                        }}
+                        placeholder="Search party by name (Customer or Supplier)..."
                         className="text-xs h-8"
                       />
                     </div>
@@ -959,9 +1017,17 @@ export default function DeliveryOrdersPage() {
                         Recipient Name <span className="text-slate-400 font-normal">(Optional)</span>
                       </Label>
                       <Input
+                        ref={recipientRef}
                         id="recipientName"
                         value={recipientName}
                         onChange={(e) => setRecipientName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            sourceLocationRef.current?.focus();
+                            sourceLocationRef.current?.select();
+                          }
+                        }}
                         placeholder="e.g. Ali Ahmed"
                         className="text-xs h-8"
                       />
@@ -978,6 +1044,10 @@ export default function DeliveryOrdersPage() {
                         }))}
                         value={locationId}
                         onChange={(val) => handleLocationChange(val)}
+                        inputRef={sourceLocationRef}
+                        onEnterPress={() => {
+                          orderDateRef.current?.focus();
+                        }}
                         placeholder="Select warehouse..."
                         className="text-xs h-8"
                       />
@@ -996,6 +1066,11 @@ export default function DeliveryOrdersPage() {
                         }))}
                         value={locationId}
                         onChange={(val) => handleLocationChange(val)}
+                        inputRef={sourceLocationRef}
+                        onEnterPress={() => {
+                          destLocationRef.current?.focus();
+                          destLocationRef.current?.select();
+                        }}
                         placeholder="Select source..."
                         className="text-xs h-8"
                       />
@@ -1014,6 +1089,11 @@ export default function DeliveryOrdersPage() {
                           }))}
                         value={destinationLocationId}
                         onChange={(val) => setDestinationLocationId(val)}
+                        inputRef={destLocationRef}
+                        onEnterPress={() => {
+                          recipientRef.current?.focus();
+                          recipientRef.current?.select();
+                        }}
                         placeholder="Select destination..."
                         className="text-xs h-8"
                       />
@@ -1024,9 +1104,16 @@ export default function DeliveryOrdersPage() {
                         Recipient Name <span className="text-slate-400 font-normal">(Optional)</span>
                       </Label>
                       <Input
+                        ref={recipientRef}
                         id="recipientName"
                         value={recipientName}
                         onChange={(e) => setRecipientName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            orderDateRef.current?.focus();
+                          }
+                        }}
                         placeholder="e.g. Warehouse Receiver"
                         className="text-xs h-8"
                       />
@@ -1039,10 +1126,18 @@ export default function DeliveryOrdersPage() {
                     Date & Time <span className="text-rose-500">*</span>
                   </Label>
                   <Input
+                    ref={orderDateRef}
                     id="dodate"
                     type="datetime-local"
                     value={orderDate}
                     onChange={(e) => setOrderDate(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        vehicleNoRef.current?.focus();
+                        vehicleNoRef.current?.select();
+                      }
+                    }}
                     className="text-xs h-8"
                     required
                   />
@@ -1056,9 +1151,17 @@ export default function DeliveryOrdersPage() {
                     Vehicle Number <span className="text-slate-400 font-normal text-xs">(Optional)</span>
                   </Label>
                   <Input
+                    ref={vehicleNoRef}
                     id="vehicleNo"
                     value={vehicleNo}
                     onChange={(e) => setVehicleNo(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        driverNameRef.current?.focus();
+                        driverNameRef.current?.select();
+                      }
+                    }}
                     placeholder="e.g. LES-19-4820"
                     className="text-xs"
                   />
@@ -1068,9 +1171,17 @@ export default function DeliveryOrdersPage() {
                     Driver Name <span className="text-slate-400 font-normal text-xs">(Optional)</span>
                   </Label>
                   <Input
+                    ref={driverNameRef}
                     id="driverName"
                     value={driverName}
                     onChange={(e) => setDriverName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        deliveredToRef.current?.focus();
+                        deliveredToRef.current?.select();
+                      }
+                    }}
                     placeholder="e.g. Muhammad Rafiq"
                     className="text-xs"
                   />
@@ -1080,9 +1191,17 @@ export default function DeliveryOrdersPage() {
                     Destination Address / Note <span className="text-slate-400 font-normal text-xs">(Optional)</span>
                   </Label>
                   <Input
+                    ref={deliveredToRef}
                     id="deliveredTo"
                     value={deliveredTo}
                     onChange={(e) => setDeliveredTo(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        productRefs.current[0]?.current?.focus();
+                        productRefs.current[0]?.current?.select();
+                      }
+                    }}
                     placeholder="e.g. Printing Press, Urdu Bazar"
                     className="text-xs"
                   />
@@ -1125,6 +1244,21 @@ export default function DeliveryOrdersPage() {
                           }))}
                           value={item.productId}
                           onChange={(val) => handleProductChange(idx, val)}
+                          inputRef={productRefs.current[idx]}
+                          onEnterPress={() => {
+                            if (!item.productId) {
+                              notesRef.current?.focus();
+                              notesRef.current?.select();
+                              return;
+                            }
+                            if (showLotSelector && sourceLocationLots.length > 0) {
+                              lotRefs.current[idx]?.current?.focus();
+                              lotRefs.current[idx]?.current?.select();
+                            } else {
+                              qtyRefs.current[idx]?.current?.focus();
+                              qtyRefs.current[idx]?.current?.select();
+                            }
+                          }}
                           placeholder="Select paper item..."
                           className="text-xs h-8"
                         />
@@ -1141,6 +1275,11 @@ export default function DeliveryOrdersPage() {
                               }))}
                               value={item.warehouseLotId || ""}
                               onChange={(val) => handleLotChange(idx, val)}
+                              inputRef={lotRefs.current[idx]}
+                              onEnterPress={() => {
+                                qtyRefs.current[idx]?.current?.focus();
+                                qtyRefs.current[idx]?.current?.select();
+                              }}
                               placeholder="Select Lot *"
                               className={cn(
                                 "text-xs h-8 font-mono",
@@ -1166,12 +1305,28 @@ export default function DeliveryOrdersPage() {
 
                       <div>
                         <Input
+                          ref={qtyRefs.current[idx]}
                           type="number"
                           min="0.0001"
                           step="any"
                           value={item.quantity}
                           onChange={(e) => handleQuantityChange(idx, parseFloat(e.target.value) || 0)}
-                          className="h-8 text-xs text-right"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              if (idx === items.length - 1) {
+                                addItem();
+                                setTimeout(() => {
+                                  productRefs.current[idx + 1]?.current?.focus();
+                                  productRefs.current[idx + 1]?.current?.select();
+                                }, 50);
+                              } else {
+                                productRefs.current[idx + 1]?.current?.focus();
+                                productRefs.current[idx + 1]?.current?.select();
+                              }
+                            }
+                          }}
+                          className="h-8 text-xs text-right font-mono"
                           placeholder="Qty"
                           required
                         />
@@ -1179,8 +1334,24 @@ export default function DeliveryOrdersPage() {
 
                       <div>
                         <select
+                          ref={unitRefs.current[idx]}
                           value={item.unit}
                           onChange={(e) => handleUnitChange(idx, e.target.value as Unit)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              if (idx === items.length - 1) {
+                                addItem();
+                                setTimeout(() => {
+                                  productRefs.current[idx + 1]?.current?.focus();
+                                  productRefs.current[idx + 1]?.current?.select();
+                                }, 50);
+                              } else {
+                                productRefs.current[idx + 1]?.current?.focus();
+                                productRefs.current[idx + 1]?.current?.select();
+                              }
+                            }
+                          }}
                           className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
                         >
                           <option value={Unit.PACKET}>PACKET (100 sheets)</option>
@@ -1212,9 +1383,16 @@ export default function DeliveryOrdersPage() {
                   Delivery Instructions <span className="text-slate-400 font-normal text-xs">(Optional)</span>
                 </Label>
                 <Input
+                  ref={notesRef}
                   id="donotes"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleSubmit(e);
+                    }
+                  }}
                   placeholder="e.g. Unload at warehouse gate #2"
                   className="text-xs mt-1"
                 />

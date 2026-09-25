@@ -31,9 +31,32 @@ const PROJECT_ROOT = process.cwd();
 
 function resolveRunnerScript(): { scriptPath: string; workingDir: string } {
   const cwd = process.cwd();
-  const scriptPath = path.join(cwd, "scripts", "backup-runner.js");
+  const candidates = [
+    // 1. If running inside .next/standalone, actual project root is 2 levels up
+    path.resolve(cwd, "..", ".."),
+    // 2. Current working directory
+    cwd,
+    // 3. Absolute known root on this Windows installation
+    "C:\\Users\\dell\\Desktop\\PaperTrade",
+    // 4. Relative to compiled module directory
+    path.resolve(__dirname, "..", ".."),
+    path.resolve(__dirname, "..", "..", ".."),
+    path.resolve(__dirname, "..", "..", "..", ".."),
+  ];
+
+  for (const dir of candidates) {
+    const candidateScript = path.join(dir, "scripts", "backup-runner.js");
+    if (fs.existsSync(candidateScript)) {
+      return {
+        scriptPath: candidateScript,
+        workingDir: dir,
+      };
+    }
+  }
+
+  // Fallback to default
   return {
-    scriptPath,
+    scriptPath: path.join(cwd, "scripts", "backup-runner.js"),
     workingDir: cwd,
   };
 }
