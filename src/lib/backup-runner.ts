@@ -1,5 +1,5 @@
 import path from "path";
-import { execFile } from "child_process";
+import { exec } from "child_process";
 import fs from "fs";
 
 export type BackupExecutionResult = {
@@ -31,25 +31,9 @@ const PROJECT_ROOT = process.cwd();
 
 function resolveRunnerScript(): { scriptPath: string; workingDir: string } {
   const cwd = process.cwd();
-  const candidates = [
-    path.join(cwd, "scripts", "backup-runner.js"),
-    path.join(cwd, ".next", "standalone", "scripts", "backup-runner.js"),
-    path.join(__dirname, "..", "..", "..", "scripts", "backup-runner.js"),
-    path.join(__dirname, "..", "scripts", "backup-runner.js"),
-    path.join(__dirname, "scripts", "backup-runner.js"),
-  ];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return {
-        scriptPath: candidate,
-        workingDir: path.dirname(path.dirname(candidate)),
-      };
-    }
-  }
-
+  const scriptPath = path.join(cwd, "scripts", "backup-runner.js");
   return {
-    scriptPath: path.join(cwd, "scripts", "backup-runner.js"),
+    scriptPath,
     workingDir: cwd,
   };
 }
@@ -61,11 +45,10 @@ export async function executeBackup(type: "local" | "cloud" | "manual"): Promise
   return new Promise((resolve) => {
     const nodeBin = process.execPath || "node";
     const { scriptPath, workingDir } = resolveRunnerScript();
-    const args = [scriptPath, `--type=${type}`, "--json"];
+    const cmd = `"${nodeBin}" "${scriptPath}" --type=${type} --json`;
 
-    execFile(
-      nodeBin,
-      args,
+    exec(
+      cmd,
       {
         cwd: workingDir,
         timeout: 180000, // 3 minutes timeout
@@ -122,7 +105,7 @@ export async function readRecentBackupLogs(limit = 30): Promise<BackupLogEntry[]
     }
 
     const logFile = path.join(baseDir, "backup-log.txt");
-    if (!fs.existsSync(logFile)) {
+    if (!fs.existsSync(/*turbopackIgnore: true*/ logFile)) {
       return [];
     }
 

@@ -10,6 +10,7 @@ import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { revalidatePath } from "next/cache";
+import { Unit } from "@prisma/client";
 
 const deleteProductSchema = z.object({ id: z.string().min(1, "Product is required") });
 
@@ -284,3 +285,101 @@ export async function softDeleteProductAction(raw: unknown) {
     return res;
   });
 }
+
+const productSeriesSchema = z
+  .object({
+    prefix: z.string().trim().default("P-"),
+    startNumber: z.coerce.number().int().min(1),
+    endNumber: z.coerce.number().int().min(1),
+    padLength: z.coerce.number().int().min(1).max(8).default(4),
+    nameTemplate: z.string().trim().min(2, "Product name is required"),
+    categoryId: z.string().min(1, "Category is required"),
+    qualityId: z.string().min(1, "Quality is required"),
+    unit: z.nativeEnum(Unit).default(Unit.PACKET),
+    length: z.coerce.number().positive(),
+    breadth: z.coerce.number().positive(),
+    gsm: z.coerce.number().positive(),
+    costPrice: z.coerce.number().min(0),
+    retailPrice: z.coerce.number().min(0),
+    wholesalePrice: z.coerce.number().min(0),
+    labourCharges: z.coerce.number().min(0).default(0),
+    reorderLevel: z.coerce.number().min(0).optional().nullable(),
+    remarks: z.string().trim().max(500).optional().nullable(),
+  })
+  .refine((data) => data.endNumber >= data.startNumber, {
+    message: "End number must be greater than or equal to start number",
+    path: ["endNumber"],
+  })
+  .refine((data) => data.endNumber - data.startNumber <= 200, {
+    message: "Cannot create more than 200 products in a single series",
+    path: ["endNumber"],
+  });
+
+export async function bulkCreateProductSeriesAction(raw: unknown) {
+  return runAction("products.series.create", async () => {
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "products", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to create products.");
+    }
+    const input = parseInput(productSeriesSchema, raw);
+    const weights = calculateWeights(input.length, input.breadth, input.gsm);
+
+    const generatedProducts: any[] = [];
+    const padLength = input.padLength ?? 4;
+    for (let n = input.startNumber; n <= input.endNumber; n++) {
+      const numStr = String(n).padStart(padLength, "0");
+      const productNo = `${input.prefix}${numStr}`;
+      const name = input.nameTemplate.includes("{num}")
+        ? input.nameTemplate.replace(/\{num\}/g, numStr)
+        : `${input.nameTemplate} #${numStr}`;
+
+      generatedProducts.push({
+        productNo,
+        name,
+        categoryId: input.categoryId,
+        qualityId: input.qualityId,
+        unit: input.unit,
+        length: input.length,
+        breadth: input.breadth,
+        gsm: input.gsm,
+        packetWeight: weights.packetWeight,
+        reamWeight: weights.reamWeight,
+        costPrice: input.costPrice,
+        retailPrice: input.retailPrice,
+        wholesalePrice: input.wholesalePrice,
+        labourCharges: input.labourCharges,
+        reorderLevel: input.reorderLevel ?? null,
+        remarks: input.remarks || null,
+        isActive: true,
+      });
+    }
+
+    const created = await prisma.$transaction(async (tx) => {
+      const existing = await tx.product.findMany({
+        where: { productNo: { in: generatedProducts.map((p) => p.productNo) } },
+        select: { productNo: true },
+      });
+
+      if (existing.length > 0) {
+        throw userError(`The following Product No(s) already exist: ${existing.map((e) => e.productNo).join(", ")}`);
+      }
+
+      await tx.product.createMany({
+        data: generatedProducts,
+      });
+
+      return generatedProducts.length;
+    });
+
+    emitRealtimeEvent(["products", "inventory", "sales", "purchases"], "create", "Product", {
+      count: created,
+    });
+
+    revalidatePath("/products");
+    revalidatePath("/inventory");
+    revalidatePath("/dashboard");
+
+    return { createdCount: created };
+  });
+}
+

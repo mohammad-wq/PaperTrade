@@ -38,3 +38,35 @@ export const purchaseInvoiceSchema = z
   );
 
 export type PurchaseInvoiceInput = z.infer<typeof purchaseInvoiceSchema>;
+
+export const updatePurchaseInvoiceSchema = z
+  .object({
+    id: z.string().min(1, "Invoice ID is required"),
+    supplierType: z.enum(["REGISTERED", "ONE_TIME"]).default("REGISTERED"),
+    supplierId: z.string().optional().nullable(),
+    oneTimeSupplierName: z.string().trim().max(200).optional().nullable(),
+    oneTimeSupplierPhone: z.string().trim().max(50).optional().nullable(),
+    saveSupplier: z.boolean().default(false),
+    locationId: z.string().optional().nullable(),
+    warehouseLotId: z.string().trim().optional().nullable(),
+    amountPaid: z.coerce.number().min(0).default(0),
+    freightCharges: z.coerce.number().min(0).default(0),
+    purchaseOrderId: z.string().optional().nullable(),
+    date: z.coerce.date(),
+    notes: z.string().trim().max(1000).optional().or(z.literal("")),
+    items: z.array(lineItem).min(1, "Add at least one line item"),
+  })
+  .refine(
+    (data) => {
+      if (data.supplierType === "REGISTERED") {
+        return Boolean(data.supplierId && data.supplierId.trim().length > 0);
+      }
+      return true;
+    },
+    {
+      message: "Please select a registered supplier",
+      path: ["supplierId"],
+    }
+  );
+
+export type UpdatePurchaseInvoiceInput = z.infer<typeof updatePurchaseInvoiceSchema>;

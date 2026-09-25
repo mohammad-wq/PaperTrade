@@ -44,12 +44,12 @@ const securityHeaders = [
 const nextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  outputFileTracingIncludes: {
+    "/*": ["./node_modules/pdfkit/**/*"],
+  },
   experimental: {
     serverActions: {
       bodySizeLimit: "4mb",
-    },
-    outputFileTracingIncludes: {
-      "/*": ["./node_modules/pdfkit/**/*"],
     },
   },
   async redirects() {

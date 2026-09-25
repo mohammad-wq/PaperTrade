@@ -25,8 +25,8 @@ import {
   listPurchaseOrdersAction,
   createPurchaseOrderAction,
   updatePurchaseOrderStatusAction,
-  listLocationsAction,
 } from "@/actions/orders";
+import { listLocationsAction } from "@/actions/locations";
 import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { PurchaseOrderStatus } from "@prisma/client";

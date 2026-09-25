@@ -49,48 +49,63 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM 3. Verify PostgreSQL service is running (optional check)
-sc query postgresql-x64-16 >nul 2>&1
+REM 3. Verify PostgreSQL service is running (checks PG 18, 17, 16)
+for %%v in (postgresql-x64-18 postgresql-x64-17 postgresql-x64-16 postgresql) do (
+    sc query %%v >nul 2>&1
+    if not errorlevel 1 (
+        sc query %%v | findstr /i "RUNNING" >nul 2>&1
+        if errorlevel 1 (
+            echo [!] PostgreSQL service (%%v) is stopped. Attempting to start...
+            net start %%v >nul 2>&1
+        )
+    )
+)
+
+REM 4. Check for NSSM Windows Service "PaperTrade"
+set USED_NSSM=0
+where nssm >nul 2>&1
 if not errorlevel 1 (
-    sc query postgresql-x64-16 | findstr /i "RUNNING" >nul 2>&1
-    if errorlevel 1 (
-        echo [!] PostgreSQL service (postgresql-x64-16) is stopped. Attempting to start...
-        net start postgresql-x64-16 >nul 2>&1
+    nssm status PaperTrade >nul 2>&1
+    if not errorlevel 1 (
+        echo [2/3] Starting Windows Service 'PaperTrade' via NSSM...
+        nssm start PaperTrade >nul 2>&1
+        set USED_NSSM=1
     )
 )
 
-REM 4. Locate server.js
-set SERVER_JS=server.js
-if not exist "%SERVER_JS%" (
-    if exist ".next\standalone\server.js" (
-        set SERVER_JS=.next\standalone\server.js
-    ) else (
-        echo.
-        echo ======================================================================
-        echo  [ERROR] server.js not found in current directory or .next\standalone!
-        echo ======================================================================
-        echo.
-        echo  Please ensure the standalone build files are located in this folder.
-        echo.
-        pause
-        exit /b 1
+REM 5. Fallback: If not started via NSSM, launch node server.js directly
+if %USED_NSSM%==0 (
+    set SERVER_JS=server.js
+    if not exist "%SERVER_JS%" (
+        if exist ".next\standalone\server.js" (
+            set SERVER_JS=.next\standalone\server.js
+        ) else (
+            echo.
+            echo ======================================================================
+            echo  [ERROR] server.js not found in current directory or .next\standalone!
+            echo ======================================================================
+            echo.
+            echo  Please ensure the standalone build files are located in this folder.
+            echo.
+            pause
+            exit /b 1
+        )
     )
-)
 
-REM 5. Ensure static and public assets exist in standalone directory
-if exist ".next\static" if exist ".next\standalone" (
-    if not exist ".next\standalone\.next\static" (
-        echo [!] Syncing static assets to standalone directory...
-        xcopy /E /I /Y /Q ".next\static" ".next\standalone\.next\static" >nul 2>&1
+    REM Ensure static and public assets exist in standalone directory
+    if exist ".next\static" if exist ".next\standalone" (
+        if not exist ".next\standalone\.next\static" (
+            echo [!] Syncing static assets to standalone directory...
+            xcopy /E /I /Y /Q ".next\static" ".next\standalone\.next\static" >nul 2>&1
+        )
+        if exist "public" if not exist ".next\standalone\public" (
+            xcopy /E /I /Y /Q "public" ".next\standalone\public" >nul 2>&1
+        )
     )
-    if exist "public" if not exist ".next\standalone\public" (
-        xcopy /E /I /Y /Q "public" ".next\standalone\public" >nul 2>&1
-    )
-)
 
-REM 6. Start server.js in background window (capped at 1536MB to prevent OOM / swap thrashing)
-echo [2/3] Launching Node.js standalone server (memory-capped)...
-start "Paper Trade Server" /min cmd /c "node --max-old-space-size=1536 %SERVER_JS%"
+    echo [2/3] Launching Node.js standalone server (memory-capped fallback)...
+    start "Paper Trade Server" /min cmd /c "node --max-old-space-size=1536 %SERVER_JS%"
+)
 
 REM 6. Poll until application responds on http://localhost:3000
 echo.

@@ -38,7 +38,7 @@ import {
 } from "@/actions/invoices";
 import { listPartiesAction, listInventoryAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
-import { listLocationsAction } from "@/actions/orders";
+import { listLocationsAction } from "@/actions/locations";
 import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
 import { format } from "date-fns";
 import { formatDateTime } from "@/lib/utils";

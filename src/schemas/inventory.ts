@@ -30,17 +30,17 @@ export const stockTransferSchema = z.object({
 });
 
 export const bulkStockAdjustmentSchema = z.object({
-  locationId: z.string().optional().nullable(),
+  locationId: z.string().trim().optional().nullable().or(z.literal("")),
   reason: z.string().trim().min(3, "A reason is required"),
   items: z
     .array(
       z.object({
         productId: z.string().min(1, "Product is required"),
-        locationId: z.string().min(1, "Location is required").optional().nullable(),
-        warehouseLotId: z.string().trim().optional().nullable(),
+        locationId: z.string().trim().optional().nullable().or(z.literal("")),
+        warehouseLotId: z.string().trim().optional().nullable().or(z.literal("")),
         quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
         direction: z.enum(["IN", "OUT"]),
-        notes: z.string().trim().optional().nullable(),
+        notes: z.string().trim().optional().nullable().or(z.literal("")),
       })
     )
     .min(1, "At least one product item is required"),

@@ -37,7 +37,7 @@ const DOUBLE_BOTTOM_BORDER: Partial<ExcelJS.Borders> = {
 function autoFitColumns(worksheet: ExcelJS.Worksheet, minWidths: Record<number, number> = {}) {
   worksheet.columns.forEach((col, colIdx) => {
     let maxLen = 10;
-    col.eachCell?.({ includeEmpty: false }, (cell) => {
+    (col as any).eachCell?.({ includeEmpty: false }, (cell: any) => {
       const val = cell.value ? cell.value.toString() : "";
       if (val.length > maxLen) maxLen = Math.min(val.length + 3, 50);
     });

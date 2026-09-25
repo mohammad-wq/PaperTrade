@@ -1044,7 +1044,7 @@ export function PartyStatementPdfView({
         </View>
 
         <View style={styles.table}>
-          <View style={styles.tableHeader}>
+          <View style={styles.tableHeader} fixed>
             <Text style={[{ width: "12%" }, styles.headerCell]}>Date</Text>
             <Text style={[{ width: "13%" }, styles.headerCell]}>Tran. No.</Text>
             <Text style={[{ width: "35%" }, styles.headerCell]}>Description</Text>
@@ -1081,11 +1081,28 @@ export function PartyStatementPdfView({
                 <Text style={[{ width: "13%" }, styles.cellBold]}>{row.referenceDocNo || row.referenceType || "—"}</Text>
                 <View style={[{ width: "35%" }, { paddingRight: 4 }]}> 
                   <Text style={styles.cellBold}>{row.description}</Text>
-                  {Array.isArray(row.detailRows) && row.detailRows.length > 0 && row.detailRows.map((item, itemIndex) => (
-                    <Text key={`${idx}-${itemIndex}`} style={[styles.cellMono, { marginTop: 1 }]}>
-                      • {item.productName} — {item.quantity} {item.unit} @ {formatMoney(item.rate)} = {formatMoney(item.amount)}
-                    </Text>
-                  ))}
+                  {Array.isArray(row.detailRows) && row.detailRows.length > 0 && (
+                    <View style={{ marginTop: 3, marginBottom: 2, paddingLeft: 4, borderLeftWidth: 1, borderLeftColor: "#cbd5e1" }}>
+                      <View style={{ flexDirection: "row", borderBottomWidth: 0.5, borderBottomColor: "#cbd5e1", paddingBottom: 1, marginBottom: 1 }}>
+                        <Text style={[{ width: "44%", fontSize: 6.5, fontFamily: "Helvetica-Bold", color: "#475569" }]}>Item Description</Text>
+                        <Text style={[{ width: "20%", textAlign: "right", fontSize: 6.5, fontFamily: "Helvetica-Bold", color: "#475569" }]}>Qty</Text>
+                        <Text style={[{ width: "18%", textAlign: "right", fontSize: 6.5, fontFamily: "Helvetica-Bold", color: "#475569" }]}>Rate</Text>
+                        <Text style={[{ width: "18%", textAlign: "right", fontSize: 6.5, fontFamily: "Helvetica-Bold", color: "#475569" }]}>Amount</Text>
+                      </View>
+                      {row.detailRows.map((item, itemIndex) => (
+                        <View key={`${idx}-${itemIndex}`} style={{ flexDirection: "row", paddingVertical: 0.8 }}>
+                          <Text style={[{ width: "44%", fontSize: 6.5, fontFamily: "Helvetica", color: "#1e293b" }]}>{item.productName}</Text>
+                          <Text style={[{ width: "20%", textAlign: "right", fontSize: 6.5, fontFamily: "Helvetica", color: "#1e293b" }]}>{item.quantity} {item.unit}</Text>
+                          <Text style={[{ width: "18%", textAlign: "right", fontSize: 6.5, fontFamily: "Helvetica", color: "#1e293b" }]}>{formatMoney(item.rate)}</Text>
+                          <Text style={[{ width: "18%", textAlign: "right", fontSize: 6.5, fontFamily: "Helvetica-Bold", color: "#0f172a" }]}>{formatMoney(item.amount)}</Text>
+                        </View>
+                      ))}
+                      <View style={{ flexDirection: "row", borderTopWidth: 0.5, borderTopColor: "#cbd5e1", paddingTop: 1, marginTop: 1, justifyContent: "space-between" }}>
+                        <Text style={{ fontSize: 6.5, fontFamily: "Helvetica-Bold", color: "#334155" }}>Total Bill Amount:</Text>
+                        <Text style={{ fontSize: 6.5, fontFamily: "Helvetica-Bold", color: "#0f172a" }}>PKR {formatMoney(row.debit || row.credit)}</Text>
+                      </View>
+                    </View>
+                  )}
                 </View>
                 <Text style={[{ width: "11%", textAlign: "right" }, styles.cell]}>
                   {row.credit > 0 ? formatMoney(row.credit) : "—"}

@@ -38,7 +38,9 @@ if /i not "%CONFIRM%"=="YES" (
 REM Check if pg_restore is in PATH; if not, check default PostgreSQL install locations
 where pg_restore >nul 2>&1
 if errorlevel 1 (
-    if exist "C:\Program Files\PostgreSQL\17\bin\pg_restore.exe" (
+    if exist "C:\Program Files\PostgreSQL\18\bin\pg_restore.exe" (
+        set PATH=C:\Program Files\PostgreSQL\18\bin;%PATH%
+    ) else if exist "C:\Program Files\PostgreSQL\17\bin\pg_restore.exe" (
         set PATH=C:\Program Files\PostgreSQL\17\bin;%PATH%
     ) else if exist "C:\Program Files\PostgreSQL\16\bin\pg_restore.exe" (
         set PATH=C:\Program Files\PostgreSQL\16\bin;%PATH%

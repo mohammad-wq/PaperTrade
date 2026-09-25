@@ -356,8 +356,8 @@ Protecting your customer balances, stock transactions, and ledger entries is ess
 1. Log into the application as an **OWNER**.
 2. Navigate to **Settings** in the left sidebar.
 3. Under **Database Backup & Restore**:
-   - **To Backup:** Click **"Backup Database Now (.sql)"**. A timestamped `.sql` snapshot will immediately download through your browser. Copy this file onto a USB thumb drive.
-   - **To Restore:** Select your `.sql` file in the restore section, check the confirmation box, and click **"Confirm & Restore Database"**.
+   - **To Backup:** Click **"Backup Database Now (.dump)"**. A compressed, timestamped `.dump` archive (PostgreSQL custom format) will immediately be created and downloaded. Store this file on a secure external USB drive.
+   - **To Restore:** Select your `.dump` (or `.sql`) backup file in the restore section, check the confirmation box, and click **"Confirm & Restore Database"**. The system automatically restores the database using `pg_restore` (or `psql` for legacy scripts).
 
 ### Method 2: Automated Nightly Backups
 

@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { reportType: string } }
+  { params }: { params: Promise<{ reportType: string }> }
 ) {
   // 1. Enforce authentication
   const session = await getServerSession(authOptions);
@@ -37,7 +37,7 @@ export async function GET(
     });
   }
 
-  const { reportType } = params;
+  const { reportType } = await params;
   const searchParams = request.nextUrl.searchParams;
   const startDate = searchParams.get("startDate") || undefined;
   const endDate = searchParams.get("endDate") || undefined;

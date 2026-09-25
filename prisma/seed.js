@@ -61,15 +61,19 @@ async function main() {
     create: { key: "overdueDays", value: process.env.OVERDUE_DAYS || "14" },
   });
 
-  await prisma.party.upsert({
-    where: { email_type: { email: "walkin@internal.local", type: PartyType.CUSTOMER } },
-    update: {},
-    create: {
-      name: "Walk-in Customer",
-      type: PartyType.CUSTOMER,
-      email: "walkin@internal.local",
-    },
+  const existingWalkIn = await prisma.party.findFirst({
+    where: { name: "Walk-in Customer", type: PartyType.CUSTOMER },
   });
+
+  if (!existingWalkIn) {
+    await prisma.party.create({
+      data: {
+        name: "Walk-in Customer",
+        type: PartyType.CUSTOMER,
+        email: "walkin@internal.local",
+      },
+    });
+  }
 
   const writing = await prisma.category.findUniqueOrThrow({ where: { name: "Writing Paper" } });
   const aGrade = await prisma.quality.findUniqueOrThrow({ where: { name: "A Grade" } });

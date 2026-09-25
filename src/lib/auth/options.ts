@@ -34,7 +34,7 @@ export const authOptions: NextAuthOptions = {
         sameSite: "lax",
         path: "/",
         secure: useSecureCookies,
-        // No maxAge specified: browser natively discards the cookie when closed
+        maxAge: 365 * 24 * 60 * 60, // 1 year persistent cookie
       },
     },
   },

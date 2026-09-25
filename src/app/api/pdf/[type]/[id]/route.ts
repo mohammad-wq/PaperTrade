@@ -24,9 +24,9 @@ const ALLOWED_DOC_TYPES = new Set([
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { type: string; id: string } },
+  { params }: { params: Promise<{ type: string; id: string }> },
 ) {
-  const { type, id } = params;
+  const { type, id } = await params;
 
   if (!ALLOWED_DOC_TYPES.has(type)) {
     return new NextResponse("Invalid document type", { status: 400 });
