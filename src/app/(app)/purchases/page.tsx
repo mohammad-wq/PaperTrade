@@ -26,7 +26,7 @@ import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { listWarehouseLotsAction, createWarehouseLotAction } from "@/actions/warehouse-lots";
 import { format } from "date-fns";
-import { formatDateTime, cn } from "@/lib/utils";
+import { formatDateTime, cn, getLocalDateTimeInputValue } from "@/lib/utils";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
@@ -144,7 +144,7 @@ export default function PurchasesPage() {
   const [supplierId, setSupplierId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [purchaseOrderId, setPurchaseOrderId] = useState("");
-  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 16));
+  const [invoiceDate, setInvoiceDate] = useState(getLocalDateTimeInputValue());
   const [notes, setNotes] = useState("");
   const [amountPaid, setAmountPaid] = useState<string>("0");
   const [freightCharges, setFreightCharges] = useState<string>("0");
@@ -575,7 +575,7 @@ export default function PurchasesPage() {
         setSupplierId("");
         setLocationId("");
         setPurchaseOrderId("");
-        setInvoiceDate(new Date().toISOString().slice(0, 16));
+        setInvoiceDate(getLocalDateTimeInputValue());
         setAmountPaid("0");
         setFreightCharges("0");
         setItems([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
@@ -718,98 +718,90 @@ export default function PurchasesPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filteredInvoices.map((inv) => (
-            <Card key={inv.id} className="border-amber-950/10 hover:shadow-md transition-shadow bg-white flex flex-col justify-between">
-              <CardHeader className="pb-3 border-b border-slate-100">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <CardTitle className="text-base font-bold text-slate-900">
-                        #{formatSequenceDisplay(inv.sequenceNo, inv.invoiceNo)}
-                      </CardTitle>
-                      {inv.financialYear && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono" title={inv.invoiceNo}>
-                          {inv.financialYear.label}
-                        </span>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
+          <div className="overflow-x-auto max-h-[calc(100vh-230px)]">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+                <tr>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Invoice #</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Date & Time</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[160px]">Supplier</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Location</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Linked PO</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Items</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Total (PKR)</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Paid (PKR)</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap font-bold">Balance Due</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Status</th>
+                  <th className="py-2 px-2 text-center whitespace-nowrap">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {filteredInvoices.map((inv) => (
+                  <tr key={inv.id} className="hover:bg-amber-50/60 dark:hover:bg-slate-800/60 transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40">
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">#{formatSequenceDisplay(inv.sequenceNo, inv.invoiceNo)}</span>
+                        {inv.financialYear && (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-mono" title={inv.invoiceNo}>
+                            {inv.financialYear.label}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400 text-[11px]">
+                      {formatDateTime(inv.date)}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-800 dark:text-slate-200">
+                      <div className="flex flex-col">
+                        <span>{inv.supplier.name}</span>
+                        {inv.supplier.phone && <span className="text-[10px] text-slate-400 font-mono">{inv.supplier.phone}</span>}
+                      </div>
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-600 dark:text-slate-400">
+                      {inv.location.name}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-emerald-800 dark:text-emerald-400">
+                      {inv.purchaseOrder ? inv.purchaseOrder.orderNo : "—"}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center font-mono whitespace-nowrap text-slate-600">
+                      {inv.items.length}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-right whitespace-nowrap font-bold text-slate-900 dark:text-slate-100">
+                      PKR {inv.totalAmount.toLocaleString()}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-right whitespace-nowrap text-emerald-700 dark:text-emerald-400">
+                      PKR {(inv.amountPaid || 0).toLocaleString()}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-right whitespace-nowrap font-bold">
+                      {(inv.balanceDue ?? (inv.totalAmount - (inv.amountPaid || 0))) > 0 ? (
+                        <span className="text-rose-700 dark:text-rose-400">PKR {(inv.balanceDue ?? (inv.totalAmount - (inv.amountPaid || 0))).toLocaleString()}</span>
+                      ) : (
+                        <span className="text-emerald-700 dark:text-emerald-400">PAID</span>
                       )}
-                    </div>
-                    <p className="text-xs font-medium text-amber-800">{inv.supplier.name}</p>
-                    {inv.supplier.phone && (
-                      <p className="text-[11px] text-slate-400">{inv.supplier.phone}</p>
-                    )}
-                  </div>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                      inv.status === "SETTLED"
-                        ? "bg-emerald-100 text-emerald-800"
-                        : inv.status === "CANCELLED"
-                        ? "bg-rose-100 text-rose-800"
-                        : "bg-amber-100 text-amber-800"
-                    }`}
-                  >
-                    {inv.status}
-                  </span>
-                </div>
-              </CardHeader>
-
-              <CardContent className="py-3 space-y-2 text-xs">
-                <div className="flex justify-between text-slate-600">
-                  <span>Received at:</span>
-                  <span className="font-semibold text-slate-800">{inv.location.name}</span>
-                </div>
-                <div className="flex justify-between text-slate-600">
-                  <span>Date & Time:</span>
-                  <span className="font-mono text-[11px]">{formatDateTime(inv.date)}</span>
-                </div>
-                {inv.purchaseOrder && (
-                  <div className="flex justify-between text-slate-600">
-                    <span>Linked PO:</span>
-                    <span className="font-semibold text-emerald-800">{inv.purchaseOrder.orderNo}</span>
-                  </div>
-                )}
-                <div className="flex justify-between items-center text-slate-600">
-                  <span>Items:</span>
-                  <div className="text-right">
-                    <span>{inv.items.length} product(s)</span>
-                    {inv.items.some((it) => it.warehouseLot) && (
-                      <span className="ml-1.5 inline-block text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-                        Lot: {Array.from(new Set(inv.items.filter((it) => it.warehouseLot).map((it) => it.warehouseLot!.lotNumber))).join(", ")}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex justify-between border-t border-slate-100 pt-2 font-bold text-xs">
-                  <span>Total Amount:</span>
-                  <span className="text-slate-900">PKR {inv.totalAmount.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between text-slate-600 text-xs">
-                  <span>Amount Paid:</span>
-                  <span className="text-emerald-700 font-semibold">PKR {(inv.amountPaid || 0).toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between text-xs font-bold">
-                  <span>Balance Due:</span>
-                  <span className={(inv.balanceDue ?? (inv.totalAmount - (inv.amountPaid || 0))) > 0 ? "text-rose-700" : "text-emerald-700"}>
-                    PKR {(inv.balanceDue ?? (inv.totalAmount - (inv.amountPaid || 0))).toLocaleString()}
-                  </span>
-                </div>
-              </CardContent>
-
-              <div className="p-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end rounded-b-xl">
-                <Button
-                  asChild
-                  variant="outline"
-                  size="sm"
-                  className="h-8 text-xs border-slate-200 text-slate-700 hover:bg-white"
-                >
-                  <a href={`/api/pdf/purchase-invoice/${inv.id}`} target="_blank" rel="noreferrer">
-                    <FileText className="mr-1 h-3.5 w-3.5 text-amber-700" />
-                    Download PDF
-                  </a>
-                </Button>
-              </div>
-            </Card>
-          ))}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center whitespace-nowrap">
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                        inv.status === "SETTLED"
+                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                          : inv.status === "CANCELLED"
+                          ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                      }`}>{inv.status}</span>
+                    </td>
+                    <td className="py-1 px-2 text-center whitespace-nowrap">
+                      <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40" title="Download PDF">
+                        <a href={`/api/pdf/purchase-invoice/${inv.id}`} target="_blank" rel="noreferrer">
+                          <FileText className="h-3 w-3 mr-1" />
+                          PDF
+                        </a>
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

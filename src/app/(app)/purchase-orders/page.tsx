@@ -559,104 +559,82 @@ export default function PurchaseOrdersPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filteredOrders.map((order) => {
-            const total = order.items.reduce((s, i) => s + i.lineTotal, 0);
-
-            return (
-              <Card key={order.id} className="border-slate-200/80 hover:shadow-md transition-shadow bg-white flex flex-col justify-between">
-                <CardHeader className="pb-3 border-b border-slate-100">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <CardTitle className="text-base font-bold text-slate-900">
-                          #{formatSequenceDisplay((order as any).sequenceNo, order.orderNo)}
-                        </CardTitle>
-                        {order.financialYear && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-mono">
-                            {order.financialYear.label}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs font-medium text-sky-900">{order.supplier.name}</p>
-                    </div>
-                    {getStatusBadge(order.status)}
-                  </div>
-                </CardHeader>
-
-                <CardContent className="py-3 space-y-2 text-xs">
-                  <div className="flex justify-between text-slate-600">
-                    <span>Target Location:</span>
-                    <span className="font-semibold text-slate-800">{order.location.name}</span>
-                  </div>
-                  <div className="flex justify-between text-slate-600">
-                    <span>Date & Time:</span>
-                    <span className="font-medium text-slate-800">{formatDateTime(order.date)}</span>
-                  </div>
-                  <div className="flex justify-between text-slate-600">
-                    <span>Ordered Items:</span>
-                    <span>{order.items.length} product(s)</span>
-                  </div>
-                  <div className="flex justify-between border-t border-slate-100 pt-2 font-bold text-sm">
-                    <span>Estimated Total:</span>
-                    <span className="text-slate-900">PKR {total.toLocaleString()}</span>
-                  </div>
-                </CardContent>
-
-                {/* Status action + PDF */}
-                <div className="p-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between gap-2 rounded-b-xl">
-                  <div className="flex items-center gap-1">
-                    {order.status === PurchaseOrderStatus.DRAFT && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.SENT)}
-                        className="h-7 text-[11px] text-sky-700 hover:bg-sky-50 px-2"
-                      >
-                        <Send className="mr-1 h-3 w-3" />
-                        Mark Sent
-                      </Button>
-                    )}
-                    {(order.status === PurchaseOrderStatus.SENT || order.status === PurchaseOrderStatus.DRAFT) && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.FULFILLED)}
-                        className="h-7 text-[11px] text-emerald-700 hover:bg-emerald-50 px-2 font-semibold"
-                        title="Fulfill purchase order and receive inventory stock"
-                      >
-                        <CheckCircle2 className="mr-1 h-3 w-3 text-emerald-600" />
-                        Receive Stock
-                      </Button>
-                    )}
-                    {order.status !== PurchaseOrderStatus.CANCELLED && order.status !== PurchaseOrderStatus.FULFILLED && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.CANCELLED)}
-                        className="h-7 text-[11px] text-rose-600 hover:bg-rose-50 px-2"
-                      >
-                        <Ban className="mr-1 h-3 w-3" />
-                        Cancel
-                      </Button>
-                    )}
-                  </div>
-
-                  <Button
-                    asChild
-                    variant="outline"
-                    size="sm"
-                    className="h-8 text-xs border-slate-200 text-slate-700 hover:bg-white"
-                  >
-                    <a href={`/api/pdf/purchase-order/${order.id}`} target="_blank" rel="noreferrer">
-                      <FileText className="mr-1 h-3.5 w-3.5 text-sky-700" />
-                      PDF
-                    </a>
-                  </Button>
-                </div>
-              </Card>
-            );
-          })}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
+          <div className="overflow-x-auto max-h-[calc(100vh-230px)]">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+                <tr>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">PO #</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Date & Time</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[160px]">Supplier</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Location</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Items</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Total (PKR)</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Status</th>
+                  <th className="py-2 px-2 text-center whitespace-nowrap">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {filteredOrders.map((order) => {
+                  const total = order.items.reduce((s, i) => s + i.lineTotal, 0);
+                  return (
+                    <tr key={order.id} className="hover:bg-sky-50/60 dark:hover:bg-slate-800/60 transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40">
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-slate-900 dark:text-slate-100">#{formatSequenceDisplay((order as any).sequenceNo, order.orderNo)}</span>
+                          {order.financialYear && (
+                            <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-mono" title={order.orderNo}>
+                              {order.financialYear.label}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400 text-[11px]">
+                        {formatDateTime(order.date)}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-800 dark:text-slate-200">
+                        {order.supplier.name}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-600 dark:text-slate-400">
+                        {order.location.name}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center font-mono whitespace-nowrap text-slate-600">
+                        {order.items.length}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-right whitespace-nowrap font-bold text-slate-900 dark:text-slate-100">
+                        PKR {total.toLocaleString()}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center whitespace-nowrap">
+                        {getStatusBadge(order.status)}
+                      </td>
+                      <td className="py-1 px-2 text-center whitespace-nowrap">
+                        <div className="flex items-center justify-center gap-1">
+                          <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40" title="Download PDF">
+                            <a href={`/api/pdf/purchase-order/${order.id}`} target="_blank" rel="noreferrer">
+                              <FileText className="h-3 w-3 mr-1" />
+                              PDF
+                            </a>
+                          </Button>
+                          {order.status === PurchaseOrderStatus.DRAFT && (
+                            <Button size="sm" variant="ghost" onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.SENT)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
+                              <Send className="h-3 w-3 mr-1" />
+                              Sent
+                            </Button>
+                          )}
+                          {(order.status === PurchaseOrderStatus.SENT || order.status === PurchaseOrderStatus.DRAFT) && (
+                            <Button size="sm" variant="ghost" onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.FULFILLED)} className="h-6 px-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40">
+                              <CheckCircle2 className="h-3 w-3 mr-1" />
+                              Receive
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

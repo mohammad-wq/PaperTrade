@@ -23,6 +23,8 @@ import {
   Maximize2,
   ChevronDown,
   ChevronUp,
+  Download,
+  Printer,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -438,23 +440,47 @@ function ProductsPageContent() {
     setFormError(null);
   }
 
-  // Vertical Sequential Enter Navigation Engine
+  // Vertical Sequential Enter & Arrow Navigation Engine
   function handleNavKeyDown(e: React.KeyboardEvent<HTMLElement>, currentIndex: number) {
-    if (e.key === "Enter") {
+    if (e.key === "Enter" || e.key === "ArrowDown") {
+      if (e.key === "ArrowDown" && e.currentTarget.tagName === "SELECT" && !e.altKey) {
+        return; // Allow native select option navigation
+      }
       e.preventDefault();
       // Final field is Remarks (index 14) -> Enter saves immediately!
-      if (currentIndex === 14) {
+      if (currentIndex === 14 && e.key === "Enter") {
         void handleSaveProduct();
         return;
       }
 
       // Move to next field
-      const nextIndex = currentIndex + 1;
-      const nextEl = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${nextIndex}"]`);
+      let nextIndex = currentIndex + 1;
+      let nextEl = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${nextIndex}"]`);
+      while (!nextEl && nextIndex <= 20) {
+        nextIndex++;
+        nextEl = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${nextIndex}"]`);
+      }
       if (nextEl) {
         nextEl.focus();
         if (nextEl instanceof HTMLInputElement) {
           nextEl.select();
+        }
+      }
+    } else if (e.key === "ArrowUp") {
+      if (e.currentTarget.tagName === "SELECT" && !e.altKey) {
+        return; // Allow native select option navigation
+      }
+      e.preventDefault();
+      let prevIndex = currentIndex - 1;
+      let prevEl = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${prevIndex}"]`);
+      while (!prevEl && prevIndex >= 0) {
+        prevIndex--;
+        prevEl = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${prevIndex}"]`);
+      }
+      if (prevEl) {
+        prevEl.focus();
+        if (prevEl instanceof HTMLInputElement) {
+          prevEl.select();
         }
       }
     } else if (e.key === "Escape") {
@@ -525,12 +551,16 @@ function ProductsPageContent() {
     }
   }
 
-  // Delete Product Handler
-  async function handleDeleteProduct() {
-    if (!selectedProductId) return;
+  // Delete Product Handler (Supports both modal and row action)
+  async function handleDeleteProduct(targetId?: string, targetName?: string, e?: React.MouseEvent) {
+    e?.stopPropagation();
+    const idToDelete = targetId || selectedProductId;
+    if (!idToDelete) return;
+    const prodName = targetName || (products.find((p) => p.id === idToDelete)?.name ?? "this product");
+
     const ok = await confirm({
       title: "Delete Product",
-      description: "Are you sure you want to delete this product? It will be removed from the catalog.",
+      description: `Are you sure you want to delete "${prodName}"? It will be removed from your catalog.`,
       confirmText: "Delete Product",
       variant: "destructive",
     });
@@ -540,13 +570,18 @@ function ProductsPageContent() {
 
     setSaving(true);
     try {
-      const res = await softDeleteProductAction({ id: selectedProductId });
+      const res = await softDeleteProductAction({ id: idToDelete });
       if (res.success) {
+        setProducts((prev) => prev.filter((p) => p.id !== idToDelete));
+        if (selectedProductId === idToDelete) {
+          closeWindow();
+        }
         await loadInitialData(true);
-        closeWindow();
       } else {
         await confirm.alert(res.error || "Failed to delete product.", { variant: "destructive" });
       }
+    } catch (err: any) {
+      await confirm.alert(err?.message || "Failed to delete product.", { variant: "destructive" });
     } finally {
       setSaving(false);
     }
@@ -588,6 +623,55 @@ function ProductsPageContent() {
     } finally {
       setQualitySaving(false);
     }
+  }
+
+  function handleExportCsv() {
+    const headers = [
+      "Code",
+      "Name",
+      "Category",
+      "Quality",
+      "Size (L x B)",
+      "GSM",
+      "Unit",
+      "Cost Price",
+      "Retail Price",
+      "Wholesale Price",
+      "Current Stock",
+      "Reorder Level",
+      "Status",
+    ];
+
+    const rows = filteredProducts.map((p) => [
+      p.productNo,
+      p.name,
+      p.category?.name || "",
+      p.quality?.name || "",
+      `${p.length} x ${p.breadth}`,
+      String(p.gsm),
+      p.unit,
+      String(p.costPrice),
+      String(p.retailPrice),
+      String(p.wholesalePrice),
+      String(p.currentStock),
+      p.reorderLevel == null ? "" : String(p.reorderLevel),
+      p.isActive ? "Active" : "Inactive",
+    ]);
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [headers.join(","), ...rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))].join("\n");
+
+    const link = document.createElement("a");
+    link.setAttribute("href", encodeURI(csvContent));
+    link.setAttribute("download", `product_directory_${new Date().toISOString().split("T")[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  function handlePrint() {
+    window.print();
   }
 
   // Pattern 1: Universal Omni-Search across ALL visible fields simultaneously
@@ -720,6 +804,28 @@ function ProductsPageContent() {
             <SlidersHorizontal className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Filters</span>
             {showAdvancedFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportCsv}
+            className="h-8 text-xs gap-1 border-slate-300 dark:border-slate-700 text-slate-600"
+            title="Export Product Directory to CSV"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">Export</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handlePrint}
+            className="h-8 text-xs gap-1 border-slate-300 dark:border-slate-700 text-slate-600"
+            title="Print Product Directory"
+          >
+            <Printer className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">Print</span>
           </Button>
         </div>
 
@@ -927,15 +1033,26 @@ function ProductsPageContent() {
 
                       {/* Actions */}
                       <td className="py-1 px-2 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => openEditWindow(p)}
-                          className="h-6 px-2 text-[11px] text-slate-600 hover:text-slate-900"
-                        >
-                          <Pencil className="h-3 w-3 mr-1 text-slate-400" />
-                          Edit
-                        </Button>
+                        <div className="flex items-center justify-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openEditWindow(p)}
+                            className="h-6 px-2 text-[11px] text-slate-600 hover:text-slate-900"
+                            title="Edit Product"
+                          >
+                            <Pencil className="h-3 w-3 mr-1 text-slate-400" />
+                            Edit
+                          </Button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteProduct(p.id, p.name, e)}
+                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded transition-colors"
+                            title="Delete Product"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1402,7 +1519,7 @@ function ProductsPageContent() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    onClick={handleDeleteProduct}
+                    onClick={() => handleDeleteProduct()}
                     disabled={saving}
                     className="h-8 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40"
                   >

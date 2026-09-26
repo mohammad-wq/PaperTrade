@@ -753,143 +753,90 @@ export default function DeliveryOrdersPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filteredOrders.map((order) => (
-            <Card key={order.id} className="border-amber-950/10 hover:shadow-md transition-shadow bg-white flex flex-col justify-between">
-              <CardHeader className="pb-3 border-b border-slate-100">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <CardTitle className="text-base font-bold text-slate-900">
-                        #{formatSequenceDisplay(order.sequenceNo, order.doNo)}
-                      </CardTitle>
-                      {order.financialYear && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">
-                          {order.financialYear.label}
-                        </span>
-                      )}
-                    </div>
-                    {order.customer ? (
-                      <>
-                        <p className="text-xs font-medium text-amber-900">{order.customer.name}</p>
-                        {order.customer.phone && (
-                          <p className="text-[11px] text-slate-400">{order.customer.phone}</p>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
+          <div className="overflow-x-auto max-h-[calc(100vh-230px)]">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+                <tr>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">DO #</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Date & Time</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[170px]">Customer / Recipient</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">From</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">To</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Vehicle</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Items</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Status</th>
+                  <th className="py-2 px-2 text-center whitespace-nowrap">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {filteredOrders.map((order) => (
+                  <tr key={order.id} className="hover:bg-amber-50/60 dark:hover:bg-slate-800/60 transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40">
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">#{formatSequenceDisplay(order.sequenceNo, order.doNo)}</span>
+                        {order.financialYear && (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-mono" title={order.doNo}>
+                            {order.financialYear.label}
+                          </span>
                         )}
-                      </>
-                    ) : (
-                      <span className="mt-1 inline-flex items-center rounded-md bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-800 border border-sky-200">
-                        Internal: {order.location.name} &rarr; {order.destinationLocation?.name ?? "Transfer"}
-                      </span>
-                    )}
-                  </div>
-                  {getStatusBadge(order.status)}
-                </div>
-              </CardHeader>
-
-              <CardContent className="py-3 space-y-2 text-xs">
-                {order.recipientName && (
-                  <div className="flex justify-between text-slate-600">
-                    <span>Recipient:</span>
-                    <span className="font-semibold text-amber-900">{order.recipientName}</span>
-                  </div>
-                )}
-                <div className="flex justify-between text-slate-600">
-                  <span>From Location:</span>
-                  <span className="font-semibold text-slate-800">{order.location.name}</span>
-                </div>
-                {order.destinationLocation && (
-                  <div className="flex justify-between text-slate-600">
-                    <span>To Location:</span>
-                    <span className="font-semibold text-sky-800">{order.destinationLocation.name}</span>
-                  </div>
-                )}
-                <div className="flex justify-between text-slate-600">
-                  <span>Date & Time:</span>
-                  <span className="font-medium text-slate-800">{formatDateTime(order.date)}</span>
-                </div>
-                {order.vehicleNo && (
-                  <div className="flex justify-between text-slate-600">
-                    <span>Vehicle No:</span>
-                    <span className="font-semibold text-slate-800">{order.vehicleNo}</span>
-                  </div>
-                )}
-                {order.driverName && (
-                  <div className="flex justify-between text-slate-600">
-                    <span>Driver:</span>
-                    <span>{order.driverName}</span>
-                  </div>
-                )}
-                {order.deliveredTo && (
-                  <div className="flex justify-between text-slate-600">
-                    <span>Destination Note:</span>
-                    <span className="truncate max-w-[150px]">{order.deliveredTo}</span>
-                  </div>
-                )}
-                <div className="flex justify-between items-center border-t border-slate-100 pt-2 text-slate-700 font-semibold">
-                  <span>Packages:</span>
-                  <div className="text-right">
-                    <span>{order.items.length} item line(s)</span>
-                    {order.items.some((it) => it.warehouseLot) && (
-                      <span className="ml-1.5 inline-block text-[10px] font-semibold text-sky-800 bg-sky-50 border border-sky-200 rounded px-1.5 py-0.5">
-                        Lot: {Array.from(new Set(order.items.filter((it) => it.warehouseLot).map((it) => it.warehouseLot!.lotNumber))).join(", ")}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </CardContent>
-
-              {/* Actions */}
-              <div className="p-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between gap-1.5 rounded-b-xl">
-                <div className="flex items-center gap-1">
-                  {order.status === DeliveryOrderStatus.DRAFT && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleStatusChange(order.id, DeliveryOrderStatus.DISPATCHED)}
-                      className="h-7 text-[11px] border-amber-300 text-amber-900 hover:bg-amber-100 px-2"
-                    >
-                      <Send className="mr-1 h-3 w-3 text-amber-700" />
-                      Dispatch
-                    </Button>
-                  )}
-                  {order.status === DeliveryOrderStatus.DISPATCHED && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleStatusChange(order.id, DeliveryOrderStatus.DELIVERED)}
-                      className="h-7 text-[11px] border-emerald-300 text-emerald-900 hover:bg-emerald-100 px-2"
-                    >
-                      <CheckCircle className="mr-1 h-3 w-3 text-emerald-700" />
-                      Delivered
-                    </Button>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1">
-                  <Button
-                    asChild
-                    variant="outline"
-                    size="sm"
-                    className="h-8 text-xs border-slate-200 text-slate-700 hover:bg-white"
-                  >
-                    <a href={`/api/pdf/delivery-order/${order.id}`} target="_blank" rel="noreferrer">
-                      <FileText className="mr-1 h-3.5 w-3.5 text-amber-700" />
-                      PDF
-                    </a>
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleWhatsAppShare(order.id)}
-                    className="h-8 text-xs border-emerald-200 bg-emerald-50/50 text-emerald-800 hover:bg-emerald-100"
-                  >
-                    <Share2 className="mr-1 h-3.5 w-3.5 text-emerald-600" />
-                    Share
-                  </Button>
-                </div>
-              </div>
-            </Card>
-          ))}
+                      </div>
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400 text-[11px]">
+                      {formatDateTime(order.date)}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-800 dark:text-slate-200">
+                      {order.customer ? (
+                        <div className="flex flex-col">
+                          <span>{order.customer.name}</span>
+                          {order.customer.phone && <span className="text-[10px] text-slate-400 font-mono">{order.customer.phone}</span>}
+                        </div>
+                      ) : (
+                        <span className="inline-flex items-center rounded-md bg-sky-50 dark:bg-sky-950/40 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-800">Internal transfer</span>
+                      )}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-600 dark:text-slate-400">
+                      {order.location.name}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-sky-800 dark:text-sky-300">
+                      {order.destinationLocation?.name ?? order.recipientName ?? "—"}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400">
+                      {order.vehicleNo || "—"}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center font-mono whitespace-nowrap text-slate-600">
+                      {order.items.length}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center whitespace-nowrap">
+                      {getStatusBadge(order.status)}
+                    </td>
+                    <td className="py-1 px-2 text-center whitespace-nowrap">
+                      <div className="flex items-center justify-center gap-1">
+                        {order.status === DeliveryOrderStatus.DRAFT && (
+                          <Button size="sm" variant="ghost" onClick={() => handleStatusChange(order.id, DeliveryOrderStatus.DISPATCHED)} className="h-6 px-1.5 text-xs text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40">
+                            <Send className="h-3 w-3 mr-1" />
+                            Dispatch
+                          </Button>
+                        )}
+                        {order.status === DeliveryOrderStatus.DISPATCHED && (
+                          <Button size="sm" variant="ghost" onClick={() => handleStatusChange(order.id, DeliveryOrderStatus.DELIVERED)} className="h-6 px-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40">
+                            <CheckCircle className="h-3 w-3 mr-1" />
+                            Deliver
+                          </Button>
+                        )}
+                        <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40" title="Download PDF">
+                          <a href={`/api/pdf/delivery-order/${order.id}`} target="_blank" rel="noreferrer">
+                            <FileText className="h-3 w-3 mr-1" />
+                            PDF
+                          </a>
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

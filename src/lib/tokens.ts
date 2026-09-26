@@ -1,6 +1,10 @@
 import crypto from "crypto";
 
-const TOKEN_SECRET = process.env.NEXTAUTH_SECRET || "papertrade-doc-secret-key-2026";
+const TOKEN_SECRET = process.env.NEXTAUTH_SECRET ?? "";
+
+if (!TOKEN_SECRET) {
+  throw new Error("NEXTAUTH_SECRET is required for secure document share tokens.");
+}
 
 /**
  * Generate an HMAC token allowing public access to a specific document PDF

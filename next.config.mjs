@@ -43,6 +43,7 @@ const securityHeaders = [
 
 const nextConfig = {
   output: "standalone",
+  serverExternalPackages: ["@react-pdf/renderer", "pdfkit"],
   poweredByHeader: false,
   outputFileTracingIncludes: {
     "/*": ["./node_modules/pdfkit/**/*"],

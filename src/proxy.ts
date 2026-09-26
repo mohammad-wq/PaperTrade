@@ -4,7 +4,7 @@ import { Role } from "@prisma/client";
 import { canAccessPath, normalizeUserPermissions } from "@/lib/auth/permissions";
 
 export default withAuth(
-  function middleware(req) {
+  function proxy(req) {
     const token = req.nextauth.token;
     const pathname = req.nextUrl.pathname;
 

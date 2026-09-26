@@ -519,57 +519,55 @@ export default function ReturnsPage() {
             <CardContent className="py-12 text-center text-slate-500 text-sm">No sale returns match filters.</CardContent>
           </Card>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {displayedSaleReturns.map((ret) => (
-              <Card key={ret.id} className="border-rose-950/10 hover:shadow-md transition-shadow bg-white flex flex-col justify-between">
-                <CardHeader className="pb-3 border-b border-slate-100">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <CardTitle className="text-base font-bold text-slate-900">{ret.returnNo}</CardTitle>
-                        {ret.financialYear && (
-                          <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">
-                            {ret.financialYear.label}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs font-medium text-rose-800">{ret.customer.name}</p>
-                    </div>
-                    <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-800">
-                      CREDIT NOTE
-                    </span>
-                  </div>
-                </CardHeader>
-
-                <CardContent className="py-3 space-y-2 text-xs">
-                  <div className="flex justify-between text-slate-600">
-                    <span>Original Invoice:</span>
-                    <span className="font-semibold text-slate-800">{ret.saleInvoice.invoiceNo}</span>
-                  </div>
-                  <div className="flex justify-between text-slate-600">
-                    <span>Date:</span>
-                    <span>{format(new Date(ret.date), "dd/MM/yyyy")}</span>
-                  </div>
-                  <div className="flex justify-between text-slate-600">
-                    <span>Reason:</span>
-                    <span className="italic truncate max-w-[160px]">{ret.reason}</span>
-                  </div>
-                  <div className="flex justify-between border-t border-slate-100 pt-2 font-bold text-sm">
-                    <span>Restocked Value:</span>
-                    <span className="text-rose-900">PKR {ret.totalAmount.toLocaleString()}</span>
-                  </div>
-                </CardContent>
-
-                <div className="p-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end rounded-b-xl">
-                  <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200 text-slate-700 hover:bg-white">
-                    <a href={`/api/pdf/sale-return/${ret.id}`} target="_blank" rel="noreferrer">
-                      <FileText className="mr-1 h-3.5 w-3.5 text-rose-700" />
-                      Download PDF
-                    </a>
-                  </Button>
-                </div>
-              </Card>
-            ))}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
+            <div className="overflow-x-auto max-h-[calc(100vh-230px)]">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+                  <tr>
+                    <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Return #</th>
+                    <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Date</th>
+                    <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px]">Customer</th>
+                    <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Original Invoice</th>
+                    <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Value (PKR)</th>
+                    <th className="py-2 px-2.5 text-center whitespace-nowrap">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {displayedSaleReturns.map((ret) => (
+                    <tr key={ret.id} className="hover:bg-rose-50/60 dark:hover:bg-slate-800/60 transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40">
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-slate-900 dark:text-slate-100">{ret.returnNo}</span>
+                          {ret.financialYear && (
+                            <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-mono">{ret.financialYear.label}</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400 text-[11px]">
+                        {format(new Date(ret.date), "dd/MM/yyyy")}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-800 dark:text-slate-200">
+                        {ret.customer.name}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400">
+                        {ret.saleInvoice.invoiceNo}
+                      </td>
+                      <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-right whitespace-nowrap font-bold text-rose-900 dark:text-rose-400">
+                        PKR {ret.totalAmount.toLocaleString()}
+                      </td>
+                      <td className="py-1 px-2 text-center whitespace-nowrap">
+                        <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40">
+                          <a href={`/api/pdf/sale-return/${ret.id}`} target="_blank" rel="noreferrer">
+                            <FileText className="h-3 w-3 mr-1" />
+                            PDF
+                          </a>
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )
       ) : displayedPurchaseReturns.length === 0 ? (
@@ -577,57 +575,55 @@ export default function ReturnsPage() {
           <CardContent className="py-12 text-center text-slate-500 text-sm">No purchase returns match filters.</CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {displayedPurchaseReturns.map((ret) => (
-            <Card key={ret.id} className="border-amber-950/10 hover:shadow-md transition-shadow bg-white flex flex-col justify-between">
-              <CardHeader className="pb-3 border-b border-slate-100">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <CardTitle className="text-base font-bold text-slate-900">{ret.returnNo}</CardTitle>
-                      {ret.financialYear && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">
-                          {ret.financialYear.label}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs font-medium text-amber-800">{ret.supplier.name}</p>
-                  </div>
-                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
-                    DEBIT NOTE
-                  </span>
-                </div>
-              </CardHeader>
-
-              <CardContent className="py-3 space-y-2 text-xs">
-                <div className="flex justify-between text-slate-600">
-                  <span>Original Bill:</span>
-                  <span className="font-semibold text-slate-800">{ret.purchaseInvoice.invoiceNo}</span>
-                </div>
-                <div className="flex justify-between text-slate-600">
-                  <span>Date:</span>
-                  <span>{format(new Date(ret.date), "dd/MM/yyyy")}</span>
-                </div>
-                <div className="flex justify-between text-slate-600">
-                  <span>Reason:</span>
-                  <span className="italic truncate max-w-[160px]">{ret.reason}</span>
-                </div>
-                <div className="flex justify-between border-t border-slate-100 pt-2 font-bold text-sm">
-                  <span>Returned Value:</span>
-                  <span className="text-amber-950">PKR {ret.totalAmount.toLocaleString()}</span>
-                </div>
-              </CardContent>
-
-              <div className="p-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end rounded-b-xl">
-                <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200 text-slate-700 hover:bg-white">
-                  <a href={`/api/pdf/purchase-return/${ret.id}`} target="_blank" rel="noreferrer">
-                    <FileText className="mr-1 h-3.5 w-3.5 text-amber-700" />
-                    Download PDF
-                  </a>
-                </Button>
-              </div>
-            </Card>
-          ))}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs overflow-hidden">
+          <div className="overflow-x-auto max-h-[calc(100vh-230px)]">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+                <tr>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Return #</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Date</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px]">Supplier</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Original Bill</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Value (PKR)</th>
+                  <th className="py-2 px-2.5 text-center whitespace-nowrap">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {displayedPurchaseReturns.map((ret) => (
+                  <tr key={ret.id} className="hover:bg-amber-50/60 dark:hover:bg-slate-800/60 transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40">
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">{ret.returnNo}</span>
+                        {ret.financialYear && (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-mono">{ret.financialYear.label}</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400 text-[11px]">
+                      {format(new Date(ret.date), "dd/MM/yyyy")}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-800 dark:text-slate-200">
+                      {ret.supplier.name}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400">
+                      {ret.purchaseInvoice.invoiceNo}
+                    </td>
+                    <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-right whitespace-nowrap font-bold text-amber-900 dark:text-amber-400">
+                      PKR {ret.totalAmount.toLocaleString()}
+                    </td>
+                    <td className="py-1 px-2 text-center whitespace-nowrap">
+                      <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40">
+                        <a href={`/api/pdf/purchase-return/${ret.id}`} target="_blank" rel="noreferrer">
+                          <FileText className="h-3 w-3 mr-1" />
+                          PDF
+                        </a>
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

@@ -42,7 +42,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useRealtime } from "@/components/providers/realtime-provider";
-import { useConfirm } from "@/components/providers/confirm-provider";
 import { cn } from "@/lib/utils";
 
 type InventoryRow = {
@@ -80,17 +79,23 @@ type LotItem = {
 
 export default function InventoryPage() {
   const router = useRouter();
-  const confirm = useConfirm();
   const { broadcastLocalChange } = useRealtime();
   const [rows, setRows] = useState<InventoryRow[]>([]);
   const [allLots, setAllLots] = useState<LotItem[]>([]);
   const [query, setQuery] = useState("");
   const [selectedLocationId, setSelectedLocationId] = useState("all");
+  const [selectedLotId, setSelectedLotId] = useState("all");
+  const [stockFilter, setStockFilter] = useState<"NON_ZERO" | "ZERO" | "ALL">("NON_ZERO");
   const [activeTab, setActiveTab] = useState<"ALL" | "LOW">("ALL");
   const [viewMode, setViewMode] = useState<"table" | "cards">("table");
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Adjustment form
   const [productId, setProductId] = useState("");
@@ -144,7 +149,16 @@ export default function InventoryPage() {
 
   // Bulk adjustment state
   const [showBulkAdjustModal, setShowBulkAdjustModal] = useState(false);
+
   const [bulkAdjLocationId, setBulkAdjLocationId] = useState("");
+  // Ensure each bulk adjust item inherits the header location when it changes
+  useEffect(() => {
+    if (bulkAdjLocationId) {
+      setBulkAdjItems((prev) =>
+        prev.map((item) => (item.locationId ? item : { ...item, locationId: bulkAdjLocationId }))
+      );
+    }
+  }, [bulkAdjLocationId]);
   const [bulkAdjReason, setBulkAdjReason] = useState("");
   const [bulkAdjItems, setBulkAdjItems] = useState<
     Array<{
@@ -157,6 +171,7 @@ export default function InventoryPage() {
     }>
   >([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, direction: "IN", notes: "" }]);
   const [submittingBulkAdj, setSubmittingBulkAdj] = useState(false);
+  const [bulkAdjError, setBulkAdjError] = useState<string | null>(null);
 
   // Bulk transfer state
   const [showBulkTransferModal, setShowBulkTransferModal] = useState(false);
@@ -172,6 +187,10 @@ export default function InventoryPage() {
     }>
   >([{ productId: "", fromWarehouseLotId: "", toWarehouseLotId: "", quantity: 1 }]);
   const [submittingBulkTr, setSubmittingBulkTr] = useState(false);
+  const [bulkTrError, setBulkTrError] = useState<string | null>(null);
+
+  const [adjError, setAdjError] = useState<string | null>(null);
+  const [trError, setTrError] = useState<string | null>(null);
 
   const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string; type: "SHOP" | "WAREHOUSE" }>>([]);
   const [loading, setLoading] = useState(true);
@@ -235,8 +254,61 @@ export default function InventoryPage() {
   }, [locations]);
 
   const uniqueProducts = useMemo(
-    () => Array.from(new Map(rows.map((row) => [row.productId, { id: row.productId, name: row.productName, no: row.productNo }])).values()),
+    () =>
+      Array.from(
+        new Map(
+          rows.map((row) => [
+            row.productId,
+            { id: row.productId, name: row.productName, no: row.productNo, unit: row.unit || "pkts" },
+          ]),
+        ).values(),
+      ),
     [rows],
+  );
+
+  const getProductStock = useCallback(
+    (pId: string, locId?: string, lotId?: string | null): number => {
+      if (!pId) return 0;
+      if (locId && locId !== "all") {
+        const row = rows.find((r) => r.productId === pId && r.locationId === locId);
+        if (!row) return 0;
+        if (lotId) {
+          const foundLot = row.lots?.find((l) => l.id === lotId);
+          return foundLot ? foundLot.available : 0;
+        }
+        if (lotId === null || lotId === "") {
+          const locLots = allLots.filter((l) => l.locationId === locId);
+          if (locLots.length > 0) {
+            const unassigned = row.lots?.find((l) => l.id === null);
+            return unassigned ? unassigned.available : 0;
+          }
+          return row.available;
+        }
+        return row.available;
+      }
+      return rows.filter((r) => r.productId === pId).reduce((sum, r) => sum + r.available, 0);
+    },
+    [rows, allLots],
+  );
+
+  const getProductOptionsForLocation = useCallback(
+    (locId?: string, lotId?: string | null): ComboboxOption[] => {
+      const locName = locId && locId !== "all" ? locations.find((l) => l.id === locId)?.name : null;
+      return uniqueProducts.map((p) => {
+        const stock = getProductStock(p.id, locId, lotId);
+        const sublabel = locName
+          ? `In ${locName}: ${stock} ${p.unit}`
+          : `Total Stock: ${stock} ${p.unit}`;
+        return {
+          id: p.id,
+          label: `${p.no} - ${p.name}`,
+          sublabel,
+          badge: `${stock} ${p.unit}`,
+          badgeColor: stock > 0 ? ("green" as const) : ("rose" as const),
+        };
+      });
+    },
+    [locations, uniqueProducts, getProductStock],
   );
 
   const adjLocationLots = useMemo(
@@ -255,18 +327,30 @@ export default function InventoryPage() {
   );
 
   const getLotsForLocation = useCallback(
-    (locId: string): ComboboxOption[] => {
+    (locId: string, pId?: string): ComboboxOption[] => {
       const lots = allLots.filter((l) => l.locationId === locId);
+      const standardStock = pId ? getProductStock(pId, locId, "") : undefined;
       return [
-        { id: "", label: "No Lot / Standard Stock" },
-        ...lots.map((l) => ({
-          id: l.id,
-          label: l.lotNumber,
-          sublabel: `${l.currentStock} pkts`,
-        })),
+        {
+          id: "",
+          label: "No Lot / Standard Stock",
+          sublabel: pId ? `${standardStock} pkts on hand` : undefined,
+          badge: pId ? `${standardStock} pkts` : undefined,
+          badgeColor: (standardStock ?? 0) > 0 ? ("green" as const) : ("slate" as const),
+        },
+        ...lots.map((l) => {
+          const lotStock = pId ? getProductStock(pId, locId, l.id) : (l.currentStock || 0);
+          return {
+            id: l.id,
+            label: l.lotNumber,
+            sublabel: pId ? `${lotStock} pkts on hand` : `${lotStock} pkts`,
+            badge: `${lotStock} pkts`,
+            badgeColor: lotStock > 0 ? ("green" as const) : ("slate" as const),
+          };
+        }),
       ];
     },
-    [allLots],
+    [allLots, getProductStock],
   );
 
   const bulkAdjLocationLots = useMemo(
@@ -284,17 +368,54 @@ export default function InventoryPage() {
     [allLots, bulkTrToLocationId],
   );
 
+  const selectedLocationLots = useMemo(
+    () => (selectedLocationId !== "all" ? allLots.filter((l) => l.locationId === selectedLocationId) : []),
+    [allLots, selectedLocationId]
+  );
+
+  const nonZeroCount = useMemo(() => rows.filter((r) => r.available !== 0).length, [rows]);
+  const zeroCount = useMemo(() => rows.filter((r) => r.available === 0).length, [rows]);
+
   const filteredRows = useMemo(() => {
     const search = query.trim().toLowerCase();
     return rows.filter((row) => {
+      // 1. Location Filter
       const matchesLocation = selectedLocationId === "all" || row.locationId === selectedLocationId;
-      const matchesQuery = !search || `${row.productName} ${row.productNo} ${row.locationName}`.toLowerCase().includes(search);
+      if (!matchesLocation) return false;
+
+      // 2. Lot Filter (Active when selected location has multiple lots)
+      if (selectedLocationId !== "all" && selectedLocationLots.length > 1 && selectedLotId !== "all") {
+        if (selectedLotId === "unassigned") {
+          const unassignedStock = row.lots?.find((l) => l.id === null)?.available ?? 0;
+          if (unassignedStock === 0) return false;
+        } else {
+          const specificLotStock = row.lots?.find((l) => l.id === selectedLotId)?.available ?? 0;
+          if (specificLotStock === 0) return false;
+        }
+      }
+
+      // 3. Stock Level Filter (Issue 5: Only show non-zero by default, with separate filter for zero products)
+      if (stockFilter === "NON_ZERO" && row.available === 0) {
+        return false;
+      }
+      if (stockFilter === "ZERO" && row.available !== 0) {
+        return false;
+      }
+
+      // 4. Query Omnisearch
+      const matchesQuery =
+        !search ||
+        `${row.productName} ${row.productNo} ${row.locationName}`.toLowerCase().includes(search) ||
+        (row.lots && row.lots.some((l) => l.lotNumber.toLowerCase().includes(search)));
+      if (!matchesQuery) return false;
+
+      // 5. Active Tab (Low Stock)
       const availableInPkts = row.unit === "REAM" ? row.available * 5 : row.unit === "SHEET" ? row.available / 100 : row.available;
       const isLowStock = row.reorderLevel !== null && availableInPkts <= row.reorderLevel;
       const matchesTab = activeTab === "ALL" || isLowStock;
-      return matchesLocation && matchesQuery && matchesTab;
+      return matchesTab;
     });
-  }, [rows, query, selectedLocationId, activeTab]);
+  }, [rows, query, selectedLocationId, selectedLocationLots, selectedLotId, stockFilter, activeTab]);
 
   const lowStockCount = useMemo(
     () => rows.filter((r) => {
@@ -323,11 +444,21 @@ export default function InventoryPage() {
   async function handleAdjustment(event: React.FormEvent) {
     event.preventDefault();
     setMsg(null);
-    if (!productId || !locationId || !quantity || !reason.trim()) return;
-
-    if (adjLocationLots.length > 0 && !warehouseLotId) {
-      setMsg({ type: "error", text: "Please select a warehouse lot for this location." });
+    setAdjError(null);
+    if (!productId || !locationId || !quantity || !reason.trim()) {
+      setAdjError("All fields marked with * are required.");
       return;
+    }
+    if (reason.trim().length < 3) {
+      setAdjError("Reason must be at least 3 characters.");
+      return;
+    }
+    if (direction === "OUT") {
+      const avail = getProductStock(productId, locationId, warehouseLotId ? warehouseLotId : "");
+      if (quantity > avail) {
+        setAdjError(`Cannot decrease stock by ${quantity}. Only ${avail} available.`);
+        return;
+      }
     }
 
     const res = await adjustStockAction({
@@ -336,41 +467,43 @@ export default function InventoryPage() {
       warehouseLotId: warehouseLotId || undefined,
       quantity,
       direction,
-      reason,
+      reason: reason.trim(),
     });
     if (res.success) {
       setShowAdjustModal(false);
       setReason("");
       setQuantity(1);
+      setAdjError(null);
       setMsg({ type: "success", text: "Stock adjustment recorded successfully." });
 
       broadcastLocalChange(["inventory", "stock-movements", "dashboard"]);
       router.refresh();
       await fetchRows(true);
     } else {
-      setMsg({ type: "error", text: res.error || "Adjustment failed." });
+      setAdjError(res.error || "Adjustment failed.");
     }
   }
 
   async function handleTransfer(event: React.FormEvent) {
     event.preventDefault();
     setMsg(null);
-    if (!transferProductId || !fromLocationId || !toLocationId || !transferQuantity) return;
+    setTrError(null);
+    if (!transferProductId || !fromLocationId || !toLocationId || !transferQuantity) {
+      setTrError("All fields marked with * are required.");
+      return;
+    }
 
     if (
       fromLocationId === toLocationId &&
-      (!fromWarehouseLotId || !toWarehouseLotId || fromWarehouseLotId === toWarehouseLotId)
+      (fromWarehouseLotId || "") === (toWarehouseLotId || "")
     ) {
-      setMsg({ type: "error", text: "For transfers within the same warehouse, choose two different lots." });
+      setTrError("For transfers within the same warehouse, source and destination lots must differ.");
       return;
     }
 
-    if (fromLocationLots.length > 0 && !fromWarehouseLotId) {
-      setMsg({ type: "error", text: "Please select a source lot." });
-      return;
-    }
-    if (toLocationLots.length > 0 && !toWarehouseLotId) {
-      setMsg({ type: "error", text: "Please select a destination lot." });
+    const avail = getProductStock(transferProductId, fromLocationId, fromWarehouseLotId ? fromWarehouseLotId : "");
+    if (transferQuantity > avail) {
+      setTrError(`Cannot transfer ${transferQuantity}. Only ${avail} available in selected source.`);
       return;
     }
 
@@ -381,20 +514,21 @@ export default function InventoryPage() {
       toLocationId,
       toWarehouseLotId: toWarehouseLotId || undefined,
       quantity: transferQuantity,
-      notes: transferNotes,
+      notes: transferNotes.trim() || undefined,
     });
 
     if (res.success) {
       setShowTransferModal(false);
       setTransferNotes("");
       setTransferQuantity(1);
+      setTrError(null);
       setMsg({ type: "success", text: "Stock transferred successfully." });
 
       broadcastLocalChange(["inventory", "stock-movements", "dashboard"]);
       router.refresh();
       await fetchRows(true);
     } else {
-      setMsg({ type: "error", text: res.error || "Transfer failed." });
+      setTrError(res.error || "Transfer failed.");
     }
   }
 
@@ -478,29 +612,100 @@ export default function InventoryPage() {
     });
   }
 
+  function closeBulkAdjustModal() {
+    setShowBulkAdjustModal(false);
+    setBulkAdjReason("");
+    setBulkAdjLocationId("");
+    setBulkAdjError(null);
+    setBulkAdjItems([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, direction: "IN", notes: "" }]);
+  }
+
+  function closeBulkTransferModal() {
+    setShowBulkTransferModal(false);
+    setBulkTrFromLocationId("");
+    setBulkTrToLocationId("");
+    setBulkTrNotes("");
+    setBulkTrError(null);
+    setBulkTrItems([{ productId: "", fromWarehouseLotId: "", toWarehouseLotId: "", quantity: 1 }]);
+  }
+
+  function handleBulkAdjRowKeyDown(
+    e: React.KeyboardEvent,
+    rowIndex: number,
+    field: "prod" | "loc" | "lot" | "qty" | "dir" | "notes",
+  ) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const sequence: Array<"prod" | "loc" | "lot" | "qty" | "dir" | "notes"> = ["prod", "loc", "lot", "qty", "dir", "notes"];
+      const currentIdx = sequence.indexOf(field);
+      if (currentIdx < sequence.length - 1) {
+        const nextField = sequence[currentIdx + 1];
+        const nextEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${rowIndex}-${nextField}"]`);
+        if (nextEl) {
+          nextEl.focus();
+          if (nextEl instanceof HTMLInputElement) nextEl.select();
+          return;
+        }
+      } else {
+        if (rowIndex === bulkAdjItems.length - 1) {
+          addBulkAdjItem();
+          setTimeout(() => {
+            const nextRowFirstEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${rowIndex + 1}-prod"]`);
+            if (nextRowFirstEl) nextRowFirstEl.focus();
+          }, 50);
+        } else {
+          const nextRowFirstEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${rowIndex + 1}-prod"]`);
+          if (nextRowFirstEl) nextRowFirstEl.focus();
+        }
+      }
+    } else if (e.key === "ArrowDown" && (field === "qty" || field === "notes")) {
+      const nextRowEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${rowIndex + 1}-${field}"]`);
+      if (nextRowEl) {
+        e.preventDefault();
+        nextRowEl.focus();
+        if (nextRowEl instanceof HTMLInputElement) nextRowEl.select();
+      }
+    } else if (e.key === "ArrowUp" && (field === "qty" || field === "notes")) {
+      const prevRowEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${rowIndex - 1}-${field}"]`);
+      if (prevRowEl) {
+        e.preventDefault();
+        prevRowEl.focus();
+        if (prevRowEl instanceof HTMLInputElement) prevRowEl.select();
+      }
+    }
+  }
+
   async function handleBulkAdjustment(e: React.FormEvent) {
     e.preventDefault();
-    setMsg(null);
-    if (!bulkAdjReason.trim()) {
-      setMsg({ type: "error", text: "Reason is mandatory for stock adjustment." });
+    setBulkAdjError(null);
+    if (!bulkAdjReason.trim() || bulkAdjReason.trim().length < 3) {
+      setBulkAdjError("Batch reason is mandatory (minimum 3 characters).");
       return;
     }
     if (bulkAdjItems.some((it) => !it.productId || it.quantity <= 0)) {
-      setMsg({ type: "error", text: "All items must have a product selected and quantity > 0." });
+      setBulkAdjError("All items must have a product selected and quantity > 0.");
       return;
     }
     if (bulkAdjItems.some((it) => !it.locationId && !bulkAdjLocationId)) {
-      setMsg({ type: "error", text: "Please select a location for every adjustment item." });
+      setBulkAdjError("Please select a location for every adjustment item.");
       return;
     }
 
-    const ok = await confirm({
-      title: "Confirm Bulk Adjustment",
-      description: `Are you sure you want to post bulk stock adjustment for ${bulkAdjItems.length} product(s)?`,
-      confirmText: "Post Adjustment",
-      variant: "warning",
-    });
-    if (!ok) return;
+    for (let i = 0; i < bulkAdjItems.length; i++) {
+      const it = bulkAdjItems[i];
+      if (it.direction === "OUT") {
+        const rowLocId = it.locationId || bulkAdjLocationId;
+        const avail = getProductStock(it.productId, rowLocId, it.warehouseLotId ? it.warehouseLotId : "");
+        if (it.quantity > avail) {
+          const prod = uniqueProducts.find((p) => p.id === it.productId);
+          const prodName = prod ? `${prod.no} - ${prod.name}` : `Item #${i + 1}`;
+          const lotObj = allLots.find((l) => l.id === it.warehouseLotId);
+          const lotDesc = lotObj ? `in lot "${lotObj.lotNumber}"` : "in standard stock";
+          setBulkAdjError(`Cannot decrease stock for ${prodName} ${lotDesc} by ${it.quantity}. Only ${avail} available.`);
+          return;
+        }
+      }
+    }
 
     setSubmittingBulkAdj(true);
     try {
@@ -518,18 +723,16 @@ export default function InventoryPage() {
       });
 
       if (res.success) {
-        setShowBulkAdjustModal(false);
-        setBulkAdjReason("");
-        setBulkAdjItems([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, direction: "IN", notes: "" }]);
+        closeBulkAdjustModal();
         setMsg({ type: "success", text: `Bulk adjustment of ${bulkAdjItems.length} item(s) posted successfully.` });
         broadcastLocalChange(["inventory", "stock-movements", "dashboard"]);
         router.refresh();
         await fetchRows(true);
       } else {
-        setMsg({ type: "error", text: res.error || "Bulk adjustment failed." });
+        setBulkAdjError(res.error || "Bulk adjustment failed.");
       }
     } catch (err: any) {
-      setMsg({ type: "error", text: err.message || "Bulk adjustment failed." });
+      setBulkAdjError(err.message || "Bulk adjustment failed.");
     } finally {
       setSubmittingBulkAdj(false);
     }
@@ -555,38 +758,57 @@ export default function InventoryPage() {
     setBulkTrItems((prev) => {
       const copy = [...prev];
       copy[index] = { ...copy[index], [field]: value };
+      if (field === "productId" && value) {
+        const fromLots = allLots.filter((l) => l.locationId === bulkTrFromLocationId);
+        if (fromLots.length > 0) {
+          const stdStock = getProductStock(value, bulkTrFromLocationId, "");
+          if (stdStock === 0) {
+            const firstLotWithStock = fromLots.find(
+              (l) => getProductStock(value, bulkTrFromLocationId, l.id) > 0,
+            );
+            copy[index].fromWarehouseLotId = firstLotWithStock ? firstLotWithStock.id : "";
+          } else {
+            copy[index].fromWarehouseLotId = "";
+          }
+        }
+      }
       return copy;
     });
   }
 
   async function handleBulkTransfer(e: React.FormEvent) {
     e.preventDefault();
-    setMsg(null);
+    setBulkTrError(null);
     if (!bulkTrFromLocationId || !bulkTrToLocationId) {
-      setMsg({ type: "error", text: "Please select both source and destination locations." });
+      setBulkTrError("Please select both source and destination locations.");
       return;
     }
     if (bulkTrFromLocationId === bulkTrToLocationId) {
       const hasInvalidLot = bulkTrItems.some(
-        (it) => !it.fromWarehouseLotId || !it.toWarehouseLotId || it.fromWarehouseLotId === it.toWarehouseLotId,
+        (it) => (it.fromWarehouseLotId || "") === (it.toWarehouseLotId || ""),
       );
       if (hasInvalidLot) {
-        setMsg({ type: "error", text: "For transfers within the same location, each item must move between two distinct lots." });
+        setBulkTrError("For transfers within the same location, source and destination lots must differ.");
         return;
       }
     }
     if (bulkTrItems.some((it) => !it.productId || it.quantity <= 0)) {
-      setMsg({ type: "error", text: "All transfer items must have a product selected and quantity > 0." });
+      setBulkTrError("All transfer items must have a product selected and quantity > 0.");
       return;
     }
 
-    const ok = await confirm({
-      title: "Confirm Bulk Stock Transfer",
-      description: `Are you sure you want to transfer ${bulkTrItems.length} product(s) between locations?`,
-      confirmText: "Transfer Stock",
-      variant: "primary",
-    });
-    if (!ok) return;
+    for (let i = 0; i < bulkTrItems.length; i++) {
+      const it = bulkTrItems[i];
+      const avail = getProductStock(it.productId, bulkTrFromLocationId, it.fromWarehouseLotId ? it.fromWarehouseLotId : "");
+      if (it.quantity > avail) {
+        const prod = uniqueProducts.find((p) => p.id === it.productId);
+        const prodName = prod ? `${prod.no} - ${prod.name}` : `Item #${i + 1}`;
+        const lotObj = allLots.find((l) => l.id === it.fromWarehouseLotId);
+        const lotDesc = lotObj ? `in source lot "${lotObj.lotNumber}"` : "in standard stock";
+        setBulkTrError(`Insufficient stock for ${prodName} ${lotDesc}. Available: ${avail}, Required: ${it.quantity}.`);
+        return;
+      }
+    }
 
     setSubmittingBulkTr(true);
     try {
@@ -603,18 +825,16 @@ export default function InventoryPage() {
       });
 
       if (res.success) {
-        setShowBulkTransferModal(false);
-        setBulkTrNotes("");
-        setBulkTrItems([{ productId: "", fromWarehouseLotId: "", toWarehouseLotId: "", quantity: 1 }]);
+        closeBulkTransferModal();
         setMsg({ type: "success", text: `Bulk transfer of ${bulkTrItems.length} item(s) executed successfully.` });
         broadcastLocalChange(["inventory", "stock-movements", "dashboard"]);
         router.refresh();
         await fetchRows(true);
       } else {
-        setMsg({ type: "error", text: res.error || "Bulk transfer failed." });
+        setBulkTrError(res.error || "Bulk transfer failed.");
       }
     } catch (err: any) {
-      setMsg({ type: "error", text: err.message || "Bulk transfer failed." });
+      setBulkTrError(err.message || "Bulk transfer failed.");
     } finally {
       setSubmittingBulkTr(false);
     }
@@ -676,7 +896,7 @@ export default function InventoryPage() {
             <p className="text-xs font-semibold uppercase">Inventory Stock & Tonnage Valuation Report</p>
           </div>
           <div className="text-right text-[10px] space-y-0.5">
-            <p>Printed: {new Date().toLocaleString()}</p>
+            <p suppressHydrationWarning>Printed: {mounted ? new Date().toLocaleString() : ""}</p>
             <p>Location: {selectedLocationId === "all" ? "All Locations" : (locations.find((l) => l.id === selectedLocationId)?.name || selectedLocationId)}</p>
             <p>Filter: {activeTab === "ALL" ? "All Products" : "Low Stock Alert Only"}</p>
           </div>
@@ -831,7 +1051,10 @@ export default function InventoryPage() {
 
           <select
             value={selectedLocationId}
-            onChange={(e) => setSelectedLocationId(e.target.value)}
+            onChange={(e) => {
+              setSelectedLocationId(e.target.value);
+              setSelectedLotId("all");
+            }}
             className="h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200"
           >
             <option value="all">All Locations</option>
@@ -841,24 +1064,67 @@ export default function InventoryPage() {
               </option>
             ))}
           </select>
+
+          {/* Issue 4: Lot Filter (activates when the selected location has multiple lots) */}
+          {selectedLocationId !== "all" && selectedLocationLots.length > 1 && (
+            <select
+              value={selectedLotId}
+              onChange={(e) => setSelectedLotId(e.target.value)}
+              className="h-8 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-950/30 px-2.5 text-xs font-semibold text-amber-900 dark:text-amber-200"
+            >
+              <option value="all">All Lots ({selectedLocationLots.length})</option>
+              {selectedLocationLots.map((lot) => (
+                <option key={lot.id} value={lot.id}>
+                  Lot #{lot.lotNumber} ({lot.currentStock} pkts)
+                </option>
+              ))}
+              <option value="unassigned">Unassigned Stock</option>
+            </select>
+          )}
         </div>
 
-        <div className="flex items-center gap-1.5">
-          {/* Active Tab Toggle */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {/* Issue 5: Stock Filter Pills (In Stock by default, Zero Stock, All Items) */}
           <div className="flex rounded-md bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200 dark:border-slate-700 text-xs">
             <button
-              onClick={() => setActiveTab("ALL")}
+              onClick={() => setStockFilter("NON_ZERO")}
               className={`rounded px-2.5 py-1 font-semibold transition-colors ${
-                activeTab === "ALL"
+                stockFilter === "NON_ZERO"
+                  ? "bg-emerald-800 text-white shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+              }`}
+              title="Show only products with non-zero stock"
+            >
+              In Stock ({nonZeroCount})
+            </button>
+            <button
+              onClick={() => setStockFilter("ZERO")}
+              className={`rounded px-2.5 py-1 font-semibold transition-colors ${
+                stockFilter === "ZERO"
+                  ? "bg-amber-800 text-white shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+              }`}
+              title="Show only products with zero stock"
+            >
+              Zero Stock ({zeroCount})
+            </button>
+            <button
+              onClick={() => setStockFilter("ALL")}
+              className={`rounded px-2.5 py-1 font-semibold transition-colors ${
+                stockFilter === "ALL"
                   ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs"
                   : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
               }`}
             >
               All Items ({rows.length})
             </button>
+          </div>
+
+          {/* Active Tab Toggle (Low Stock) */}
+          <div className="flex rounded-md bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200 dark:border-slate-700 text-xs">
             <button
-              onClick={() => setActiveTab("LOW")}
-              className={`rounded px-2.5 py-1 font-semibold transition-colors flex items-center gap-1.5 ${
+              onClick={() => setActiveTab(activeTab === "LOW" ? "ALL" : "LOW")}
+              className={`rounded px-2 py-1 font-semibold transition-colors flex items-center gap-1.5 ${
                 activeTab === "LOW"
                   ? "bg-rose-50 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300 shadow-xs"
                   : "text-slate-600 dark:text-slate-400 hover:text-rose-700"
@@ -952,11 +1218,17 @@ export default function InventoryPage() {
                   </tr>
                 ) : (
                   filteredRows.map((row) => {
-                    const availableInPkts = row.unit === "REAM" ? row.available * 5 : row.unit === "SHEET" ? row.available / 100 : row.available;
+                    const isLotFiltered = selectedLocationId !== "all" && selectedLocationLots.length > 1 && selectedLotId !== "all";
+                    const lotStock = isLotFiltered
+                      ? (selectedLotId === "unassigned"
+                          ? (row.lots?.find((l) => l.id === null)?.available ?? 0)
+                          : (row.lots?.find((l) => l.id === selectedLotId)?.available ?? 0))
+                      : row.available;
+                    const availableInPkts = row.unit === "REAM" ? lotStock * 5 : row.unit === "SHEET" ? lotStock / 100 : lotStock;
                     const isLow = row.reorderLevel !== null && availableInPkts <= row.reorderLevel;
-                    const isOutOfStock = row.available <= 0;
+                    const isOutOfStock = lotStock <= 0;
                     const unitWeight = row.unit === "PACKET" ? (row.packetWeight || 0) : (row.reamWeight || 0);
-                    const totalLineWeightKg = Math.max(0, row.available) * unitWeight;
+                    const totalLineWeightKg = Math.max(0, lotStock) * unitWeight;
                     const totalLineWeightTonnes = totalLineWeightKg / 1000;
 
                     return (
@@ -984,15 +1256,32 @@ export default function InventoryPage() {
                           {row.locationName}
                         </td>
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 text-right whitespace-nowrap font-mono font-extrabold text-slate-900">
-                          <span
-                            className={`rounded px-1.5 py-0.5 ${
-                              isLow
-                                ? "bg-rose-100 text-rose-800"
-                                : "bg-emerald-50 text-emerald-800"
-                            }`}
-                          >
-                            {row.available} {row.unit}
-                          </span>
+                          {isLotFiltered ? (
+                            <div className="flex flex-col items-end">
+                              <span
+                                className={`rounded px-1.5 py-0.5 ${
+                                  lotStock <= 0
+                                    ? "bg-rose-100 text-rose-800"
+                                    : "bg-amber-100 text-amber-900"
+                                }`}
+                              >
+                                {lotStock} {row.unit} <span className="text-[9px] font-sans font-normal">(Lot)</span>
+                              </span>
+                              <span className="text-[10px] text-slate-500 font-sans font-normal">
+                                Total: {row.available} {row.unit}
+                              </span>
+                            </div>
+                          ) : (
+                            <span
+                              className={`rounded px-1.5 py-0.5 ${
+                                isLow
+                                  ? "bg-rose-100 text-rose-800"
+                                  : "bg-emerald-50 text-emerald-800"
+                              }`}
+                            >
+                              {row.available} {row.unit}
+                            </span>
+                          )}
                         </td>
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 text-right whitespace-nowrap font-mono text-slate-600">
                           {unitWeight.toFixed(3)}
@@ -1006,15 +1295,23 @@ export default function InventoryPage() {
                         <td className="py-1 px-2 border-r border-slate-200/60 text-[11px] print:hidden">
                           {row.lots && row.lots.length > 0 ? (
                             <div className="flex flex-wrap gap-1 max-w-[280px]">
-                              {row.lots.map((lot, lIdx) => (
-                                <span
-                                  key={lot.id ?? `lot-${lIdx}`}
-                                  className="inline-flex items-center gap-1 rounded bg-blue-50 border border-blue-200/70 px-1.5 py-0.2 font-mono text-[10px] text-blue-900"
-                                >
-                                  <span>{lot.lotNumber}:</span>
-                                  <strong>{lot.available}</strong>
-                                </span>
-                              ))}
+                              {row.lots.map((lot, lIdx) => {
+                                const isSelected = selectedLotId === lot.id || (selectedLotId === "unassigned" && lot.id === null);
+                                return (
+                                  <span
+                                    key={lot.id ?? `lot-${lIdx}`}
+                                    className={cn(
+                                      "inline-flex items-center gap-1 rounded px-1.5 py-0.2 font-mono text-[10px]",
+                                      isSelected
+                                        ? "bg-amber-100 text-amber-950 border border-amber-400 font-bold ring-1 ring-amber-400"
+                                        : "bg-blue-50 border border-blue-200/70 text-blue-900"
+                                    )}
+                                  >
+                                    <span>{lot.lotNumber}:</span>
+                                    <strong>{lot.available}</strong>
+                                  </span>
+                                );
+                              })}
                             </div>
                           ) : (
                             <span className="text-slate-400 text-[10px] italic">Default lot</span>
@@ -1071,10 +1368,16 @@ export default function InventoryPage() {
         /* Cards View */
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {filteredRows.map((row) => {
-            const availableInPkts = row.unit === "REAM" ? row.available * 5 : row.unit === "SHEET" ? row.available / 100 : row.available;
+            const isLotFiltered = selectedLocationId !== "all" && selectedLocationLots.length > 1 && selectedLotId !== "all";
+            const lotStock = isLotFiltered
+              ? (selectedLotId === "unassigned"
+                  ? (row.lots?.find((l) => l.id === null)?.available ?? 0)
+                  : (row.lots?.find((l) => l.id === selectedLotId)?.available ?? 0))
+              : row.available;
+            const availableInPkts = row.unit === "REAM" ? lotStock * 5 : row.unit === "SHEET" ? lotStock / 100 : lotStock;
             const isLow = row.reorderLevel !== null && availableInPkts <= row.reorderLevel;
             const unitWeight = row.unit === "PACKET" ? (row.packetWeight || 0) : (row.reamWeight || 0);
-            const totalLineWeightKg = Math.max(0, row.available) * unitWeight;
+            const totalLineWeightKg = Math.max(0, lotStock) * unitWeight;
             const totalLineWeightTonnes = totalLineWeightKg / 1000;
 
             return (
@@ -1099,10 +1402,10 @@ export default function InventoryPage() {
                     </div>
                     <span
                       className={`rounded-md px-2 py-0.5 text-xs font-extrabold ${
-                        isLow ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"
+                        isLow ? "bg-rose-100 text-rose-800" : isLotFiltered ? "bg-amber-100 text-amber-900" : "bg-emerald-100 text-emerald-800"
                       }`}
                     >
-                      {row.available} {row.unit}
+                      {lotStock} {row.unit} {isLotFiltered && <span className="text-[10px] font-normal">(Lot)</span>}
                     </span>
                   </div>
 
@@ -1200,22 +1503,46 @@ export default function InventoryPage() {
             </div>
 
             <form onSubmit={handleAdjustment} className="mt-4 space-y-3 text-xs">
+              {adjError && (
+                <div className="rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700 font-medium flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                  <span>{adjError}</span>
+                </div>
+              )}
+
               <div className="space-y-1">
-                <Label htmlFor="adjprod" className="text-xs font-semibold">Product *</Label>
-                <select
-                  id="adjprod"
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="adjprod" className="text-xs font-semibold">Product *</Label>
+                  {productId && locationId && (
+                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700 border-slate-200">
+                      On hand:{" "}
+                      <strong className="text-slate-900 font-mono">
+                        {getProductStock(productId, locationId, warehouseLotId ? warehouseLotId : "")}
+                      </strong>{" "}
+                      {uniqueProducts.find((p) => p.id === productId)?.unit || "units"}
+                      {warehouseLotId && " (in lot)"}
+                    </span>
+                  )}
+                </div>
+                <SearchCombobox
+                  options={getProductOptionsForLocation(locationId)}
                   value={productId}
-                  onChange={(e) => setProductId(e.target.value)}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium"
+                  onChange={(val) => {
+                    setProductId(val);
+                    if (val && adjLocationLots.length > 0) {
+                      const stdStock = getProductStock(val, locationId, "");
+                      if (stdStock === 0) {
+                        const lotWithStock = adjLocationLots.find(
+                          (l) => getProductStock(val, locationId, l.id) > 0
+                        );
+                        if (lotWithStock) setWarehouseLotId(lotWithStock.id);
+                      }
+                    }
+                  }}
+                  placeholder="Type product no or name..."
+                  className="w-full text-xs font-medium"
                   required
-                >
-                  <option value="">Select product</option>
-                  {uniqueProducts.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.no} - {p.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
 
               <div className="space-y-1">
@@ -1243,7 +1570,7 @@ export default function InventoryPage() {
                   <div className="flex items-center justify-between">
                     <Label htmlFor="adjlot" className="text-xs font-semibold text-blue-900 flex items-center gap-1">
                       <Layers className="h-3 w-3 text-blue-600" />
-                      Warehouse Lot *
+                      Warehouse Lot
                     </Label>
                     <button
                       type="button"
@@ -1258,16 +1585,11 @@ export default function InventoryPage() {
                     </button>
                   </div>
                   <SearchCombobox
-                    options={adjLocationLots.map((lot) => ({
-                      id: lot.id,
-                      label: `${lot.lotNumber} ${lot.description ? `(${lot.description})` : ""}`,
-                      sublabel: `${lot.currentStock} on hand`,
-                    }))}
+                    options={getLotsForLocation(locationId, productId)}
                     value={warehouseLotId}
                     onChange={(val) => setWarehouseLotId(val)}
-                    placeholder="Select Lot"
+                    placeholder="Select Lot (or leave for Standard Stock)"
                     className="w-full text-xs font-mono font-medium"
-                    required
                   />
                 </div>
               )}
@@ -1354,22 +1676,53 @@ export default function InventoryPage() {
             </div>
 
             <form onSubmit={handleTransfer} className="mt-4 space-y-3 text-xs">
+              {trError && (
+                <div className="rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700 font-medium flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                  <span>{trError}</span>
+                </div>
+              )}
+
               <div className="space-y-1">
-                <Label htmlFor="trprod" className="text-xs font-semibold">Product *</Label>
-                <select
-                  id="trprod"
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="trprod" className="text-xs font-semibold">Product *</Label>
+                  {transferProductId && fromLocationId && (
+                    <span className={cn(
+                      "text-[11px] font-semibold px-2 py-0.5 rounded-full border",
+                      getProductStock(transferProductId, fromLocationId, fromWarehouseLotId ? fromWarehouseLotId : "") > 0
+                        ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                        : "bg-rose-50 text-rose-800 border-rose-200"
+                    )}>
+                      Available in {locations.find((l) => l.id === fromLocationId)?.name || "Source"}:{" "}
+                      <strong className="font-mono">
+                        {getProductStock(transferProductId, fromLocationId, fromWarehouseLotId ? fromWarehouseLotId : "")}
+                      </strong>{" "}
+                      {uniqueProducts.find((p) => p.id === transferProductId)?.unit || "pkts"}
+                      {fromWarehouseLotId && " (in lot)"}
+                    </span>
+                  )}
+                </div>
+                <SearchCombobox
+                  options={getProductOptionsForLocation(fromLocationId)}
                   value={transferProductId}
-                  onChange={(e) => setTransferProductId(e.target.value)}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium"
+                  onChange={(val) => {
+                    setTransferProductId(val);
+                    if (val && fromLocationLots.length > 0) {
+                      const stdStock = getProductStock(val, fromLocationId, "");
+                      if (stdStock === 0) {
+                        const lotWithStock = fromLocationLots.find(
+                          (l) => getProductStock(val, fromLocationId, l.id) > 0
+                        );
+                        setFromWarehouseLotId(lotWithStock ? lotWithStock.id : "");
+                      } else {
+                        setFromWarehouseLotId("");
+                      }
+                    }
+                  }}
+                  placeholder="Type product no or name..."
+                  className="w-full text-xs font-medium"
                   required
-                >
-                  <option value="">Select product</option>
-                  {uniqueProducts.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.no} - {p.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
@@ -1397,7 +1750,7 @@ export default function InventoryPage() {
                       <div className="flex items-center justify-between">
                         <Label htmlFor="fromlot" className="text-[10px] font-bold text-amber-900 flex items-center gap-1">
                           <Layers className="h-2.5 w-2.5 text-amber-600" />
-                          Source Lot *
+                          Source Lot
                         </Label>
                         <button
                           type="button"
@@ -1412,16 +1765,11 @@ export default function InventoryPage() {
                         </button>
                       </div>
                       <SearchCombobox
-                        options={fromLocationLots.map((l) => ({
-                          id: l.id,
-                          label: l.lotNumber,
-                          sublabel: `${l.currentStock} on hand`,
-                        }))}
+                        options={getLotsForLocation(fromLocationId, transferProductId)}
                         value={fromWarehouseLotId}
                         onChange={(val) => setFromWarehouseLotId(val)}
-                        placeholder="Select Lot"
+                        placeholder="Select Lot (or leave for Standard Stock)"
                         className="w-full text-[11px] font-mono font-medium"
-                        required
                       />
                     </div>
                   )}
@@ -1451,7 +1799,7 @@ export default function InventoryPage() {
                       <div className="flex items-center justify-between">
                         <Label htmlFor="tolot" className="text-[10px] font-bold text-amber-900 flex items-center gap-1">
                           <Layers className="h-2.5 w-2.5 text-amber-600" />
-                          Dest Lot *
+                          Dest Lot
                         </Label>
                         <button
                           type="button"
@@ -1466,16 +1814,11 @@ export default function InventoryPage() {
                         </button>
                       </div>
                       <SearchCombobox
-                        options={toLocationLots.map((l) => ({
-                          id: l.id,
-                          label: l.lotNumber,
-                          sublabel: `${l.currentStock} on hand`,
-                        }))}
+                        options={getLotsForLocation(toLocationId, transferProductId)}
                         value={toWarehouseLotId}
                         onChange={(val) => setToWarehouseLotId(val)}
-                        placeholder="Select Lot"
+                        placeholder="Select Lot (or leave for Standard Stock)"
                         className="w-full text-[11px] font-mono font-medium"
-                        required
                       />
                     </div>
                   )}
@@ -1483,7 +1826,14 @@ export default function InventoryPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="trqty" className="text-xs font-semibold">Quantity *</Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="trqty" className="text-xs font-semibold">Quantity *</Label>
+                  {transferProductId && fromLocationId && transferQuantity > getProductStock(transferProductId, fromLocationId, fromWarehouseLotId || undefined) && (
+                    <span className="text-[10px] text-rose-600 font-semibold">
+                      Exceeds available stock ({getProductStock(transferProductId, fromLocationId, fromWarehouseLotId || undefined)})
+                    </span>
+                  )}
+                </div>
                 <Input
                   id="trqty"
                   type="number"
@@ -1491,7 +1841,12 @@ export default function InventoryPage() {
                   step="any"
                   value={transferQuantity}
                   onChange={(e) => setTransferQuantity(parseFloat(e.target.value) || 0)}
-                  className="h-8 text-xs"
+                  className={cn(
+                    "h-8 text-xs",
+                    transferProductId && fromLocationId && transferQuantity > getProductStock(transferProductId, fromLocationId, fromWarehouseLotId || undefined)
+                      ? "border-rose-400 focus-visible:ring-rose-400 text-rose-700"
+                      : ""
+                  )}
                   required
                 />
               </div>
@@ -1546,14 +1901,29 @@ export default function InventoryPage() {
               </div>
               <button
                 type="button"
-                onClick={() => setShowBulkAdjustModal(false)}
+                onClick={closeBulkAdjustModal}
                 className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <form onSubmit={handleBulkAdjustment} className="mt-4 space-y-4">
+            <form
+              onSubmit={handleBulkAdjustment}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "BUTTON") {
+                  e.preventDefault();
+                }
+              }}
+              className="mt-4 space-y-4"
+            >
+              {bulkAdjError && (
+                <div className="rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700 font-medium flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                  <span>{bulkAdjError}</span>
+                </div>
+              )}
+
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1">
                   <Label htmlFor="bulkAdjLoc" className="text-xs font-semibold">
@@ -1608,10 +1978,20 @@ export default function InventoryPage() {
                   </Button>
                 </div>
 
+                <div className="hidden sm:grid gap-2 px-2.5 py-1 text-[11px] font-bold text-slate-500 uppercase tracking-wider sm:grid-cols-[1.5fr_1.2fr_1.2fr_90px_100px_1fr_36px]">
+                  <span>Product *</span>
+                  <span>Location</span>
+                  <span>Lot</span>
+                  <span className="text-right">Quantity *</span>
+                  <span>Direction</span>
+                  <span>Notes</span>
+                  <span></span>
+                </div>
+
                 <div className="space-y-2.5">
                   {bulkAdjItems.map((item, idx) => {
                     const rowLocId = item.locationId || bulkAdjLocationId;
-                    const rowLots = rowLocId ? getLotsForLocation(rowLocId) : [];
+                    const rowLots = rowLocId ? getLotsForLocation(rowLocId, item.productId) : [];
                     const rowLocObj = locations.find((l) => l.id === rowLocId);
                     const isWarehouse = rowLocObj?.type === "WAREHOUSE" || rowLots.length > 1;
 
@@ -1620,21 +2000,43 @@ export default function InventoryPage() {
                         key={idx}
                         className="grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50 sm:grid-cols-[1.5fr_1.2fr_1.2fr_90px_100px_1fr_36px]"
                       >
-                        <div>
+                        <div data-bulk-adj={`${idx}-prod`}>
                           <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Product</Label>
-                          <select
+                          <SearchCombobox
+                            options={getProductOptionsForLocation(rowLocId)}
                             value={item.productId}
-                            onChange={(e) => updateBulkAdjItem(idx, "productId", e.target.value)}
-                            className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+                            onChange={(val) => {
+                              updateBulkAdjItem(idx, "productId", val);
+                              if (val) {
+                                const lots = getLotsForLocation(rowLocId, val);
+                                if (lots.length > 1) {
+                                  const stdStock = getProductStock(val, rowLocId, "");
+                                  if (stdStock === 0) {
+                                    const lotWithStock = allLots.filter((l) => l.locationId === rowLocId).find((l) => getProductStock(val, rowLocId, l.id) > 0);
+                                    if (lotWithStock) updateBulkAdjItem(idx, "warehouseLotId", lotWithStock.id);
+                                  }
+                                }
+                              }
+                            }}
+                            onEnterPress={() => {
+                              const nextEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${idx}-qty"]`);
+                              if (nextEl) {
+                                nextEl.focus();
+                                if (nextEl instanceof HTMLInputElement) nextEl.select();
+                              }
+                            }}
+                            placeholder="Type product no or name..."
+                            className="w-full text-xs"
                             required
-                          >
-                            <option value="">Select product</option>
-                            {uniqueProducts.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.no} - {p.name}
-                              </option>
-                            ))}
-                          </select>
+                          />
+                          {item.productId && (
+                            <div className="mt-0.5 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                              <span>On hand:</span>
+                              <span className="font-bold text-slate-700">
+                                {getProductStock(item.productId, rowLocId, item.warehouseLotId ? item.warehouseLotId : "")} pkts
+                              </span>
+                            </div>
+                          )}
                         </div>
 
                         <div>
@@ -1646,17 +2048,28 @@ export default function InventoryPage() {
                               updateBulkAdjItem(idx, "locationId", val);
                               updateBulkAdjItem(idx, "warehouseLotId", "");
                             }}
+                            onEnterPress={() => {
+                              const nextEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${idx}-lot"] input, [data-bulk-adj="${idx}-qty"]`);
+                              nextEl?.focus();
+                            }}
                             placeholder="Select location"
                             className="w-full text-xs"
                           />
                         </div>
 
-                        <div>
+                        <div data-bulk-adj={`${idx}-lot`}>
                           <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Lot</Label>
                           <SearchCombobox
                             options={rowLots}
                             value={item.warehouseLotId || ""}
                             onChange={(val) => updateBulkAdjItem(idx, "warehouseLotId", val)}
+                            onEnterPress={() => {
+                              const nextEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${idx}-qty"]`);
+                              if (nextEl) {
+                                nextEl.focus();
+                                if (nextEl instanceof HTMLInputElement) nextEl.select();
+                              }
+                            }}
                             placeholder={isWarehouse ? "Select lot" : "No lot"}
                             disabled={rowLots.length <= 1}
                             className="w-full text-xs font-mono"
@@ -1666,11 +2079,13 @@ export default function InventoryPage() {
                         <div>
                           <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Quantity</Label>
                           <Input
+                            data-bulk-adj={`${idx}-qty`}
                             type="number"
                             min="0.0001"
                             step="any"
                             value={item.quantity}
                             onChange={(e) => updateBulkAdjItem(idx, "quantity", parseFloat(e.target.value) || 0)}
+                            onKeyDown={(e) => handleBulkAdjRowKeyDown(e, idx, "qty")}
                             className="h-8 text-xs text-right"
                             placeholder="Qty"
                             required
@@ -1680,8 +2095,10 @@ export default function InventoryPage() {
                         <div>
                           <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Direction</Label>
                           <select
+                            data-bulk-adj={`${idx}-dir`}
                             value={item.direction}
                             onChange={(e) => updateBulkAdjItem(idx, "direction", e.target.value as "IN" | "OUT")}
+                            onKeyDown={(e) => handleBulkAdjRowKeyDown(e, idx, "dir")}
                             className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium"
                           >
                             <option value="IN">+ Increase</option>
@@ -1692,8 +2109,10 @@ export default function InventoryPage() {
                         <div>
                           <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Notes</Label>
                           <Input
+                            data-bulk-adj={`${idx}-notes`}
                             value={item.notes || ""}
                             onChange={(e) => updateBulkAdjItem(idx, "notes", e.target.value)}
+                            onKeyDown={(e) => handleBulkAdjRowKeyDown(e, idx, "notes")}
                             placeholder="Item note (optional)"
                             className="h-8 text-xs"
                           />
@@ -1719,7 +2138,7 @@ export default function InventoryPage() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setShowBulkAdjustModal(false)}
+                  onClick={closeBulkAdjustModal}
                   className="text-xs"
                 >
                   Cancel
@@ -1753,14 +2172,28 @@ export default function InventoryPage() {
               </div>
               <button
                 type="button"
-                onClick={() => setShowBulkTransferModal(false)}
+                onClick={closeBulkTransferModal}
                 className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <form onSubmit={handleBulkTransfer} className="mt-4 space-y-4">
+            <form
+              onSubmit={handleBulkTransfer}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "BUTTON") {
+                  e.preventDefault();
+                }
+              }}
+              className="mt-4 space-y-4"
+            >
+              {bulkTrError && (
+                <div className="rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700 font-medium flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                  <span>{bulkTrError}</span>
+                </div>
+              )}
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="space-y-1">
                   <Label htmlFor="bulkTrFrom" className="text-xs font-semibold text-rose-800">
@@ -1770,8 +2203,24 @@ export default function InventoryPage() {
                     id="bulkTrFrom"
                     value={bulkTrFromLocationId}
                     onChange={(e) => {
-                      setBulkTrFromLocationId(e.target.value);
-                      setBulkTrItems((prev) => prev.map((it) => ({ ...it, fromWarehouseLotId: "" })));
+                      const newFromId = e.target.value;
+                      setBulkTrFromLocationId(newFromId);
+                      setBulkTrItems((prev) =>
+                        prev.map((it) => {
+                          const fromLots = allLots.filter((l) => l.locationId === newFromId);
+                          let autoLot = "";
+                          if (fromLots.length > 0 && it.productId) {
+                            const stdStock = getProductStock(it.productId, newFromId, "");
+                            if (stdStock === 0) {
+                              const firstLotWithStock = fromLots.find(
+                                (l) => getProductStock(it.productId, newFromId, l.id) > 0,
+                              );
+                              if (firstLotWithStock) autoLot = firstLotWithStock.id;
+                            }
+                          }
+                          return { ...it, fromWarehouseLotId: autoLot };
+                        }),
+                      );
                     }}
                     className="w-full rounded-md border border-rose-200 bg-rose-50/30 px-3 py-2 text-xs font-medium"
                     required
@@ -1839,124 +2288,160 @@ export default function InventoryPage() {
                   </Button>
                 </div>
 
+                <div
+                  className={cn(
+                    "hidden sm:grid gap-2 px-2.5 py-1 text-[11px] font-bold text-slate-500 uppercase tracking-wider",
+                    bulkTrFromLots.length > 0 && bulkTrToLots.length > 0
+                      ? "sm:grid-cols-[1fr_140px_140px_90px_36px]"
+                      : bulkTrFromLots.length > 0 || bulkTrToLots.length > 0
+                      ? "sm:grid-cols-[1fr_150px_90px_36px]"
+                      : "sm:grid-cols-[1fr_110px_36px]"
+                  )}
+                >
+                  <span>Product * (with stock)</span>
+                  {bulkTrFromLots.length > 0 && <span>Source Lot</span>}
+                  {bulkTrToLots.length > 0 && <span>Dest Lot</span>}
+                  <span className="text-right">Quantity *</span>
+                  <span></span>
+                </div>
+
                 <div className="space-y-2.5">
-                  {bulkTrItems.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className={cn(
-                        "grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50",
-                        bulkTrFromLots.length > 0 && bulkTrToLots.length > 0
-                          ? "sm:grid-cols-[1fr_130px_130px_90px_36px]"
-                          : bulkTrFromLots.length > 0 || bulkTrToLots.length > 0
-                          ? "sm:grid-cols-[1fr_150px_90px_36px]"
-                          : "sm:grid-cols-[1fr_110px_36px]"
-                      )}
-                    >
-                      <div>
-                        <select
-                          value={item.productId}
-                          onChange={(e) => updateBulkTrItem(idx, "productId", e.target.value)}
-                          className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
-                          required
-                        >
-                          <option value="">Select product</option>
-                          {uniqueProducts.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.no} - {p.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                  {bulkTrItems.map((item, idx) => {
+                    const rowAvailStock = getProductStock(
+                      item.productId,
+                      bulkTrFromLocationId,
+                      item.fromWarehouseLotId ? item.fromWarehouseLotId : ""
+                    );
+                    const rowLotsFrom = getLotsForLocation(bulkTrFromLocationId, item.productId);
+                    const rowLotsTo = getLotsForLocation(bulkTrToLocationId, item.productId);
 
-                      {bulkTrFromLots.length > 0 && (
-                        <div className="flex items-center gap-1">
-                          <SearchCombobox
-                            options={[
-                              { id: "", label: "From: Default" },
-                              ...bulkTrFromLots.map((lot) => ({
-                                id: lot.id,
-                                label: lot.lotNumber,
-                                sublabel: `${lot.currentStock} pkts`,
-                              })),
-                            ]}
-                            value={item.fromWarehouseLotId || ""}
-                            onChange={(val) => updateBulkTrItem(idx, "fromWarehouseLotId", val)}
-                            placeholder="From Lot"
-                            className="w-full text-xs font-mono"
-                          />
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            title="Quick add source lot"
-                            onClick={() => {
-                              setQuickLotLocationId(bulkTrFromLocationId);
-                              setQuickLotTarget({ type: "bulk-from", itemIndex: idx });
-                              setShowQuickLotModal(true);
-                            }}
-                            className="h-7 w-7 shrink-0 p-0 text-amber-700 hover:bg-amber-100"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      )}
-
-                      {bulkTrToLots.length > 0 && (
-                        <div className="flex items-center gap-1">
-                          <SearchCombobox
-                            options={[
-                              { id: "", label: "To: Default" },
-                              ...bulkTrToLots.map((lot) => ({
-                                id: lot.id,
-                                label: lot.lotNumber,
-                                sublabel: `${lot.currentStock} pkts`,
-                              })),
-                            ]}
-                            value={item.toWarehouseLotId || ""}
-                            onChange={(val) => updateBulkTrItem(idx, "toWarehouseLotId", val)}
-                            placeholder="To Lot"
-                            className="w-full text-xs font-mono"
-                          />
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            title="Quick add destination lot"
-                            onClick={() => {
-                              setQuickLotLocationId(bulkTrToLocationId);
-                              setQuickLotTarget({ type: "bulk-to", itemIndex: idx });
-                              setShowQuickLotModal(true);
-                            }}
-                            className="h-7 w-7 shrink-0 p-0 text-emerald-700 hover:bg-emerald-100"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      )}
-
-                      <div>
-                        <Input
-                          type="number"
-                          min="0.0001"
-                          step="any"
-                          value={item.quantity}
-                          onChange={(e) => updateBulkTrItem(idx, "quantity", parseFloat(e.target.value) || 0)}
-                          className="h-8 text-xs text-right"
-                          placeholder="Qty"
-                          required
-                        />
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => removeBulkTrItem(idx)}
-                        disabled={bulkTrItems.length <= 1}
-                        className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:text-rose-600 disabled:opacity-30"
+                    return (
+                      <div
+                        key={idx}
+                        className={cn(
+                          "grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50",
+                          bulkTrFromLots.length > 0 && bulkTrToLots.length > 0
+                            ? "sm:grid-cols-[1fr_140px_140px_90px_36px]"
+                            : bulkTrFromLots.length > 0 || bulkTrToLots.length > 0
+                            ? "sm:grid-cols-[1fr_150px_90px_36px]"
+                            : "sm:grid-cols-[1fr_110px_36px]"
+                        )}
                       >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Product</Label>
+                          <SearchCombobox
+                            options={getProductOptionsForLocation(bulkTrFromLocationId)}
+                            value={item.productId}
+                            onChange={(val) => {
+                              updateBulkTrItem(idx, "productId", val);
+                            }}
+                            placeholder="Type product no or name..."
+                            className="w-full text-xs"
+                            required
+                          />
+                          {item.productId && bulkTrFromLocationId && (
+                            <div className="mt-0.5 flex items-center justify-between text-[10px]">
+                              <span className="text-slate-500">Available:</span>
+                              <span className={cn(
+                                "font-mono font-bold px-1.5 py-0.2 rounded",
+                                rowAvailStock > 0
+                                  ? "bg-emerald-50 text-emerald-800"
+                                  : "bg-rose-50 text-rose-800"
+                              )}>
+                                {rowAvailStock} pkts
+                                {item.fromWarehouseLotId ? " (in lot)" : ""}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {bulkTrFromLots.length > 0 && (
+                          <div className="flex items-center gap-1">
+                            <SearchCombobox
+                              options={rowLotsFrom}
+                              value={item.fromWarehouseLotId || ""}
+                              onChange={(val) => updateBulkTrItem(idx, "fromWarehouseLotId", val)}
+                              placeholder="From Lot"
+                              className="w-full text-xs font-mono"
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              title="Quick add source lot"
+                              onClick={() => {
+                                setQuickLotLocationId(bulkTrFromLocationId);
+                                setQuickLotTarget({ type: "bulk-from", itemIndex: idx });
+                                setShowQuickLotModal(true);
+                              }}
+                              className="h-7 w-7 shrink-0 p-0 text-amber-700 hover:bg-amber-100"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        )}
+
+                        {bulkTrToLots.length > 0 && (
+                          <div className="flex items-center gap-1">
+                            <SearchCombobox
+                              options={rowLotsTo}
+                              value={item.toWarehouseLotId || ""}
+                              onChange={(val) => updateBulkTrItem(idx, "toWarehouseLotId", val)}
+                              placeholder="To Lot"
+                              className="w-full text-xs font-mono"
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              title="Quick add destination lot"
+                              onClick={() => {
+                                setQuickLotLocationId(bulkTrToLocationId);
+                                setQuickLotTarget({ type: "bulk-to", itemIndex: idx });
+                                setShowQuickLotModal(true);
+                              }}
+                              className="h-7 w-7 shrink-0 p-0 text-emerald-700 hover:bg-emerald-100"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        )}
+
+                        <div>
+                          <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Quantity</Label>
+                          <Input
+                            type="number"
+                            min="0.0001"
+                            step="any"
+                            value={item.quantity}
+                            onChange={(e) => updateBulkTrItem(idx, "quantity", parseFloat(e.target.value) || 0)}
+                            className={cn(
+                              "h-8 text-xs text-right",
+                              item.productId && bulkTrFromLocationId && item.quantity > rowAvailStock
+                                ? "border-rose-400 focus-visible:ring-rose-400 text-rose-700 font-bold"
+                                : ""
+                            )}
+                            placeholder="Qty"
+                            required
+                          />
+                          {item.productId && bulkTrFromLocationId && item.quantity > rowAvailStock && (
+                            <div className="text-[9px] text-rose-600 font-semibold mt-0.5 text-right">
+                              Exceeds avail ({rowAvailStock})
+                            </div>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => removeBulkTrItem(idx)}
+                          disabled={bulkTrItems.length <= 1}
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:text-rose-600 disabled:opacity-30"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1964,7 +2449,7 @@ export default function InventoryPage() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setShowBulkTransferModal(false)}
+                  onClick={closeBulkTransferModal}
                   className="text-xs"
                 >
                   Cancel

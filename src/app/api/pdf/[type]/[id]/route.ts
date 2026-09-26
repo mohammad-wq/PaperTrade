@@ -12,6 +12,13 @@ import { formatSequenceDisplay } from "@/lib/financial-year";
 
 export const dynamic = "force-dynamic";
 
+const toNumber = (value: unknown, fallback = 0) => {
+  const numeric = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isFinite(numeric) ? numeric : fallback;
+};
+
+const toItemNumber = (value: unknown, fallback = 0) => toNumber(value, fallback);
+
 const ALLOWED_DOC_TYPES = new Set([
   "sale-invoice",
   "purchase-order",
@@ -20,6 +27,7 @@ const ALLOWED_DOC_TYPES = new Set([
   "sale-return",
   "purchase-return",
   "payment-receipt",
+  "payment",
 ]);
 
 export async function GET(
@@ -109,18 +117,18 @@ export async function GET(
         partyPhone: invoice.customer?.phone || null,
         locationName: invoice.location?.name || "Shop",
         referenceNo: invoice.deliveryOrder ? `DO: ${invoice.deliveryOrder.doNo}` : null,
-        totalAmount: Number(invoice.totalAmount || 0),
-        amountPaid: Number(invoice.amountPaid || 0),
-        freightCharges: Number(invoice.freightCharges || 0),
+        totalAmount: toNumber(invoice.totalAmount),
+        amountPaid: toNumber(invoice.amountPaid),
+        freightCharges: toNumber(invoice.freightCharges),
         notes: invoice.notes,
         signatures: { leftLabel: "Prepared By", rightLabel: "Authorized Signature" },
         items: invoice.items.map((item) => ({
           name: formatProductName(item.product),
           specs: formatSpecs(item.product),
-          quantity: Number(item.quantity || 0),
+          quantity: toItemNumber(item.quantity),
           unit: item.product?.unit || "Unit",
-          unitPrice: Number(item.unitPrice || 0),
-          lineTotal: Number(item.lineTotal || 0),
+          unitPrice: toItemNumber(item.unitPrice),
+          lineTotal: toItemNumber(item.lineTotal, toItemNumber(item.quantity) * toItemNumber(item.unitPrice)),
         })),
       });
     } else if (type === "purchase-order") {
@@ -139,7 +147,7 @@ export async function GET(
       }
 
       filename = `PO-${po.orderNo}.pdf`;
-      const totalAmount = po.items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
+      const totalAmount = po.items.reduce((sum, item) => sum + toItemNumber(item.lineTotal), 0);
 
       docElement = React.createElement(DocumentPdfView, {
         docType: "Purchase Order",
@@ -158,10 +166,10 @@ export async function GET(
         items: po.items.map((item) => ({
           name: formatProductName(item.product),
           specs: formatSpecs(item.product),
-          quantity: Number(item.quantity || 0),
+          quantity: toItemNumber(item.quantity),
           unit: item.product?.unit || "Unit",
-          unitPrice: Number(item.unitCost || 0),
-          lineTotal: Number(item.lineTotal || 0),
+          unitPrice: toItemNumber(item.unitCost),
+          lineTotal: toItemNumber(item.lineTotal, toItemNumber(item.quantity) * toItemNumber(item.unitCost)),
         })),
       });
     } else if (type === "delivery-order") {
@@ -209,7 +217,7 @@ export async function GET(
             name: formatProductName(item.product),
             specs: baseSpecs,
             lot: lotLabel,
-            quantity: Number(item.quantity || 0),
+            quantity: toItemNumber(item.quantity),
             unit: item.unit,
           };
         }),
@@ -243,9 +251,9 @@ export async function GET(
         partyPhone: invoice.supplier?.phone || null,
         locationName: invoice.location?.name || "Warehouse",
         referenceNo: invoice.purchaseOrder ? `PO: ${invoice.purchaseOrder.orderNo}` : null,
-        totalAmount: Number(invoice.totalAmount || 0),
-        amountPaid: Number(invoice.amountPaid || 0),
-        freightCharges: Number(invoice.freightCharges || 0),
+        totalAmount: toNumber(invoice.totalAmount),
+        amountPaid: toNumber(invoice.amountPaid),
+        freightCharges: toNumber(invoice.freightCharges),
         notes: invoice.notes,
         signatures: { leftLabel: "Received By", rightLabel: "Verified By" },
         items: invoice.items.map((item) => {
@@ -255,10 +263,10 @@ export async function GET(
           return {
             name: formatProductName(item.product),
             specs,
-            quantity: Number(item.quantity || 0),
+            quantity: toItemNumber(item.quantity),
             unit: item.product?.unit || "Unit",
-            unitPrice: Number(item.unitCost || 0),
-            lineTotal: Number(item.lineTotal || 0),
+            unitPrice: toItemNumber(item.unitCost),
+            lineTotal: toItemNumber(item.lineTotal, toItemNumber(item.quantity) * toItemNumber(item.unitCost)),
           };
         }),
       });
@@ -290,16 +298,16 @@ export async function GET(
         partyAddress: sReturn.customer?.address || null,
         locationName: sReturn.location?.name || "Shop",
         referenceNo: sReturn.saleInvoice ? `Original Invoice: ${sReturn.saleInvoice.invoiceNo}` : null,
-        totalAmount: Number(sReturn.totalAmount || 0),
+        totalAmount: toNumber(sReturn.totalAmount),
         notes: `Reason: ${sReturn.reason}`,
         signatures: { leftLabel: "Returned By", rightLabel: "Approved By" },
         items: sReturn.items.map((item) => ({
           name: formatProductName(item.product),
           specs: formatSpecs(item.product),
-          quantity: Number(item.quantity || 0),
+          quantity: toItemNumber(item.quantity),
           unit: item.product?.unit || "Unit",
-          unitPrice: Number(item.unitPrice || 0),
-          lineTotal: Number(item.lineTotal || 0),
+          unitPrice: toItemNumber(item.unitPrice),
+          lineTotal: toItemNumber(item.lineTotal, toItemNumber(item.quantity) * toItemNumber(item.unitPrice)),
         })),
       });
     } else if (type === "purchase-return") {
@@ -330,19 +338,19 @@ export async function GET(
         partyAddress: pReturn.supplier?.address || null,
         locationName: pReturn.location?.name || "Warehouse",
         referenceNo: pReturn.purchaseInvoice ? `Original Purchase: ${pReturn.purchaseInvoice.invoiceNo}` : null,
-        totalAmount: Number(pReturn.totalAmount || 0),
+        totalAmount: toNumber(pReturn.totalAmount),
         notes: `Reason: ${pReturn.reason}`,
         signatures: { leftLabel: "Returned By", rightLabel: "Supplier Acceptance" },
         items: pReturn.items.map((item) => ({
           name: formatProductName(item.product),
           specs: formatSpecs(item.product),
-          quantity: Number(item.quantity || 0),
+          quantity: toItemNumber(item.quantity),
           unit: item.product?.unit || "Unit",
-          unitPrice: Number(item.unitCost || 0),
-          lineTotal: Number(item.lineTotal || 0),
+          unitPrice: toItemNumber(item.unitCost),
+          lineTotal: toItemNumber(item.lineTotal, toItemNumber(item.quantity) * toItemNumber(item.unitCost)),
         })),
       });
-    } else if (type === "payment-receipt") {
+    } else if (type === "payment-receipt" || type === "payment") {
       const payment = await prisma.payment.findUnique({
         where: { id },
         include: {
@@ -371,8 +379,8 @@ export async function GET(
         partyType: payment.party?.type || "CUSTOMER",
         partyPhone: payment.party?.phone || null,
         partyAddress: payment.party?.address || null,
-        amount: Number(payment.amount || 0),
-        remainingBalance: payment.remainingBalance ? Number(payment.remainingBalance) : null,
+        amount: toNumber(payment.amount),
+        remainingBalance: payment.remainingBalance != null ? toNumber(payment.remainingBalance) : null,
         method: payment.method,
         notes: payment.notes,
         invoiceNo: payment.saleInvoice
@@ -383,7 +391,7 @@ export async function GET(
         createdByName: payment.createdBy?.name || "Accounts Dept",
         splits: payment.splits?.map((s) => ({
           method: s.method,
-          amount: Number(s.amount),
+          amount: toNumber(s.amount),
           reference: s.reference || null,
         })),
       });
@@ -402,6 +410,7 @@ export async function GET(
         "Content-Type": "application/pdf",
         "Content-Disposition": `${disposition}; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
         "Cache-Control": "private, max-age=3600",
+        "X-Content-Type-Options": "nosniff",
       },
     });
   } catch (error) {

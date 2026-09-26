@@ -42,7 +42,7 @@ import { listProductsAction } from "@/actions/products";
 import { listLocationsAction } from "@/actions/locations";
 import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
 import { format } from "date-fns";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, getLocalDateTimeInputValue } from "@/lib/utils";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
@@ -108,6 +108,7 @@ type StockInfo = {
   productId: string;
   locationId: string;
   available: number;
+  lots?: Array<{ id: string | null; lotNumber: string; available: number }>;
 };
 
 type CommittedLineItem = {
@@ -136,8 +137,8 @@ export default function SalesPage() {
   const [warehouseLots, setWarehouseLots] = useState<WarehouseLotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("OPEN");
-  const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
+  const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("ALL");
+  const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("ALL");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   // Form state - Header
@@ -148,7 +149,7 @@ export default function SalesPage() {
   const [walkInAddress, setWalkInAddress] = useState("");
   const [saveCustomer, setSaveCustomer] = useState(false);
   const [locationId, setLocationId] = useState("");
-  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 16));
+  const [invoiceDate, setInvoiceDate] = useState(getLocalDateTimeInputValue());
   const [notes, setNotes] = useState("");
 
   // Pattern 3: Line Items Table State
@@ -352,9 +353,19 @@ export default function SalesPage() {
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [isDialogOpen]);
 
-  function getAvailableStock(prodId: string, locId: string) {
+  function getAvailableStock(prodId: string, locId?: string, lotId?: string) {
+    if (!locId) {
+      return inventory
+        .filter((i) => i.productId === prodId)
+        .reduce((sum, i) => sum + i.available, 0);
+    }
     const found = inventory.find((i) => i.productId === prodId && i.locationId === locId);
-    return found ? found.available : 0;
+    if (!found) return 0;
+    if (lotId && found.lots && found.lots.length > 0) {
+      const lotItem = found.lots.find((l) => l.id === lotId);
+      return lotItem ? lotItem.available : 0;
+    }
+    return found.available;
   }
 
   const currentItemLocationId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
@@ -489,7 +500,7 @@ export default function SalesPage() {
     setWalkInAddress("");
     setCustomerId("");
     setNotes("");
-    setInvoiceDate(new Date().toISOString().slice(0, 16));
+    setInvoiceDate(getLocalDateTimeInputValue());
     setIsDialogOpen(true);
 
     setTimeout(() => {
@@ -513,7 +524,7 @@ export default function SalesPage() {
     }
     setLocationId(inv.location.id);
     setActiveItemLocationId(inv.location.id);
-    setInvoiceDate(new Date(inv.date).toISOString().slice(0, 16));
+    setInvoiceDate(getLocalDateTimeInputValue(inv.date));
     setNotes(inv.notes || "");
     setAmountPaid(String(inv.amountPaid || 0));
     setFreightCharges(String((inv as any).freightCharges || 0));
@@ -1675,8 +1686,24 @@ export default function SalesPage() {
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-600 dark:text-slate-400 font-sans">
                               {item.categoryName}
                             </td>
-                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right text-slate-600">
-                              {item.availableStock}
+                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right">
+                              {(() => {
+                                const liveStock = getAvailableStock(item.productId, item.locationId, item.warehouseLotId || undefined);
+                                return (
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${
+                                      liveStock >= item.quantity
+                                        ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                        : liveStock > 0
+                                        ? "bg-amber-50 text-amber-800 border border-amber-200"
+                                        : "bg-rose-50 text-rose-800 border border-rose-200"
+                                    }`}
+                                    title={`Available stock: ${liveStock} ${item.unit}`}
+                                  >
+                                    {liveStock} {item.unit}
+                                  </span>
+                                );
+                              })()}
                             </td>
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-center text-slate-600 text-[10px]">
                               {item.unit}
@@ -1751,9 +1778,10 @@ export default function SalesPage() {
                               className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md shadow-2xl max-h-56 overflow-y-auto font-sans text-xs ring-1 ring-black/5 dark:ring-white/10"
                             >
                               {typeaheadMatches.map((p, idx) => {
-                                const avail = (activeItemLocationId || locationId)
-                                  ? getAvailableStock(p.id, activeItemLocationId || locationId)
-                                  : 0;
+                                const targetLocId = activeItemLocationId || locationId;
+                                const locStock = targetLocId ? getAvailableStock(p.id, targetLocId) : null;
+                                const totalStock = getAvailableStock(p.id);
+                                const isSelected = idx === typeaheadIndex;
                                 return (
                                   <div
                                     key={p.id}
@@ -1762,7 +1790,7 @@ export default function SalesPage() {
                                       handleSelectProduct(p);
                                     }}
                                     className={`px-3 py-2 text-xs cursor-pointer flex items-center justify-between transition-colors border-b border-slate-100 dark:border-slate-800 last:border-b-0 ${
-                                      idx === typeaheadIndex
+                                      isSelected
                                         ? "bg-emerald-600 text-white"
                                         : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200"
                                     }`}
@@ -1770,8 +1798,22 @@ export default function SalesPage() {
                                     <div className="min-w-0 pr-2">
                                       <strong className="font-mono">{p.productNo}</strong> - {p.name}
                                     </div>
-                                    <div className="text-[10px] font-mono shrink-0 opacity-90">
-                                      Stock: {avail} {p.unit} | Rate: PKR {p.retailPrice}
+                                    <div className="flex items-center gap-2 text-[10px] font-mono shrink-0">
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded font-bold ${
+                                          (locStock ?? totalStock) > 0
+                                            ? isSelected
+                                              ? "bg-emerald-800 text-white"
+                                              : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                                            : isSelected
+                                            ? "bg-rose-800 text-white"
+                                            : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
+                                        }`}
+                                      >
+                                        Stock: {locStock !== null ? `${locStock}` : `${totalStock}`} {p.unit}
+                                        {locStock !== null && totalStock !== locStock ? ` (Total: ${totalStock})` : ""}
+                                      </span>
+                                      <span className={isSelected ? "text-emerald-100" : "opacity-90"}>PKR {p.retailPrice}</span>
                                     </div>
                                   </div>
                                 );
@@ -1847,15 +1889,31 @@ export default function SalesPage() {
                         {/* Available Stock (Live from Inventory) */}
                         <td className="py-1 px-2 border-r border-slate-200 dark:border-slate-700 text-right">
                           {matchedProduct ? (
-                            <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                getAvailableStock(matchedProduct.id, activeItemLocationId || locationId) > 0
-                                  ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                                  : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
-                              }`}
-                            >
-                              {getAvailableStock(matchedProduct.id, activeItemLocationId || locationId)} {matchedProduct.unit}
-                            </span>
+                            (() => {
+                              const targetLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
+                              const currentStock = getAvailableStock(matchedProduct.id, targetLocId, activeLotId || undefined);
+                              const totalStock = getAvailableStock(matchedProduct.id);
+                              return (
+                                <div className="flex flex-col items-end">
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                      currentStock > 0
+                                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                                        : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
+                                    }`}
+                                    title={activeLotId ? "Available in selected lot" : "Available in selected location"}
+                                  >
+                                    {currentStock} {matchedProduct.unit}
+                                    {activeLotId ? " (Lot)" : ""}
+                                  </span>
+                                  {totalStock !== currentStock && (
+                                    <span className="text-[9px] text-slate-400 font-sans">
+                                      Total: {totalStock} {matchedProduct.unit}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()
                           ) : (
                             "—"
                           )}

@@ -5,7 +5,7 @@ import { ConfirmDialog, ConfirmVariant } from "@/components/ui/confirm-dialog";
 
 export interface ConfirmOptions {
   title?: string;
-  description?: string;
+  description?: React.ReactNode;
   confirmText?: string;
   cancelText?: string | null;
   variant?: ConfirmVariant;
@@ -20,7 +20,7 @@ export interface AlertOptions {
 export interface ConfirmContextType {
   (options: string | ConfirmOptions): Promise<boolean>;
   confirm: (options: string | ConfirmOptions) => Promise<boolean>;
-  alert: (message: string, options?: AlertOptions) => Promise<void>;
+  alert: (message: any, options?: AlertOptions) => Promise<void>;
 }
 
 const ConfirmContext = createContext<ConfirmContextType | null>(null);
@@ -29,7 +29,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [dialogConfig, setDialogConfig] = useState<{
     title: string;
-    description?: string;
+    description?: React.ReactNode;
     confirmText?: string;
     cancelText?: string | null;
     variant?: ConfirmVariant;
@@ -53,7 +53,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
     return new Promise<boolean>((resolve) => {
       resolverRef.current = resolve;
 
-      if (typeof options === "string") {
+      if (typeof options === "string" || React.isValidElement(options)) {
         setDialogConfig({
           title: "Confirmation",
           description: options,
@@ -62,9 +62,21 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
           variant: "default",
         });
       } else {
+        let desc: React.ReactNode = options.description;
+        if (typeof desc === "object" && desc !== null && !React.isValidElement(desc)) {
+          if (desc instanceof Error) {
+            desc = desc.message;
+          } else {
+            try {
+              desc = JSON.stringify(desc);
+            } catch {
+              desc = String(desc);
+            }
+          }
+        }
         setDialogConfig({
           title: options.title || "Confirmation",
-          description: options.description || "",
+          description: desc,
           confirmText: options.confirmText ?? "Confirm",
           cancelText: options.cancelText !== undefined ? options.cancelText : "Cancel",
           variant: options.variant ?? "default",
@@ -76,10 +88,22 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const alert = useCallback(
-    async (message: string, options?: AlertOptions): Promise<void> => {
+    async (message: any, options?: AlertOptions): Promise<void> => {
+      let desc: React.ReactNode = message;
+      if (typeof desc === "object" && desc !== null && !React.isValidElement(desc)) {
+        if (desc instanceof Error) {
+          desc = desc.message;
+        } else {
+          try {
+            desc = JSON.stringify(desc);
+          } catch {
+            desc = String(desc);
+          }
+        }
+      }
       await confirm({
         title: options?.title || "Notice",
-        description: message,
+        description: desc,
         confirmText: options?.confirmText ?? "OK",
         cancelText: null, // hides Cancel button
         variant: options?.variant ?? "default",
@@ -91,24 +115,31 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   const handleConfirm = useCallback(() => {
     setOpen(false);
     if (resolverRef.current) {
-      resolverRef.current(true);
+      const resolve = resolverRef.current;
       resolverRef.current = null;
+      resolve(true);
     }
   }, []);
 
   const handleCancel = useCallback(() => {
     setOpen(false);
     if (resolverRef.current) {
-      resolverRef.current(false);
+      const resolve = resolverRef.current;
       resolverRef.current = null;
+      resolve(false);
     }
   }, []);
 
   const handleOpenChange = useCallback((isOpen: boolean) => {
     if (!isOpen) {
-      handleCancel();
+      if (resolverRef.current) {
+        const resolve = resolverRef.current;
+        resolverRef.current = null;
+        resolve(false);
+      }
+      setOpen(false);
     }
-  }, [handleCancel]);
+  }, []);
 
   // Construct callable confirm function with attached methods
   const contextValue = Object.assign(

@@ -43,5 +43,13 @@ if (fs.existsSync(standaloneDir)) {
     fs.cpSync(pdfkitSrc, pdfkitDest, { recursive: true });
     console.log("[standalone] Successfully copied node_modules/pdfkit to .next/standalone/node_modules/pdfkit");
   }
+
+  const reactPdfSrc = path.join(rootDir, "node_modules", "@react-pdf");
+  const reactPdfDest = path.join(standaloneDir, "node_modules", "@react-pdf");
+  if (fs.existsSync(reactPdfSrc)) {
+    fs.mkdirSync(reactPdfDest, { recursive: true });
+    fs.cpSync(reactPdfSrc, reactPdfDest, { recursive: true });
+    console.log("[standalone] Successfully copied node_modules/@react-pdf to .next/standalone/node_modules/@react-pdf");
+  }
 }
 

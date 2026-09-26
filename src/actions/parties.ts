@@ -363,10 +363,6 @@ export async function adjustStockAction(raw: unknown) {
     });
     if (!location) throw userError("Location not found.");
 
-    if (location.warehouseLots.length > 0 && !input.warehouseLotId) {
-      throw userError(`Location "${location.name}" has lots defined. Please select a lot for this adjustment.`);
-    }
-
     if (input.warehouseLotId) {
       const lot = location.warehouseLots.find((l) => l.id === input.warehouseLotId);
       if (!lot) throw userError("Selected lot does not exist in this location.");
@@ -379,12 +375,13 @@ export async function adjustStockAction(raw: unknown) {
         input.productId,
         input.locationId,
         tx,
-        input.warehouseLotId || undefined,
+        input.warehouseLotId ? input.warehouseLotId : null,
       );
       const desired = input.direction === "OUT" ? currentStock - input.quantity : currentStock + input.quantity;
 
       if (input.direction === "OUT" && currentStock < input.quantity) {
-        throw userError("Insufficient stock for this adjustment. Available stock in the selected location/lot is lower than requested.");
+        const targetDesc = input.warehouseLotId ? "the selected lot" : "standard stock";
+        throw userError(`Insufficient stock for this adjustment. Available in ${targetDesc}: ${currentStock}, Requested: ${input.quantity}.`);
       }
 
       const movementType = "ADJUSTMENT";
@@ -441,14 +438,16 @@ export async function transferStockAction(raw: unknown) {
     if (!fromLocation) throw userError("Source location not found.");
     if (!toLocation) throw userError("Destination location not found.");
 
-    if (fromLocation.warehouseLots.length > 0 && !input.fromWarehouseLotId) {
-      throw userError(`Source location "${fromLocation.name}" has lots defined. Please select a source lot.`);
+    if (input.fromWarehouseLotId) {
+      const lot = fromLocation.warehouseLots.find((l) => l.id === input.fromWarehouseLotId);
+      if (!lot) throw userError(`Selected source lot does not exist in "${fromLocation.name}".`);
     }
-    if (toLocation.warehouseLots.length > 0 && !input.toWarehouseLotId) {
-      throw userError(`Destination location "${toLocation.name}" has lots defined. Please select a destination lot.`);
+    if (input.toWarehouseLotId) {
+      const lot = toLocation.warehouseLots.find((l) => l.id === input.toWarehouseLotId);
+      if (!lot) throw userError(`Selected destination lot does not exist in "${toLocation.name}".`);
     }
 
-    if (input.fromLocationId === input.toLocationId && input.fromWarehouseLotId === input.toWarehouseLotId) {
+    if (input.fromLocationId === input.toLocationId && (input.fromWarehouseLotId || "") === (input.toWarehouseLotId || "")) {
       throw userError("Source and destination lot cannot be identical in the same location.");
     }
 
@@ -462,13 +461,21 @@ export async function transferStockAction(raw: unknown) {
         input.productId,
         input.fromLocationId,
         tx,
-        input.fromWarehouseLotId || undefined,
+        input.fromWarehouseLotId ? input.fromWarehouseLotId : null,
       );
       if (fromStock < input.quantity) {
+        const totalLocStock = await getStockOnHand(input.productId, input.fromLocationId, tx, undefined);
+        const prod = await tx.product.findUnique({ where: { id: input.productId }, select: { productNo: true, name: true } });
+        const prodLabel = `"${prod?.productNo || ""} ${prod?.name || ""}"`;
+        if (!input.fromWarehouseLotId && totalLocStock >= input.quantity) {
+          throw userError(
+            `Insufficient stock for ${prodLabel} in standard/unassigned stock (Available: ${fromStock}). However, ${totalLocStock} units exist in lots at this location. Please select the specific source lot.`
+          );
+        }
         throw userError(
           input.fromWarehouseLotId
-            ? "Not enough stock available in the selected source lot."
-            : "Not enough stock available in the selected source location.",
+            ? `Not enough stock available for ${prodLabel} in the selected source lot. Available: ${fromStock}, Required: ${input.quantity}.`
+            : `Not enough stock available for ${prodLabel} in standard stock. Available: ${fromStock}, Required: ${input.quantity}.`,
         );
       }
 
@@ -554,13 +561,10 @@ export async function bulkAdjustStockAction(raw: unknown) {
       }
     }
 
-    // Validate warehouse lots where applicable
+    // Validate warehouse lots where specified
     for (const item of normalizedItems) {
-      const loc = locationMap.get(item.locationId)!;
-      if (loc.type === "WAREHOUSE" && loc.warehouseLots.length > 0) {
-        if (!item.warehouseLotId) {
-          throw userError(`Warehouse "${loc.name}" has lots defined. Please select a lot for each item.`);
-        }
+      if (item.warehouseLotId) {
+        const loc = locationMap.get(item.locationId)!;
         const lotExists = loc.warehouseLots.some((l) => l.id === item.warehouseLotId);
         if (!lotExists) {
           throw userError(`Selected lot does not exist in warehouse "${loc.name}".`);
@@ -574,17 +578,19 @@ export async function bulkAdjustStockAction(raw: unknown) {
       const referenceId = generateDocumentNumber("ADJ");
 
       for (const item of normalizedItems) {
+        const lotFilter = item.warehouseLotId ? item.warehouseLotId : null;
         const currentStock = await getStockOnHand(
           item.productId,
           item.locationId,
           tx,
-          item.warehouseLotId || undefined,
+          lotFilter,
         );
 
         if (item.direction === "OUT" && currentStock < item.quantity) {
           const prod = await tx.product.findUnique({ where: { id: item.productId }, select: { productNo: true, name: true } });
+          const targetDesc = item.warehouseLotId ? "in the selected lot" : "in standard stock";
           throw userError(
-            `Insufficient stock for "${prod?.productNo || ""} ${prod?.name || ""}". Available in lot: ${currentStock}, Required: ${item.quantity}.`
+            `Insufficient stock for "${prod?.productNo || ""} ${prod?.name || ""}" ${targetDesc}. Available: ${currentStock}, Required: ${item.quantity}.`
           );
         }
 
@@ -640,26 +646,22 @@ export async function bulkTransferStockAction(raw: unknown) {
     if (!fromLocation) throw userError("Source location not found.");
     if (!toLocation) throw userError("Destination location not found.");
 
-    if (fromLocation.warehouseLots.length > 0) {
+    if (input.fromLocationId === input.toLocationId) {
       for (const item of input.items) {
-        if (!item.fromWarehouseLotId) {
-          throw userError(`Source location "${fromLocation.name}" has lots defined. Please select a source lot for all items.`);
-        }
-      }
-    }
-    if (toLocation.warehouseLots.length > 0) {
-      for (const item of input.items) {
-        if (!item.toWarehouseLotId) {
-          throw userError(`Destination location "${toLocation.name}" has lots defined. Please select a destination lot for all items.`);
+        if ((item.fromWarehouseLotId || "") === (item.toWarehouseLotId || "")) {
+          throw userError("Source and destination lot cannot be identical for intra-warehouse transfer.");
         }
       }
     }
 
-    if (input.fromLocationId === input.toLocationId) {
-      for (const item of input.items) {
-        if (item.fromWarehouseLotId === item.toWarehouseLotId) {
-          throw userError("Source and destination lot cannot be identical for intra-warehouse transfer.");
-        }
+    for (const item of input.items) {
+      if (item.fromWarehouseLotId) {
+        const lot = fromLocation.warehouseLots.find((l) => l.id === item.fromWarehouseLotId);
+        if (!lot) throw userError(`Selected source lot does not exist in "${fromLocation.name}".`);
+      }
+      if (item.toWarehouseLotId) {
+        const lot = toLocation.warehouseLots.find((l) => l.id === item.toWarehouseLotId);
+        if (!lot) throw userError(`Selected destination lot does not exist in "${toLocation.name}".`);
       }
     }
 
@@ -672,17 +674,26 @@ export async function bulkTransferStockAction(raw: unknown) {
       const referenceId = generateDocumentNumber("TRF");
 
       for (const item of input.items) {
+        const fromLotFilter = item.fromWarehouseLotId ? item.fromWarehouseLotId : null;
         const fromStock = await getStockOnHand(
           item.productId,
           input.fromLocationId,
           tx,
-          item.fromWarehouseLotId || undefined,
+          fromLotFilter,
         );
 
         if (fromStock < item.quantity) {
+          const totalLocStock = await getStockOnHand(item.productId, input.fromLocationId, tx, undefined);
           const prod = await tx.product.findUnique({ where: { id: item.productId }, select: { productNo: true, name: true } });
+          const prodTitle = `"${prod?.productNo || ""} ${prod?.name || ""}"`;
+          if (!item.fromWarehouseLotId && totalLocStock >= item.quantity) {
+            throw userError(
+              `Insufficient stock for ${prodTitle} in standard/unassigned stock (Available: ${fromStock}). However, ${totalLocStock} units exist in lots at this location. Please select the specific source lot.`
+            );
+          }
+          const locDesc = item.fromWarehouseLotId ? "in the selected source lot" : "in standard stock";
           throw userError(
-            `Insufficient stock for "${prod?.productNo || ""} ${prod?.name || ""}" in the selected source lot. Available: ${fromStock}, Required: ${item.quantity}.`
+            `Insufficient stock for ${prodTitle} ${locDesc}. Available: ${fromStock}, Required: ${item.quantity}.`
           );
         }
 

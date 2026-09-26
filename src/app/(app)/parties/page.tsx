@@ -96,6 +96,11 @@ function PartiesPageContent() {
   const [filterStatus, setFilterStatus] = useState<"ALL" | "ACTIVE" | "INACTIVE">("ALL");
   const [filterBalance, setFilterBalance] = useState<"ALL" | "RECEIVABLE" | "PAYABLE" | "ZERO">("ALL");
   const [viewMode, setViewMode] = useState<"table" | "cards">("table");
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // References
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -223,25 +228,38 @@ function PartiesPageContent() {
 
   // Keyboard navigation within the Party Entry Form
   function handleNavKeyDown(e: React.KeyboardEvent, currentIndex: number) {
-    if (e.key === "Enter") {
+    if (e.key === "Enter" || e.key === "ArrowDown") {
+      if (e.key === "ArrowDown" && (e.currentTarget as HTMLElement).tagName === "SELECT" && !e.altKey) {
+        return; // Allow native select option navigation
+      }
       e.preventDefault();
-      const next = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${currentIndex + 1}"]`);
+      let nextIndex = currentIndex + 1;
+      let next = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${nextIndex}"]`);
+      while (!next && nextIndex <= 10) {
+        nextIndex++;
+        next = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${nextIndex}"]`);
+      }
       if (next) {
         next.focus();
         if (next instanceof HTMLInputElement) next.select();
-      } else {
+      } else if (e.key === "Enter") {
         void handleSaveParty();
       }
-    } else if (e.key === "ArrowDown") {
+    } else if (e.key === "ArrowUp") {
+      if ((e.currentTarget as HTMLElement).tagName === "SELECT" && !e.altKey) {
+        return; // Allow native select option navigation
+      }
       e.preventDefault();
-      const next = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${currentIndex + 1}"]`);
-      next?.focus();
-      if (next instanceof HTMLInputElement) next.select();
-    } else if (e.key === "ArrowUp" && currentIndex > 0) {
-      e.preventDefault();
-      const prev = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${currentIndex - 1}"]`);
-      prev?.focus();
-      if (prev instanceof HTMLInputElement) prev.select();
+      let prevIndex = currentIndex - 1;
+      let prev = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${prevIndex}"]`);
+      while (!prev && prevIndex >= 0) {
+        prevIndex--;
+        prev = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${prevIndex}"]`);
+      }
+      if (prev) {
+        prev.focus();
+        if (prev instanceof HTMLInputElement) prev.select();
+      }
     }
   }
 
@@ -294,14 +312,19 @@ function PartiesPageContent() {
     });
     if (!ok) return;
 
-    const res = await softDeletePartyAction({ id: party.id });
-    if (res.success) {
-      setParties((prev) => prev.filter((p) => p.id !== party.id));
-      if (selectedPartyId === party.id) {
-        closeWindow();
+    try {
+      const res = await softDeletePartyAction({ id: party.id });
+      if (res.success) {
+        setParties((prev) => prev.filter((p) => p.id !== party.id));
+        if (selectedPartyId === party.id) {
+          closeWindow();
+        }
+        await loadInitialData(true);
+      } else {
+        await confirm.alert(res.error || "Failed to delete party.", { variant: "destructive" });
       }
-    } else {
-      await confirm.alert(res.error || "Failed to delete party.", { variant: "destructive" });
+    } catch (err: any) {
+      await confirm.alert(err?.message || "Failed to delete party.", { variant: "destructive" });
     }
   }
 
@@ -398,7 +421,7 @@ function PartiesPageContent() {
             <p className="text-xs font-semibold uppercase">Parties & Accounts Directory Statement</p>
           </div>
           <div className="text-right text-[10px] space-y-0.5">
-            <p>Printed: {new Date().toLocaleString()}</p>
+            <p suppressHydrationWarning>Printed: {mounted ? new Date().toLocaleString() : ""}</p>
             <p>Type Filter: {filterType === "ALL" ? "All Parties" : filterType}</p>
             <p>Status: {filterStatus === "ALL" ? "All Accounts" : filterStatus}</p>
           </div>

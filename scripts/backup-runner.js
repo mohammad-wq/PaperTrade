@@ -444,7 +444,7 @@ function runCloudBackup(tag = 'CLOUD', specificLocalFile = null) {
   const env = parseEnv();
   const { localDir, logFile } = getBackupPaths(env);
   const rcloneBin = findRclone();
-  const remoteTarget = env.RCLONE_REMOTE || 'gdrive:PaperTradeBackup';
+  const remoteTarget = env.RCLONE_REMOTE || 'papertrade_backup:PaperTradeBackup';
 
   // 1. Ensure we have a local dump from today
   let localFileToUpload = specificLocalFile;

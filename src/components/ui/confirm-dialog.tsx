@@ -12,7 +12,7 @@ export interface ConfirmDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
-  description?: string;
+  description?: React.ReactNode;
   confirmText?: string;
   cancelText?: string | null; // null to hide cancel button (alert mode)
   variant?: ConfirmVariant;
@@ -34,12 +34,10 @@ export function ConfirmDialog({
   const isAlertMode = cancelText === null;
 
   const handleConfirm = () => {
-    onOpenChange(false);
     onConfirm();
   };
 
   const handleCancel = () => {
-    onOpenChange(false);
     onCancel?.();
   };
 
@@ -77,7 +75,7 @@ export function ConfirmDialog({
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-[100] bg-slate-950/40 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content
           onEscapeKeyDown={handleCancel}
           onPointerDownOutside={(e) => {
@@ -89,7 +87,7 @@ export function ConfirmDialog({
             }
           }}
           className={cn(
-            "fixed left-[50%] top-[50%] z-50 w-[92vw] max-w-md translate-x-[-50%] translate-y-[-50%]",
+            "fixed left-[50%] top-[50%] z-[100] w-[92vw] max-w-md translate-x-[-50%] translate-y-[-50%]",
             "rounded-xl border border-amber-950/15 bg-[#faf8f5] p-6 shadow-2xl duration-200",
             "data-[state=open]:animate-in data-[state=closed]:animate-out",
             "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",

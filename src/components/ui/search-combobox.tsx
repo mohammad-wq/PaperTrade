@@ -166,6 +166,21 @@ export function SearchCombobox({
         !listRef.current.contains(target)
       ) {
         setIsOpen(false);
+        // If no option was formally selected, but user typed something that matches an option, auto-select it
+        if (!value && searchQuery.trim()) {
+          const q = searchQuery.trim().toLowerCase();
+          const match =
+            filteredOptions.find((opt) => opt.label.toLowerCase() === q || opt.id.toLowerCase() === q) ||
+            filteredOptions.find((opt) => opt.label.toLowerCase().includes(q) || (opt.sublabel && opt.sublabel.toLowerCase().includes(q))) ||
+            filteredOptions[0];
+
+          if (match && !match.disabled) {
+            onChange(match.id, match);
+            setSearchQuery(match.label);
+            return;
+          }
+        }
+
         if (selectedOption) {
           setSearchQuery(selectedOption.label);
         } else if (!value) {
@@ -175,7 +190,7 @@ export function SearchCombobox({
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [selectedOption, value]);
+  }, [selectedOption, value, searchQuery, filteredOptions, onChange]);
 
   // Scroll highlighted item into view
   useEffect(() => {
@@ -289,7 +304,6 @@ export function SearchCombobox({
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           disabled={disabled}
-          required={required && !value}
           autoFocus={autoFocus}
           autoComplete="off"
           className={`w-full rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-hidden focus:ring-1 focus:ring-sky-600 focus:border-sky-600 disabled:opacity-50 ${
@@ -355,7 +369,10 @@ export function SearchCombobox({
               return (
                 <li
                   key={option.id}
-                  onClick={() => handleSelect(option)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    handleSelect(option);
+                  }}
                   onMouseEnter={() => setHighlightedIndex(index)}
                   className={`flex items-center justify-between px-2.5 py-1.5 cursor-pointer select-none transition-colors ${
                     option.disabled

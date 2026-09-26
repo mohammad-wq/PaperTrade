@@ -41,6 +41,7 @@ export async function listSaleInvoicesAction() {
       ...inv,
       totalAmount: Number(inv.totalAmount),
       amountPaid: Number(inv.amountPaid),
+      freightCharges: Number(inv.freightCharges ?? 0),
       balanceDue: Number(inv.totalAmount) - Number(inv.amountPaid),
       items: inv.items.map((item) => ({
         ...item,
@@ -244,36 +245,80 @@ export async function createSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // Create ledger entries
-      // Customer Receivable (Debit)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: targetCustomerId,
-          accountType: AccountType.RECEIVABLE,
-          debit: totalAmount,
-          credit: 0,
-          referenceType: "SALE_INVOICE",
-          referenceId: invoice.id,
-          date: input.date,
-          description: `Estimate ${invoice.invoiceNo} (${customerName})`,
-          createdById: session.user.id,
-        },
+      // Create ledger entries: multiple entries for each sold product so quantities/rates are recorded (Issue 15)
+      const saleProductIds = input.items.map((i) => i.productId);
+      const saleProducts = await tx.product.findMany({
+        where: { id: { in: saleProductIds } },
+        select: { id: true, productNo: true, name: true, unit: true },
       });
+      const saleProdMap = new Map(saleProducts.map((p) => [p.id, p]));
 
-      // Sales Revenue (Credit)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: null,
-          accountType: AccountType.SALES,
-          debit: 0,
-          credit: totalAmount,
-          referenceType: "SALE_INVOICE",
-          referenceId: invoice.id,
-          date: input.date,
-          description: `Sales Revenue from ${invoice.invoiceNo}`,
-          createdById: session.user.id,
-        },
-      });
+      for (const item of input.items) {
+        const p = saleProdMap.get(item.productId);
+        const lineTotal = item.quantity * item.unitPrice;
+        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitPrice})`;
+
+        // Customer Receivable (Debit per product)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetCustomerId,
+            accountType: AccountType.RECEIVABLE,
+            debit: lineTotal,
+            credit: 0,
+            referenceType: "SALE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Estimate ${invoice.invoiceNo}: ${itemDesc}`,
+            createdById: session.user.id,
+          },
+        });
+
+        // Sales Revenue (Credit per product)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.SALES,
+            debit: 0,
+            credit: lineTotal,
+            referenceType: "SALE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Sales Revenue (${invoice.invoiceNo}): ${itemDesc}`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      // If freight charges were added
+      if (freight > 0) {
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetCustomerId,
+            accountType: AccountType.RECEIVABLE,
+            debit: freight,
+            credit: 0,
+            referenceType: "SALE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Freight charges on Estimate ${invoice.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.SALES,
+            debit: 0,
+            credit: freight,
+            referenceType: "SALE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Freight charges on Estimate ${invoice.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+      }
 
       // If immediate or on-the-spot payment was made
       if (paidAmount > 0) {
@@ -602,36 +647,80 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // Re-create ledger entries
-      // Customer Receivable (Debit)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: targetCustomerId,
-          accountType: AccountType.RECEIVABLE,
-          debit: totalAmount,
-          credit: 0,
-          referenceType: "SALE_INVOICE",
-          referenceId: existing.id,
-          date: input.date,
-          description: `Estimate ${existing.invoiceNo} (${customerName})`,
-          createdById: session.user.id,
-        },
+      // Re-create ledger entries: multiple entries for each sold product (Issue 15)
+      const editProductIds = input.items.map((i) => i.productId);
+      const editProducts = await tx.product.findMany({
+        where: { id: { in: editProductIds } },
+        select: { id: true, productNo: true, name: true, unit: true },
       });
+      const editProdMap = new Map(editProducts.map((p) => [p.id, p]));
 
-      // Sales Revenue (Credit)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: null,
-          accountType: AccountType.SALES,
-          debit: 0,
-          credit: totalAmount,
-          referenceType: "SALE_INVOICE",
-          referenceId: existing.id,
-          date: input.date,
-          description: `Sales Revenue from ${existing.invoiceNo}`,
-          createdById: session.user.id,
-        },
-      });
+      for (const item of input.items) {
+        const p = editProdMap.get(item.productId);
+        const lineTotal = item.quantity * item.unitPrice;
+        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitPrice})`;
+
+        // Customer Receivable (Debit per product)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetCustomerId,
+            accountType: AccountType.RECEIVABLE,
+            debit: lineTotal,
+            credit: 0,
+            referenceType: "SALE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Estimate ${existing.invoiceNo}: ${itemDesc}`,
+            createdById: session.user.id,
+          },
+        });
+
+        // Sales Revenue (Credit per product)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.SALES,
+            debit: 0,
+            credit: lineTotal,
+            referenceType: "SALE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Sales Revenue (${existing.invoiceNo}): ${itemDesc}`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      // If freight was added
+      if (freight > 0) {
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetCustomerId,
+            accountType: AccountType.RECEIVABLE,
+            debit: freight,
+            credit: 0,
+            referenceType: "SALE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Freight charges on Estimate ${existing.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.SALES,
+            debit: 0,
+            credit: freight,
+            referenceType: "SALE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Freight charges on Estimate ${existing.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+      }
 
       // If immediate payment
       if (paidAmount > 0) {
@@ -884,36 +973,80 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         }
       }
 
-      // Create ledger entries
-      // Purchases Expense (Debit)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: null,
-          accountType: AccountType.PURCHASES,
-          debit: totalAmount,
-          credit: 0,
-          referenceType: "PURCHASE_INVOICE",
-          referenceId: invoice.id,
-          date: input.date,
-          description: `Purchase Invoice ${invoice.invoiceNo}`,
-          createdById: session.user.id,
-        },
+      // Create ledger entries: multiple entries for each purchased product (Issue 15)
+      const purchaseProductIds = input.items.map((i) => i.productId);
+      const purchaseProducts = await tx.product.findMany({
+        where: { id: { in: purchaseProductIds } },
+        select: { id: true, productNo: true, name: true, unit: true },
       });
+      const purchaseProdMap = new Map(purchaseProducts.map((p) => [p.id, p]));
 
-      // Supplier Payable (Credit)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: targetSupplierId!,
-          accountType: AccountType.PAYABLE,
-          debit: 0,
-          credit: totalAmount,
-          referenceType: "PURCHASE_INVOICE",
-          referenceId: invoice.id,
-          date: input.date,
-          description: `Payable for ${invoice.invoiceNo} (${supplierName})`,
-          createdById: session.user.id,
-        },
-      });
+      for (const item of input.items) {
+        const p = purchaseProdMap.get(item.productId);
+        const lineTotal = item.quantity * item.unitCost;
+        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitCost})`;
+
+        // Purchases Expense (Debit per product)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.PURCHASES,
+            debit: lineTotal,
+            credit: 0,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Purchase Invoice ${invoice.invoiceNo}: ${itemDesc}`,
+            createdById: session.user.id,
+          },
+        });
+
+        // Supplier Payable (Credit per product)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetSupplierId!,
+            accountType: AccountType.PAYABLE,
+            debit: 0,
+            credit: lineTotal,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Payable for ${invoice.invoiceNo}: ${itemDesc}`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      // If freight charges were added
+      if (freight > 0) {
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.PURCHASES,
+            debit: freight,
+            credit: 0,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Freight charges on Purchase Invoice ${invoice.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetSupplierId!,
+            accountType: AccountType.PAYABLE,
+            debit: 0,
+            credit: freight,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Freight payable for ${invoice.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+      }
 
       // If immediate payment was made
       if (paidAmount > 0) {
@@ -1195,36 +1328,80 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
         }
       }
 
-      // 7. Recreate ledger entries
-      // Purchases Expense (Debit)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: null,
-          accountType: AccountType.PURCHASES,
-          debit: totalAmount,
-          credit: 0,
-          referenceType: "PURCHASE_INVOICE",
-          referenceId: existing.id,
-          date: input.date,
-          description: `Purchase Invoice ${existing.invoiceNo}`,
-          createdById: session.user.id,
-        },
+      // 7. Recreate ledger entries: multiple entries for each purchased product (Issue 15)
+      const editPurchaseProductIds = input.items.map((i) => i.productId);
+      const editPurchaseProducts = await tx.product.findMany({
+        where: { id: { in: editPurchaseProductIds } },
+        select: { id: true, productNo: true, name: true, unit: true },
       });
+      const editPurchaseProdMap = new Map(editPurchaseProducts.map((p) => [p.id, p]));
 
-      // Supplier Payable (Credit)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: targetSupplierId!,
-          accountType: AccountType.PAYABLE,
-          debit: 0,
-          credit: totalAmount,
-          referenceType: "PURCHASE_INVOICE",
-          referenceId: existing.id,
-          date: input.date,
-          description: `Purchase Invoice ${existing.invoiceNo}`,
-          createdById: session.user.id,
-        },
-      });
+      for (const item of input.items) {
+        const p = editPurchaseProdMap.get(item.productId);
+        const lineTotal = item.quantity * item.unitCost;
+        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitCost})`;
+
+        // Purchases Expense (Debit per product)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.PURCHASES,
+            debit: lineTotal,
+            credit: 0,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Purchase Invoice ${existing.invoiceNo}: ${itemDesc}`,
+            createdById: session.user.id,
+          },
+        });
+
+        // Supplier Payable (Credit per product)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetSupplierId!,
+            accountType: AccountType.PAYABLE,
+            debit: 0,
+            credit: lineTotal,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Payable for ${existing.invoiceNo}: ${itemDesc}`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      // If freight charges were added
+      if (freight > 0) {
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.PURCHASES,
+            debit: freight,
+            credit: 0,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Freight charges on Purchase Invoice ${existing.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: targetSupplierId!,
+            accountType: AccountType.PAYABLE,
+            debit: 0,
+            credit: freight,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Freight payable for ${existing.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+      }
 
       // 8. Auto Payment if paidAmount > 0
       if (paidAmount > 0) {

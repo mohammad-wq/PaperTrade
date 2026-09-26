@@ -66,10 +66,7 @@ export const bulkStockTransferSchema = z
     (value) => {
       if (value.fromLocationId !== value.toLocationId) return true;
       return value.items.every(
-        (it) =>
-          Boolean(it.fromWarehouseLotId) &&
-          Boolean(it.toWarehouseLotId) &&
-          it.fromWarehouseLotId !== it.toWarehouseLotId
+        (it) => (it.fromWarehouseLotId || "") !== (it.toWarehouseLotId || "")
       );
     },
     {

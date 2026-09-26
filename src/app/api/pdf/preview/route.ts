@@ -8,6 +8,11 @@ import { format } from "date-fns";
 
 export const dynamic = "force-dynamic";
 
+const toNumber = (value: unknown, fallback = 0) => {
+  const numeric = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isFinite(numeric) ? numeric : fallback;
+};
+
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
@@ -61,21 +66,25 @@ export async function POST(request: NextRequest) {
       partyPhone,
       locationName,
       referenceNo,
-      totalAmount: Number(totalAmount || 0),
-      amountPaid: Number(amountPaid || 0),
-      freightCharges: Number(freightCharges || 0),
+      totalAmount: toNumber(totalAmount),
+      amountPaid: toNumber(amountPaid),
+      freightCharges: toNumber(freightCharges),
       deliveryDetails: recipientName ? { recipientName } : undefined,
       notes,
       signatures: { leftLabel: "Prepared By", rightLabel: "Authorized Signature" },
-      items: items.map((item: any) => ({
-        name: item.name || "Product Item",
-        specs: item.specs || "Standard Paper",
-        lot: item.lot || null,
-        quantity: Number(item.quantity || 0),
-        unit: item.unit || "Unit",
-        unitPrice: Number(item.unitPrice || 0),
-        lineTotal: Number(item.lineTotal || (Number(item.quantity || 0) * Number(item.unitPrice || 0))),
-      })),
+      items: items.map((item: any) => {
+        const quantity = toNumber(item.quantity);
+        const unitPrice = toNumber(item.unitPrice);
+        return {
+          name: item.name || "Product Item",
+          specs: item.specs || "Standard Paper",
+          lot: item.lot || null,
+          quantity,
+          unit: item.unit || "Unit",
+          unitPrice,
+          lineTotal: toNumber(item.lineTotal, quantity * unitPrice),
+        };
+      }),
     });
 
     const buffer = await renderToBuffer(docElement as any);
@@ -86,6 +95,7 @@ export async function POST(request: NextRequest) {
         "Content-Type": "application/pdf",
         "Content-Disposition": 'inline; filename="preview.pdf"',
         "Cache-Control": "no-store, no-cache, must-revalidate",
+        "X-Content-Type-Options": "nosniff",
       },
     });
   } catch (err: any) {

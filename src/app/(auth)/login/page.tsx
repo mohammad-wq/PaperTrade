@@ -4,16 +4,17 @@ import { LoginForm } from "@/components/auth/login-form";
 import { getSession } from "@/lib/auth/session";
 
 interface LoginPageProps {
-  searchParams?: {
+  searchParams?: Promise<{
     reason?: string;
     callbackUrl?: string;
-  };
+  }>;
 }
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const resolvedParams = searchParams ? await searchParams : undefined;
   // If no reason is present, check existing session.
   // If a reason is provided (sleep, browser_closed, inactive, expired), force credentials entry.
-  if (!searchParams?.reason) {
+  if (!resolvedParams?.reason) {
     const session = await getSession();
     if (session?.user) {
       redirect("/dashboard");

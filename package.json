@@ -4,11 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "node --max-old-space-size=1536 node_modules/next/dist/bin/next dev",
-    "build": "prisma generate && node --max-old-space-size=1536 node_modules/next/dist/bin/next build",
+    "build": "node scripts/patch-react-pdf.js && prisma generate && node --max-old-space-size=1536 node_modules/next/dist/bin/next build",
     "postbuild": "node scripts/copy-standalone-assets.js",
     "start": "node --max-old-space-size=1536 node_modules/next/dist/bin/next start",
     "lint": "next lint",
-    "postinstall": "prisma generate",
+    "postinstall": "prisma generate && node scripts/patch-react-pdf.js",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate deploy",

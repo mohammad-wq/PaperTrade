@@ -332,7 +332,7 @@ On any other PC, tablet, or phone on the same office network:
 
 Paper Trade includes an automated, multi-tiered backup and disaster recovery architecture designed for 100% native Windows deployment:
 1. **Daily Automated Local Backups**: Runs `pg_dump` in compressed custom format (`-F c`), stores dumps at `C:\PaperTradeBackups\local\`, enforces 30-day automatic retention, and logs each run to `C:\PaperTradeBackups\backup-log.txt`.
-2. **Weekly Automated Cloud Sync (Google Drive)**: Uses `rclone` to copy backups to `gdrive:PaperTradeBackup/`, maintaining `papertrade_latest.dump` and a rolling 3-week archive (`papertrade_weekly_1.dump`, `papertrade_weekly_2.dump`, `papertrade_weekly_3.dump`).
+2. **Weekly Automated Cloud Sync (Google Drive)**: Uses `rclone` to copy backups to `papertrade_backup:PaperTradeBackup/`, maintaining `papertrade_latest.dump` and a rolling 3-week archive (`papertrade_weekly_1.dump`, `papertrade_weekly_2.dump`, `papertrade_weekly_3.dump`).
 3. **In-App Manual "Backup Now" Admin Button**: Accessible to the `OWNER` on the Settings page to trigger an immediate local dump and cloud upload with real-time UI status and logs.
 4. **Disaster Recovery (`pg_restore`)**: Standard custom-format restoration procedures with throwaway verification testing.
 
@@ -379,13 +379,18 @@ Rclone is a fast, secure command-line tool that syncs files to Google Drive with
 > 2. The client has direct, independent access to their backups in Google Drive.
 > 3. Backups do not consume developer storage or breach client confidentiality.
 
+The app is configured to use the remote name `papertrade_backup` by default, so the simplest setup is to name the remote exactly `papertrade_backup`.
+
+- If you keep the default behavior, the script will target: `papertrade_backup:PaperTradeBackup`
+- If you use a different remote name, set this in your environment: `RCLONE_REMOTE=your_remote_name:PaperTradeBackup`
+
 1. Open Command Prompt and run:
    ```cmd
    rclone config
    ```
 2. Follow these exact interactive prompts:
    - `n/s/q> ` Enter **`n`** (New remote)
-   - `name> ` Enter **`gdrive`** *(Crucial: must be exactly `gdrive`)*
+   - `name> ` Enter **`papertrade_backup`** *(recommended and matches the app default)*
    - `Type of storage to configure> ` Enter **`drive`** (Google Drive)
    - `client_id> ` Press **Enter** (leave blank to use default)
    - `client_secret> ` Press **Enter** (leave blank to use default)
@@ -396,16 +401,16 @@ Rclone is a fast, secure command-line tool that syncs files to Google Drive with
 3. A web browser will automatically open. **Log in with the Business Owner's Google Account** and click **Allow**.
 4. Return to Command Prompt:
    - `Configure this as a Shared Drive (Team Drive)?` Enter **`n`**
-   - `Keep this "gdrive" remote?` Enter **`y`**
+   - `Keep this "papertrade_backup" remote?` Enter **`y`**
    - `e/n/d/r/c/s/q> ` Enter **`q`** (Quit config)
 5. **Verify the connection**:
    ```cmd
-   rclone lsd gdrive:
+   rclone lsd papertrade_backup:
    ```
    *(Should list your existing Google Drive folders without errors).*
 
 #### Step 3: Rolling 3-Week Cloud Archive Mechanism
-The cloud backup script (`scripts\backup-cloud.bat`) automatically maintains the following structure inside Google Drive folder `gdrive:PaperTradeBackup/`:
+The cloud backup script (`scripts\backup-cloud.bat`) automatically maintains the following structure inside Google Drive folder `papertrade_backup:PaperTradeBackup/`:
 - **`papertrade_latest.dump`**: Overwritten each week with the newest snapshot.
 - **`papertrade_weekly_1.dump`**: 1 week old backup.
 - **`papertrade_weekly_2.dump`**: 2 weeks old backup.

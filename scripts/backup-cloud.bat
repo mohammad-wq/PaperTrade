@@ -3,7 +3,7 @@ REM ============================================================================
 REM Paper Trade - Automated Weekly Cloud Backup (Native Windows via Rclone)
 REM 
 REM - Takes most recent local backup from today (or creates one if needed)
-REM - Syncs to Google Drive remote (gdrive:PaperTradeBackup/)
+REM - Syncs to Google Drive remote (papertrade_backup:PaperTradeBackup/)
 REM - Maintains papertrade_latest.dump and rolling 3-week archive:
 REM   papertrade_weekly_1.dump, papertrade_weekly_2.dump, papertrade_weekly_3.dump
 REM - Logs outcome with [CLOUD] tag to C:\PaperTradeBackups\backup-log.txt

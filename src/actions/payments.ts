@@ -37,6 +37,12 @@ export async function listPaymentsAction() {
       ...p,
       amount: Number(p.amount),
       remainingBalance: p.remainingBalance ? Number(p.remainingBalance) : null,
+      saleInvoice: p.saleInvoice
+        ? { ...p.saleInvoice, totalAmount: Number(p.saleInvoice.totalAmount ?? 0) }
+        : null,
+      purchaseInvoice: p.purchaseInvoice
+        ? { ...p.purchaseInvoice, totalAmount: Number(p.purchaseInvoice.totalAmount ?? 0) }
+        : null,
       splits: p.splits.map((s) => ({
         ...s,
         amount: Number(s.amount),
