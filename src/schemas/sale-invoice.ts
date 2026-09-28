@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PaymentMethod } from "@prisma/client";
+import { paymentSplitItemSchema } from "./payment";
 
 const lineItem = z.object({
   productId: z.string().min(1, "Product is required"),
@@ -18,6 +19,7 @@ export const saleInvoiceBaseSchema = z.object({
   saveCustomer: z.boolean().default(false),
   paidImmediately: z.boolean().default(false),
   paymentMethod: z.nativeEnum(PaymentMethod).default(PaymentMethod.CASH),
+  paymentSplits: z.array(paymentSplitItemSchema).optional().nullable(),
   amountPaid: z.coerce.number().min(0).default(0),
   freightCharges: z.coerce.number().min(0).default(0),
   locationId: z.string().optional().nullable(),
@@ -48,6 +50,17 @@ const refineWalkInCash = (data: {
   return true;
 };
 
+const refinePaymentSplits = (data: {
+  amountPaid?: number;
+  paymentSplits?: Array<{ amount: number }> | null;
+}) => {
+  if (data.paymentSplits && data.paymentSplits.length > 0) {
+    const totalSplits = data.paymentSplits.reduce((acc, s) => acc + (Number(s.amount) || 0), 0);
+    return Math.abs(totalSplits - (Number(data.amountPaid) || 0)) < 0.05;
+  }
+  return true;
+};
+
 export const saleInvoiceSchema = saleInvoiceBaseSchema
   .refine(refineCustomer, {
     message: "Please select a registered customer",
@@ -56,6 +69,10 @@ export const saleInvoiceSchema = saleInvoiceBaseSchema
   .refine(refineWalkInCash, {
     message: "Walk-in customers cannot buy on credit. Amount paid must equal the total invoice amount.",
     path: ["amountPaid"],
+  })
+  .refine(refinePaymentSplits, {
+    message: "The sum of multiple payment splits must equal the total Amount Paid.",
+    path: ["paymentSplits"],
   });
 
 export const updateSaleInvoiceSchema = saleInvoiceBaseSchema
@@ -69,6 +86,10 @@ export const updateSaleInvoiceSchema = saleInvoiceBaseSchema
   .refine(refineWalkInCash, {
     message: "Walk-in customers cannot buy on credit. Amount paid must equal the total invoice amount.",
     path: ["amountPaid"],
+  })
+  .refine(refinePaymentSplits, {
+    message: "The sum of multiple payment splits must equal the total Amount Paid.",
+    path: ["paymentSplits"],
   });
 
 export type SaleInvoiceInput = z.infer<typeof saleInvoiceSchema>;

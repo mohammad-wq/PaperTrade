@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/options";
-import { renderToBuffer } from "@react-pdf/renderer";
-import React from "react";
 import { prisma } from "@/lib/db";
-import { DocumentPdfView, PaymentReceiptPdfView } from "@/pdf/documents";
+import { renderDocumentPdfKit, renderPaymentReceiptPdfKit } from "@/lib/pdfkit-generator";
 import { format } from "date-fns";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { verifyDocShareToken } from "@/lib/tokens";
@@ -65,7 +63,7 @@ export async function GET(
   const isDownload = request.nextUrl.searchParams.get("download") === "true";
 
   try {
-    let docElement: React.ReactElement | null = null;
+    let pdfBuffer: Buffer | null = null;
     let filename = `document-${id}.pdf`;
 
     const safeFormatDate = (val?: string | null | Date) => {
@@ -96,6 +94,7 @@ export async function GET(
           deliveryOrder: true,
           financialYear: true,
           items: { include: { product: true } },
+          payments: { include: { splits: true } },
         },
       });
 
@@ -103,8 +102,14 @@ export async function GET(
         return new NextResponse("Sale invoice not found", { status: 404 });
       }
 
+      const allSplits = invoice.payments.flatMap((p) =>
+        p.splits && p.splits.length > 0
+          ? p.splits.map((s) => ({ method: s.method, amount: toNumber(s.amount), reference: s.reference }))
+          : [{ method: p.method, amount: toNumber(p.amount), reference: null }]
+      );
+
       filename = `Estimate-${invoice.invoiceNo}.pdf`;
-      docElement = React.createElement(DocumentPdfView, {
+      pdfBuffer = await renderDocumentPdfKit({
         docType: "Estimate",
         docNumber: invoice.invoiceNo,
         sequenceNo: invoice.sequenceNo,
@@ -119,9 +124,11 @@ export async function GET(
         referenceNo: invoice.deliveryOrder ? `DO: ${invoice.deliveryOrder.doNo}` : null,
         totalAmount: toNumber(invoice.totalAmount),
         amountPaid: toNumber(invoice.amountPaid),
+        paymentMethod: invoice.payments[0]?.method || null,
+        paymentSplits: allSplits.length > 1 ? allSplits : null,
         freightCharges: toNumber(invoice.freightCharges),
         notes: invoice.notes,
-        signatures: { leftLabel: "Prepared By", rightLabel: "Authorized Signature" },
+        signatures: { leftLabel: "Prepared By", rightLabel: "Authorized Signature / Stamp" },
         items: invoice.items.map((item) => ({
           name: formatProductName(item.product),
           specs: formatSpecs(item.product),
@@ -149,7 +156,7 @@ export async function GET(
       filename = `PO-${po.orderNo}.pdf`;
       const totalAmount = po.items.reduce((sum, item) => sum + toItemNumber(item.lineTotal), 0);
 
-      docElement = React.createElement(DocumentPdfView, {
+      pdfBuffer = await renderDocumentPdfKit({
         docType: "Purchase Order",
         docNumber: po.orderNo,
         sequenceNo: po.sequenceNo,
@@ -190,7 +197,7 @@ export async function GET(
       }
 
       filename = `DO-${doRecord.doNo}.pdf`;
-      docElement = React.createElement(DocumentPdfView, {
+      pdfBuffer = await renderDocumentPdfKit({
         docType: doRecord.customer ? "Delivery Order" : "Internal Stock Transfer Order",
         docNumber: doRecord.doNo,
         sequenceNo: doRecord.sequenceNo,
@@ -231,6 +238,7 @@ export async function GET(
           purchaseOrder: true,
           financialYear: true,
           items: { include: { product: true, warehouseLot: true } },
+          payments: { include: { splits: true } },
         },
       });
 
@@ -238,8 +246,14 @@ export async function GET(
         return new NextResponse("Purchase invoice not found", { status: 404 });
       }
 
+      const allSplits = invoice.payments.flatMap((p) =>
+        p.splits && p.splits.length > 0
+          ? p.splits.map((s) => ({ method: s.method, amount: toNumber(s.amount), reference: s.reference }))
+          : [{ method: p.method, amount: toNumber(p.amount), reference: null }]
+      );
+
       filename = `Purchase-${invoice.invoiceNo}.pdf`;
-      docElement = React.createElement(DocumentPdfView, {
+      pdfBuffer = await renderDocumentPdfKit({
         docType: "Purchase Invoice",
         docNumber: invoice.invoiceNo,
         sequenceNo: invoice.sequenceNo,
@@ -253,16 +267,18 @@ export async function GET(
         referenceNo: invoice.purchaseOrder ? `PO: ${invoice.purchaseOrder.orderNo}` : null,
         totalAmount: toNumber(invoice.totalAmount),
         amountPaid: toNumber(invoice.amountPaid),
+        paymentMethod: invoice.payments[0]?.method || null,
+        paymentSplits: allSplits.length > 1 ? allSplits : null,
         freightCharges: toNumber(invoice.freightCharges),
         notes: invoice.notes,
-        signatures: { leftLabel: "Received By", rightLabel: "Verified By" },
+        signatures: { leftLabel: "Received By (Store Incharge)", rightLabel: "Authorized Signature / Stamp" },
         items: invoice.items.map((item) => {
-          const lotLabel = item.warehouseLot ? `Lot: ${item.warehouseLot.lotNumber}` : null;
+          const lotLabel = item.warehouseLot ? item.warehouseLot.lotNumber : null;
           const baseSpecs = formatSpecs(item.product);
-          const specs = [baseSpecs !== "—" ? baseSpecs : null, lotLabel].filter(Boolean).join(" | ") || "—";
           return {
             name: formatProductName(item.product),
-            specs,
+            specs: baseSpecs,
+            lot: lotLabel,
             quantity: toItemNumber(item.quantity),
             unit: item.product?.unit || "Unit",
             unitPrice: toItemNumber(item.unitCost),
@@ -286,9 +302,9 @@ export async function GET(
         return new NextResponse("Sale return not found", { status: 404 });
       }
 
-      filename = `Return-${sReturn.returnNo}.pdf`;
-      docElement = React.createElement(DocumentPdfView, {
-        docType: "Sale Credit Note / Return",
+      filename = `CreditNote-${sReturn.returnNo}.pdf`;
+      pdfBuffer = await renderDocumentPdfKit({
+        docType: "Credit Note / Sale Return",
         docNumber: sReturn.returnNo,
         sequenceNo: sReturn.sequenceNo,
         financialYearLabel: sReturn.financialYear?.label || null,
@@ -296,11 +312,12 @@ export async function GET(
         partyLabel: "Customer",
         partyName: sReturn.customer?.name || "Customer",
         partyAddress: sReturn.customer?.address || null,
+        partyPhone: sReturn.customer?.phone || null,
         locationName: sReturn.location?.name || "Shop",
         referenceNo: sReturn.saleInvoice ? `Original Invoice: ${sReturn.saleInvoice.invoiceNo}` : null,
         totalAmount: toNumber(sReturn.totalAmount),
         notes: `Reason: ${sReturn.reason}`,
-        signatures: { leftLabel: "Returned By", rightLabel: "Approved By" },
+        signatures: { leftLabel: "Approved By", rightLabel: "Customer Acknowledgment" },
         items: sReturn.items.map((item) => ({
           name: formatProductName(item.product),
           specs: formatSpecs(item.product),
@@ -327,7 +344,7 @@ export async function GET(
       }
 
       filename = `DebitNote-${pReturn.returnNo}.pdf`;
-      docElement = React.createElement(DocumentPdfView, {
+      pdfBuffer = await renderDocumentPdfKit({
         docType: "Purchase Debit Note / Return",
         docNumber: pReturn.returnNo,
         sequenceNo: pReturn.sequenceNo,
@@ -369,7 +386,7 @@ export async function GET(
 
       const receiptNo = payment.receiptNo || `RCT-${payment.id.slice(0, 8)}`;
       filename = `Receipt-${receiptNo}.pdf`;
-      docElement = React.createElement(PaymentReceiptPdfView, {
+      pdfBuffer = await renderPaymentReceiptPdfKit({
         receiptNo,
         sequenceNo: payment.sequenceNo,
         direction: payment.direction || (payment.party?.type === "CUSTOMER" ? "IN" : "OUT"),
@@ -397,19 +414,20 @@ export async function GET(
       });
     }
 
-    if (!docElement) {
-      return new NextResponse("Invalid document type", { status: 400 });
+    if (!pdfBuffer) {
+      return new NextResponse("Invalid document type or generation failure", { status: 400 });
     }
 
-    const buffer = await renderToBuffer(docElement);
     const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
     const disposition = isDownload ? "attachment" : "inline";
 
-    return new NextResponse(new Uint8Array(buffer), {
+    return new NextResponse(new Uint8Array(pdfBuffer), {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `${disposition}; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-        "Cache-Control": "private, max-age=3600",
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
         "X-Content-Type-Options": "nosniff",
       },
     });

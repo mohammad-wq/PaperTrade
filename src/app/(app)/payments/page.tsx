@@ -23,6 +23,8 @@ import {
   listPaymentsAction,
   createMiscExpenseAction,
   createPaymentAction,
+  updatePaymentAction,
+  deletePaymentAction,
 } from "@/actions/payments";
 import { listPartiesAction } from "@/actions/parties";
 import { listSaleInvoicesAction, listPurchaseInvoicesAction } from "@/actions/invoices";
@@ -32,6 +34,7 @@ import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
+import { printDocumentPdf } from "@/lib/print-pdf";
 
 type PaymentSplitRow = {
   id: string;
@@ -94,6 +97,7 @@ export default function PaymentsPage() {
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isExpenseDialogOpen, setIsExpenseDialogOpen] = useState(false);
+  const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Form input refs for sequential Enter-key navigation
@@ -289,6 +293,49 @@ export default function PaymentsPage() {
     [filteredPayments],
   );
 
+  function openPaymentEditor(payment: PaymentRow) {
+    setEditingPaymentId(payment.id);
+    setDirection((payment.direction || (payment.party.type === PartyType.CUSTOMER ? "IN" : "OUT")) as "IN" | "OUT");
+    setPartyId(payment.party.id);
+    setInvoiceId(
+      payment.saleInvoice?.id || payment.purchaseInvoice?.id || ""
+    );
+    setPaymentDate(new Date(payment.date).toISOString().slice(0, 16));
+    setNotes(payment.notes || "");
+    setSplits(
+      payment.splits.length > 0
+        ? payment.splits.map((split) => ({
+            method: split.method,
+            amount: split.amount,
+            reference: split.reference || "",
+          }))
+        : [{ method: PaymentMethod.CASH, amount: payment.amount, reference: "" }],
+    );
+    setIsDialogOpen(true);
+    setFormError(null);
+  }
+
+  async function handleDeletePayment(payment: PaymentRow) {
+    const ok = await confirm({
+      title: "Delete payment",
+      description: `Are you sure you want to delete payment ${payment.receiptNo || "voucher"}? This will remove the linked ledger entries and adjust invoice balances.`,
+      confirmText: "Delete",
+      variant: "destructive",
+    });
+    if (!ok) return;
+
+    try {
+      const res = await deletePaymentAction({ id: payment.id });
+      if (!res.success) {
+        await confirm.alert(res.error || "Failed to delete payment", { variant: "destructive" });
+      } else {
+        await loadData();
+      }
+    } catch (err: any) {
+      await confirm.alert(err?.message || "Failed to delete payment", { variant: "destructive" });
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
@@ -311,9 +358,9 @@ export default function PaymentsPage() {
 
     const directionLabel = direction === "IN" ? "Customer Receipt" : "Supplier Payment Voucher";
     const ok = await confirm({
-      title: `Record ${directionLabel}`,
-      description: `Confirm recording ${directionLabel} of PKR ${totalSplitAmount.toLocaleString()} for ${selectedParty?.name || "party"}?`,
-      confirmText: `Record ${directionLabel}`,
+      title: `${editingPaymentId ? "Update" : "Record"} ${directionLabel}`,
+      description: `Confirm ${editingPaymentId ? "updating" : "recording"} ${directionLabel} of PKR ${totalSplitAmount.toLocaleString()} for ${selectedParty?.name || "party"}?`,
+      confirmText: `${editingPaymentId ? "Update" : "Record"} ${directionLabel}`,
       variant: "primary",
     });
     if (!ok) return;
@@ -322,7 +369,8 @@ export default function PaymentsPage() {
     try {
       const isSaleInv = saleInvoices.some((i) => i.id === invoiceId);
       const isPurchaseInv = purchaseInvoices.some((i) => i.id === invoiceId);
-      const res = await createPaymentAction({
+      const payload = {
+        ...(editingPaymentId ? { id: editingPaymentId } : {}),
         partyId,
         direction,
         saleInvoiceId: isSaleInv ? invoiceId : null,
@@ -336,13 +384,16 @@ export default function PaymentsPage() {
         })),
         date: new Date(paymentDate),
         notes: notes.trim() || undefined,
-      });
+      };
+
+      const res = editingPaymentId ? await updatePaymentAction(payload) : await createPaymentAction(payload);
 
       if (!res.success) {
-        setFormError(res.error || "Failed to record payment.");
+        setFormError(res.error || `Failed to ${editingPaymentId ? "update" : "record"} payment.`);
       } else {
-        const createdId = (res as any).data?.id;
+        const createdId = (res as any).data?.id || editingPaymentId;
         setIsDialogOpen(false);
+        setEditingPaymentId(null);
         setPartyId("");
         setInvoiceId("");
         const now = new Date();
@@ -351,8 +402,8 @@ export default function PaymentsPage() {
         setNotes("");
         setSplits([{ method: PaymentMethod.CASH, amount: "", reference: "" }]);
         await loadData();
-        if (createdId) {
-          window.open(`/api/pdf/payment-receipt/${createdId}`, "_blank");
+        if (createdId && !editingPaymentId) {
+          printDocumentPdf(`/api/pdf/payment-receipt/${createdId}`).catch(() => {});
         }
       }
     } finally {
@@ -686,17 +737,43 @@ export default function PaymentsPage() {
                       )}
                     </td>
                     <td className="py-2 px-3 text-center whitespace-nowrap">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => window.open(`/api/pdf/payment-receipt/${p.id}`, "_blank")}
-                        className="h-7 text-xs gap-1 border-slate-300 hover:bg-slate-100 font-medium px-2"
-                        title={isMoneyIn ? "Print Payment Receipt" : "Print Payment Voucher"}
-                      >
-                        <Printer className="h-3 w-3 text-slate-600" />
-                        <span>{isMoneyIn ? "Receipt" : "Voucher"}</span>
-                      </Button>
+                      <div className="flex items-center justify-center gap-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openPaymentEditor(p)}
+                          className="h-7 text-[10px] gap-1 border-sky-200 text-sky-700 hover:bg-sky-50 font-medium px-2"
+                          title="Edit payment"
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleDeletePayment(p)}
+                          className="h-7 text-[10px] gap-1 border-rose-200 text-rose-700 hover:bg-rose-50 font-medium px-2"
+                          title="Delete payment"
+                        >
+                          Delete
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            printDocumentPdf(`/api/pdf/payment-receipt/${p.id}`).catch((e) =>
+                              confirm.alert(e.message, { variant: "destructive" })
+                            );
+                          }}
+                          className="h-7 text-xs gap-1 border-slate-300 hover:bg-slate-100 font-medium px-2"
+                          title={isMoneyIn ? "Print Payment Receipt" : "Print Payment Voucher"}
+                        >
+                          <Printer className="h-3 w-3 text-slate-600" />
+                          <span>{isMoneyIn ? "Receipt" : "Voucher"}</span>
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -712,7 +789,7 @@ export default function PaymentsPage() {
           <div className="w-[96vw] max-w-2xl rounded-2xl bg-white dark:bg-slate-900 p-6 shadow-2xl border border-slate-200 dark:border-slate-800 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
               <div>
-                <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Record Payment / Voucher</h2>
+                <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">{editingPaymentId ? "Update" : "Record"} Payment / Voucher</h2>
                 <p className="text-xs text-slate-500">Post cash, bank, or cheque transaction to party ledger with split methods</p>
               </div>
               <button

@@ -21,8 +21,13 @@ const useSecureCookies = process.env.NEXTAUTH_URL?.startsWith("https://") ?? fal
 export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
+    // 12-hour absolute maximum; JWT itself carries this expiry
+    maxAge: 12 * 60 * 60,
   },
-  jwt: {},
+  jwt: {
+    // Tokens expire after 12 hours forcing re-login
+    maxAge: 12 * 60 * 60,
+  },
   cookies: {
     sessionToken: {
       name: useSecureCookies ? "__Secure-next-auth.session-token" : "next-auth.session-token",
@@ -31,6 +36,7 @@ export const authOptions: NextAuthOptions = {
         sameSite: "lax",
         path: "/",
         secure: useSecureCookies,
+        // NO maxAge / expires → cookie is a session cookie deleted when browser closes
       },
     },
   },

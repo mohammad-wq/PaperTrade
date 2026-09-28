@@ -336,13 +336,10 @@ const styles = StyleSheet.create({
 
   // Footer
   footer: {
-    position: "absolute",
-    bottom: 22,
-    left: 40,
-    right: 40,
+    marginTop: 12,
     borderTopWidth: 0.5,
     borderTopColor: "#9ca3af",
-    paddingTop: 5,
+    paddingTop: 4,
     flexDirection: "row",
     justifyContent: "space-between",
     fontSize: 7,
@@ -603,7 +600,7 @@ export function DocumentPdfView({
           {typeof totalAmount === "number" && !isNaN(totalAmount) ? (
             <View style={styles.summaryCol}>
               {typeof freightCharges === "number" && freightCharges > 0 ? (
-                <>
+                <View>
                   <View style={styles.summaryRow}>
                     <Text style={styles.summaryLabel}>Subtotal:</Text>
                     <Text style={styles.summaryValue}>
@@ -614,7 +611,7 @@ export function DocumentPdfView({
                     <Text style={styles.summaryLabel}>Freight / Packing:</Text>
                     <Text style={styles.summaryValue}>PKR {formatMoney(freightCharges)}</Text>
                   </View>
-                </>
+                </View>
               ) : null}
               <View style={styles.grandTotalRow}>
                 <Text style={styles.grandTotalLabel}>Total Amount:</Text>
@@ -659,7 +656,7 @@ export function DocumentPdfView({
         ) : null}
 
         {/* Footer */}
-        <View style={styles.footer} fixed>
+        <View style={styles.footer}>
           <Text>{companyName} — Official Document</Text>
           <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>
@@ -909,7 +906,7 @@ export function PaymentReceiptPdfView({
         </View>
 
         {/* Footer */}
-        <View style={styles.footer} fixed>
+        <View style={styles.footer}>
           <Text>{companyName} — Official Voucher</Text>
           <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>

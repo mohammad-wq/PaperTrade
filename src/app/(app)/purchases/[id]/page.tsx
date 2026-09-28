@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { format } from "date-fns";
 import { ArrowLeft, Printer, FileText, ShoppingCart } from "lucide-react";
+import { PrintButton } from "@/components/ui/print-button";
 
 export const dynamic = "force-dynamic";
 
@@ -77,12 +78,7 @@ export default async function PurchaseInvoiceDetailPage({
         </div>
 
         <div className="flex items-center gap-2">
-          <Button asChild size="sm" className="h-8 gap-1.5 text-xs bg-slate-900 hover:bg-slate-800 text-white">
-            <a href={`/api/pdf/purchase-invoice/${invoice.id}`} target="_blank" rel="noreferrer">
-              <Printer className="h-3.5 w-3.5" />
-              Print / PDF
-            </a>
-          </Button>
+          <PrintButton url={`/api/pdf/purchase-invoice/${invoice.id}`} />
         </div>
       </div>
 
@@ -301,11 +297,7 @@ export default async function PurchaseInvoiceDetailPage({
                   <span className="font-mono font-bold text-amber-700 dark:text-amber-400 text-sm">
                     PKR {Number(p.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </span>
-                  <Button asChild size="sm" variant="outline" className="h-7 text-xs">
-                    <a href={`/api/pdf/payment/${p.id}`} target="_blank" rel="noreferrer">
-                      PDF
-                    </a>
-                  </Button>
+                  <PrintButton url={`/api/pdf/payment/${p.id}`} label="Voucher" className="h-7 text-xs" />
                 </div>
               </div>
             ))}

@@ -14,12 +14,18 @@ import {
   Eye,
   Printer,
   Download,
+  CheckCircle2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { listPurchaseInvoicesAction, createPurchaseInvoiceAction } from "@/actions/invoices";
+import {
+  listPurchaseInvoicesAction,
+  createPurchaseInvoiceAction,
+  updatePurchaseInvoiceAction,
+  deletePurchaseInvoiceAction,
+} from "@/actions/invoices";
 import { listPurchaseOrdersAction } from "@/actions/orders";
 import { listLocationsAction } from "@/actions/locations";
 import { listPartiesAction } from "@/actions/parties";
@@ -31,6 +37,9 @@ import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
+import { printDocumentPdf } from "@/lib/print-pdf";
 
 type PurchaseInvoiceRow = {
   id: string;
@@ -106,6 +115,10 @@ type WarehouseLotOption = {
 
 export default function PurchasesPage() {
   const confirm = useConfirm();
+  const { data: session } = useSession();
+  const canCreate = !session?.user ? false : canPerformAction(session.user.role, "purchases", "create", (session.user as any).permissions);
+  const canUpdate = !session?.user ? false : canPerformAction(session.user.role, "purchases", "update", (session.user as any).permissions);
+  const canDelete = !session?.user ? false : canPerformAction(session.user.role, "purchases", "delete", (session.user as any).permissions);
   const [invoices, setInvoices] = useState<PurchaseInvoiceRow[]>([]);
   const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
@@ -117,6 +130,7 @@ export default function PurchasesPage() {
   const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("OPEN");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const invoiceDateRef = useRef<HTMLInputElement>(null);
   const oneTimeNameRef = useRef<HTMLInputElement>(null);
@@ -149,11 +163,16 @@ export default function PurchasesPage() {
   const [amountPaid, setAmountPaid] = useState<string>("0");
   const [freightCharges, setFreightCharges] = useState<string>("0");
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "BANK" | "CHEQUE" | "OTHER">("CASH");
+  const [isSplitPayment, setIsSplitPayment] = useState(false);
+  const [paymentSplits, setPaymentSplits] = useState<
+    Array<{ method: "CASH" | "BANK" | "CHEQUE" | "OTHER"; amount: string; reference: string }>
+  >([
+    { method: "CASH", amount: "", reference: "" },
+    { method: "BANK", amount: "", reference: "" },
+  ]);
   const [items, setItems] = useState<LineItem[]>([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
-  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
   // Global keydown with Ctrl+Enter save support
@@ -269,15 +288,21 @@ export default function PurchasesPage() {
         throw new Error(errText || "Failed to generate preview PDF");
       }
 
-      if (pdfPreviewUrl) {
-        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-      }
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      setPdfPreviewUrl(url);
-      setShowPdfPreviewModal(true);
+      const objectUrl = URL.createObjectURL(blob);
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;";
+      iframe.src = objectUrl;
+      document.body.appendChild(iframe);
+      iframe.onload = () => {
+        setTimeout(() => {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+          setTimeout(() => { URL.revokeObjectURL(objectUrl); document.body.removeChild(iframe); }, 2000);
+        }, 300);
+      };
     } catch (err: any) {
-      await confirm.alert(err.message || "Failed to preview Purchase Invoice PDF", { variant: "destructive" });
+      await confirm.alert(err.message || "Failed to print Purchase Invoice preview", { variant: "destructive" });
     } finally {
       setPreviewLoading(false);
     }
@@ -482,6 +507,20 @@ export default function PurchasesPage() {
     setItems(items.filter((_, idx) => idx !== index));
   }
 
+  async function handleStatusChange(id: string, status: string) {
+    const ok = await confirm({
+      title: "Purchase Invoice Status",
+      description: `Are you sure you want to mark this invoice as ${status}?`,
+      confirmText: status === "SETTLED" ? "Mark Settled" : "Update Status",
+      variant: "primary",
+    });
+    if (!ok) return;
+
+    // Note: This would need a backend action to update purchase invoice status
+    // For now, we'll just show an alert
+    await confirm.alert("Status update functionality requires backend implementation.", { variant: "default" });
+  }
+
   async function handleCreateQuickLot(e: React.FormEvent) {
     e.preventDefault();
     const targetLocId =
@@ -516,9 +555,101 @@ export default function PurchasesPage() {
     }
   }
 
+  function resetPurchaseInvoiceForm() {
+    setSupplierType("REGISTERED");
+    setOneTimeSupplierName("");
+    setOneTimeSupplierPhone("");
+    setSupplierId("");
+    setLocationId("");
+    setPurchaseOrderId("");
+    setInvoiceDate(getLocalDateTimeInputValue());
+    setNotes("");
+    setAmountPaid("0");
+    setFreightCharges("0");
+    setPaymentMethod("CASH");
+    setIsSplitPayment(false);
+    setPaymentSplits([
+      { method: "CASH", amount: "", reference: "" },
+      { method: "BANK", amount: "", reference: "" },
+    ]);
+    setItems([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
+    setFormError(null);
+  }
+
+  function openEditPurchaseInvoice(invoice: PurchaseInvoiceRow) {
+    if (!canUpdate) {
+      confirm.alert("You do not have permission to edit purchase invoices.", { variant: "destructive" });
+      return;
+    }
+    setEditingInvoiceId(invoice.id);
+    setSupplierType("REGISTERED");
+    setSupplierId(invoice.supplier.id);
+    setOneTimeSupplierName("");
+    setOneTimeSupplierPhone("");
+    setLocationId(invoice.location.id);
+    setPurchaseOrderId(invoice.purchaseOrder?.id || "");
+    setInvoiceDate(new Date(invoice.date).toISOString().slice(0, 16));
+    setNotes("");
+    setAmountPaid(String(invoice.amountPaid || 0));
+    setFreightCharges(String(invoice.freightCharges || 0));
+    setIsSplitPayment(false);
+    setPaymentSplits([
+      { method: "CASH", amount: "", reference: "" },
+      { method: "BANK", amount: "", reference: "" },
+    ]);
+    setItems(
+      invoice.items.map((item) => ({
+        productId: item.product.id,
+        locationId: item.locationId || invoice.location.id,
+        warehouseLotId: item.warehouseLot?.id || "",
+        quantity: item.quantity,
+        unitCost: item.unitCost,
+      }))
+    );
+    setFormError(null);
+    setIsDialogOpen(true);
+  }
+
+  async function handleDeletePurchaseInvoice(invoice: PurchaseInvoiceRow) {
+    if (!canDelete) {
+      await confirm.alert("You do not have permission to delete purchase invoices.", { variant: "destructive" });
+      return;
+    }
+    const ok = await confirm({
+      title: "Delete purchase invoice",
+      description: `Are you sure you want to delete ${invoice.invoiceNo}? This will remove the invoice, its stock movements, and related ledger entries.`,
+      confirmText: "Delete",
+      variant: "destructive",
+    });
+    if (!ok) return;
+
+    try {
+      const res = await deletePurchaseInvoiceAction({ id: invoice.id });
+      if (!res.success) {
+        await confirm.alert(res.error || "Failed to delete purchase invoice.", { variant: "destructive" });
+        return;
+      }
+      setEditingInvoiceId(null);
+      setIsDialogOpen(false);
+      await loadData();
+    } catch (err: any) {
+      await confirm.alert(err?.message || "Failed to delete purchase invoice.", { variant: "destructive" });
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
+
+    const isEditing = Boolean(editingInvoiceId);
+    if (isEditing && !canUpdate) {
+      setFormError("You do not have permission to edit purchase invoices.");
+      return;
+    }
+    if (!isEditing && !canCreate) {
+      setFormError("You do not have permission to create purchase invoices.");
+      return;
+    }
 
     if (supplierType === "REGISTERED" && !supplierId) {
       setFormError("Please select a registered supplier.");
@@ -538,16 +669,41 @@ export default function PurchasesPage() {
     }
 
     const ok = await confirm({
-      title: "Confirm Purchase Invoice",
-      description: "Are you sure you want to record this purchase invoice and receive inventory?",
-      confirmText: "Record Invoice",
+      title: isEditing ? "Update Purchase Invoice" : "Confirm Purchase Invoice",
+      description: isEditing
+        ? "Are you sure you want to update this purchase invoice and adjust stock and ledger balances?"
+        : "Are you sure you want to record this purchase invoice and receive inventory?",
+      confirmText: isEditing ? "Update Invoice" : "Record Invoice",
       variant: "primary",
     });
     if (!ok) return;
 
+    if (isSplitPayment && numPaid > 0) {
+      const activeSplits = paymentSplits.filter((s) => (parseFloat(s.amount) || 0) > 0);
+      const splitSum = activeSplits.reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
+      if (Math.abs(splitSum - numPaid) > 0.05) {
+        setFormError(
+          `Sum of split payments (PKR ${splitSum.toFixed(2)}) must equal Total Amount Paid (PKR ${numPaid.toFixed(2)}).`
+        );
+        return;
+      }
+    }
+
     setSubmitting(true);
     try {
-      const res = await createPurchaseInvoiceAction({
+      const splitsPayload =
+        isSplitPayment && numPaid > 0
+          ? paymentSplits
+              .filter((s) => (parseFloat(s.amount) || 0) > 0)
+              .map((s) => ({
+                method: s.method,
+                amount: parseFloat(s.amount) || 0,
+                reference: s.reference.trim() || undefined,
+              }))
+          : undefined;
+
+      const payload = {
+        ...(isEditing ? { id: editingInvoiceId } : {}),
         supplierType,
         supplierId: supplierType === "REGISTERED" ? supplierId : undefined,
         oneTimeSupplierName: supplierType === "ONE_TIME" ? (oneTimeSupplierName.trim() || "Market Vendor") : undefined,
@@ -557,8 +713,9 @@ export default function PurchasesPage() {
         date: new Date(invoiceDate),
         notes,
         amountPaid: numPaid,
-        freightCharges: numFreight,
         paymentMethod: numPaid > 0 ? paymentMethod : undefined,
+        paymentSplits: splitsPayload,
+        freightCharges: numFreight,
         items: items.map((i) => ({
           productId: i.productId,
           locationId: i.locationId || finalLocationId,
@@ -566,20 +723,18 @@ export default function PurchasesPage() {
           quantity: i.quantity,
           unitCost: i.unitCost,
         })),
-      });
+      };
+
+      const res = isEditing
+        ? await updatePurchaseInvoiceAction(payload)
+        : await createPurchaseInvoiceAction(payload);
 
       if (!res.success) {
-        setFormError(res.error || "Failed to record purchase invoice.");
+        setFormError(res.error || (isEditing ? "Failed to update purchase invoice." : "Failed to record purchase invoice."));
       } else {
         setIsDialogOpen(false);
-        setSupplierId("");
-        setLocationId("");
-        setPurchaseOrderId("");
-        setInvoiceDate(getLocalDateTimeInputValue());
-        setAmountPaid("0");
-        setFreightCharges("0");
-        setItems([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, unitCost: 0 }]);
-        setNotes("");
+        setEditingInvoiceId(null);
+        resetPurchaseInvoiceForm();
         await loadData();
       }
     } finally {
@@ -616,16 +771,22 @@ export default function PurchasesPage() {
             </span>
           </div>
 
-          <Button
-            onClick={() => {
-              if (!locationId && locations.length > 0) setLocationId(locations[0].id);
-              setIsDialogOpen(true);
-            }}
-            className="h-8 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold shadow-xs px-3"
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            Receive Purchase <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
-          </Button>
+          {canCreate && (
+            <Button
+              onClick={() => {
+                if (!canCreate) {
+                  confirm.alert("You do not have permission to create purchase invoices.", { variant: "destructive" });
+                  return;
+                }
+                if (!locationId && locations.length > 0) setLocationId(locations[0].id);
+                setIsDialogOpen(true);
+              }}
+              className="h-8 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold shadow-xs px-3"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              Receive Purchase <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -790,12 +951,34 @@ export default function PurchasesPage() {
                       }`}>{inv.status}</span>
                     </td>
                     <td className="py-1 px-2 text-center whitespace-nowrap">
-                      <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40" title="Download PDF">
-                        <a href={`/api/pdf/purchase-invoice/${inv.id}`} target="_blank" rel="noreferrer">
-                          <FileText className="h-3 w-3 mr-1" />
-                          PDF
-                        </a>
-                      </Button>
+                      <div className="flex items-center justify-center gap-1">
+                        <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100" title="Print Invoice"
+                          onClick={() => {
+                            printDocumentPdf(`/api/pdf/purchase-invoice/${inv.id}`).catch((e) =>
+                              confirm.alert(e.message, { variant: "destructive" })
+                            );
+                          }}
+                        >
+                          <Printer className="h-3 w-3 mr-1" />
+                          Print
+                        </Button>
+                        {canUpdate && inv.status === "OPEN" && (
+                          <Button size="sm" variant="ghost" onClick={() => handleStatusChange(inv.id, "SETTLED")} className="h-6 px-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40">
+                            <CheckCircle2 className="h-3 w-3 mr-1" />
+                            Settle
+                          </Button>
+                        )}
+                        {canUpdate && inv.status === "OPEN" && (
+                          <Button size="sm" variant="ghost" onClick={() => openEditPurchaseInvoice(inv)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
+                            Edit
+                          </Button>
+                        )}
+                        {canDelete && inv.status === "OPEN" && (
+                          <Button size="sm" variant="ghost" onClick={() => handleDeletePurchaseInvoice(inv)} className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40">
+                            Delete
+                          </Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -837,7 +1020,7 @@ export default function PurchasesPage() {
 
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div>
-                <h2 className="text-lg font-bold text-slate-900">Record Purchase Invoice</h2>
+                <h2 className="text-lg font-bold text-slate-900">{editingInvoiceId ? "Edit Purchase Invoice" : "Record Purchase Invoice"}</h2>
                 <p className="text-xs text-slate-500">Receive stock from paper mill/supplier and post to payables</p>
               </div>
               <button
@@ -1240,19 +1423,37 @@ export default function PurchasesPage() {
                       />
                     </div>
 
+                    {/* Payment Method / Multi-mode Toggle */}
                     <div>
-                      <Label className="text-[10px] uppercase font-bold text-slate-700">Payment Method</Label>
-                      <select
-                        value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value as any)}
-                        disabled={numPaid <= 0}
-                        className="w-full mt-1 h-8 rounded border border-slate-300 bg-white px-2 text-xs font-semibold disabled:opacity-50"
-                      >
-                        <option value="CASH">CASH (Drawer)</option>
-                        <option value="BANK">BANK (Transfer)</option>
-                        <option value="CHEQUE">CHEQUE</option>
-                        <option value="OTHER">OTHER</option>
-                      </select>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[10px] uppercase font-bold text-slate-700">Payment Mode</Label>
+                        {numPaid > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setIsSplitPayment(!isSplitPayment)}
+                            className="text-[10px] font-bold text-amber-800 dark:text-amber-400 hover:underline"
+                          >
+                            {isSplitPayment ? "Single Mode" : "+ Multiple Modes"}
+                          </button>
+                        )}
+                      </div>
+                      {!isSplitPayment ? (
+                        <select
+                          value={paymentMethod}
+                          onChange={(e) => setPaymentMethod(e.target.value as any)}
+                          disabled={numPaid <= 0}
+                          className="w-full mt-1 h-8 rounded border border-slate-300 bg-white px-2 text-xs font-semibold disabled:opacity-50"
+                        >
+                          <option value="CASH">CASH (Drawer)</option>
+                          <option value="BANK">BANK (Transfer)</option>
+                          <option value="CHEQUE">CHEQUE</option>
+                          <option value="OTHER">OTHER</option>
+                        </select>
+                      ) : (
+                        <div className="mt-1 text-[11px] font-bold text-amber-800 dark:text-amber-400">
+                          {paymentSplits.filter((s) => (parseFloat(s.amount) || 0) > 0).length} split mode(s) selected
+                        </div>
+                      )}
                     </div>
 
                     <div>
@@ -1276,6 +1477,87 @@ export default function PurchasesPage() {
                       />
                     </div>
                   </div>
+
+                  {/* Multiple Payment Modes Breakdown Panel */}
+                  {isSplitPayment && numPaid > 0 && (
+                    <div className="mt-2 p-2 bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded space-y-2">
+                      <div className="flex items-center justify-between text-[11px] font-bold text-amber-900 dark:text-amber-300">
+                        <span>Multiple Payment Allocation</span>
+                        {(() => {
+                          const splitSum = paymentSplits.reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
+                          const isMatched = Math.abs(splitSum - numPaid) < 0.05;
+                          return (
+                            <span className={isMatched ? "text-emerald-700 dark:text-emerald-400 font-bold" : "text-rose-600 dark:text-rose-400 font-bold"}>
+                              Split Total: PKR {splitSum.toFixed(2)} / Paid: PKR {numPaid.toFixed(2)} {isMatched ? "✓" : "(Diff: " + (numPaid - splitSum).toFixed(2) + ")"}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      {paymentSplits.map((split, sIdx) => (
+                        <div key={sIdx} className="flex items-center gap-1.5">
+                          <select
+                            value={split.method}
+                            onChange={(e) => {
+                              const next = [...paymentSplits];
+                              next[sIdx].method = e.target.value as any;
+                              setPaymentSplits(next);
+                            }}
+                            className="h-7 w-28 text-xs rounded border border-slate-300 bg-white dark:bg-slate-900 px-1 font-semibold"
+                          >
+                            <option value="CASH">CASH</option>
+                            <option value="BANK">BANK</option>
+                            <option value="CHEQUE">CHEQUE</option>
+                            <option value="OTHER">OTHER</option>
+                          </select>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={split.amount}
+                            onChange={(e) => {
+                              const next = [...paymentSplits];
+                              next[sIdx].amount = e.target.value;
+                              setPaymentSplits(next);
+                            }}
+                            placeholder="Amount"
+                            className="h-7 flex-1 text-xs text-right font-mono bg-white dark:bg-slate-900"
+                          />
+                          <Input
+                            type="text"
+                            value={split.reference}
+                            onChange={(e) => {
+                              const next = [...paymentSplits];
+                              next[sIdx].reference = e.target.value;
+                              setPaymentSplits(next);
+                            }}
+                            placeholder="Ref / Chq #"
+                            className="h-7 w-28 text-xs bg-white dark:bg-slate-900"
+                          />
+                          {paymentSplits.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setPaymentSplits(paymentSplits.filter((_, i) => i !== sIdx))}
+                              className="p-1 text-rose-500 hover:text-rose-700 text-xs"
+                              title="Remove split"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      <div className="flex justify-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPaymentSplits([...paymentSplits, { method: "BANK", amount: "", reference: "" }])}
+                          className="h-6 text-[10px] px-2 border-amber-300 text-amber-900 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                        >
+                          + Add Payment Method
+                        </Button>
+                      </div>
+                    </div>
+                  )}
 
                   <div>
                     <Label htmlFor="pnotes" className="text-xs">
@@ -1372,7 +1654,7 @@ export default function PurchasesPage() {
                     Cancel
                   </Button>
                   <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs font-semibold">
-                    {submitting ? "Processing..." : "Save & Receive Stock"}
+                    {submitting ? "Processing..." : editingInvoiceId ? "Update Purchase Invoice" : "Save & Receive Stock"}
                   </Button>
                 </div>
               </div>
@@ -1460,65 +1742,7 @@ export default function PurchasesPage() {
         </div>
       )}
 
-      {/* Pre-Posting Live PDF Document Preview Modal */}
-      {showPdfPreviewModal && pdfPreviewUrl && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
-            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-amber-400" />
-                <span className="font-bold text-xs">Purchase Invoice Document Preview (Pre-Posting)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    if (pdfPreviewUrl) {
-                      const win = window.open(pdfPreviewUrl, "_blank");
-                      win?.focus();
-                    }
-                  }}
-                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
-                  title="Open in dedicated tab for safe printing"
-                >
-                  <Printer className="h-3.5 w-3.5" />
-                  Print / Open Tab
-                </Button>
-                <a
-                  href={pdfPreviewUrl}
-                  download={`Purchase-Invoice-Preview-${new Date().toISOString().slice(0, 10)}.pdf`}
-                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-amber-700 hover:bg-amber-800 text-white rounded font-medium"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Download
-                </a>
-                <button
-                  onClick={() => {
-                    setShowPdfPreviewModal(false);
-                    if (pdfPreviewUrl) {
-                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-                      setPdfPreviewUrl(null);
-                    }
-                  }}
-                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
-                  title="Close Preview"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
-              <iframe
-                id="purPdfPreviewIframe"
-                src={pdfPreviewUrl}
-                className="w-full h-full rounded border border-slate-300 dark:border-slate-800 bg-white"
-                title="Purchase Invoice Preview"
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      {/* PDF modal removed — using browser print dialog (inline iframe) */}
     </div>
   );
 }

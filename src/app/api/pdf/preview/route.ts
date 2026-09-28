@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/options";
-import { renderToBuffer } from "@react-pdf/renderer";
-import React from "react";
-import { DocumentPdfView } from "@/pdf/documents";
+import { renderDocumentPdfKit } from "@/lib/pdfkit-generator";
 import { format } from "date-fns";
 
 export const dynamic = "force-dynamic";
@@ -54,7 +52,7 @@ export async function POST(request: NextRequest) {
     if (type === "sale-return") docTitle = "Credit Note";
     if (type === "purchase-return") docTitle = "Debit Note";
 
-    const docElement = React.createElement(DocumentPdfView, {
+    const pdfBuffer = await renderDocumentPdfKit({
       docType: docTitle,
       docNumber,
       financialYearLabel,
@@ -87,9 +85,7 @@ export async function POST(request: NextRequest) {
       }),
     });
 
-    const buffer = await renderToBuffer(docElement as any);
-
-    return new NextResponse(new Uint8Array(buffer), {
+    return new NextResponse(new Uint8Array(pdfBuffer), {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",

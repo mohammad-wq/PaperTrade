@@ -36,7 +36,9 @@ import {
   listSaleInvoicesAction,
   createSaleInvoiceAction,
   updateSaleInvoiceAction,
+  deleteSaleInvoiceAction,
 } from "@/actions/invoices";
+import { printDocumentPdf } from "@/lib/print-pdf";
 import { listPartiesAction, listInventoryAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { listLocationsAction } from "@/actions/locations";
@@ -47,6 +49,8 @@ import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type WarehouseLotOption = {
   id: string;
@@ -129,6 +133,10 @@ type CommittedLineItem = {
 
 export default function SalesPage() {
   const confirm = useConfirm();
+  const { data: session } = useSession();
+  const canCreate = !session?.user ? false : canPerformAction(session.user.role, "sales", "create", (session.user as any).permissions);
+  const canUpdate = !session?.user ? false : canPerformAction(session.user.role, "sales", "update", (session.user as any).permissions);
+  const canDelete = !session?.user ? false : canPerformAction(session.user.role, "sales", "delete", (session.user as any).permissions);
   const [invoices, setInvoices] = useState<SaleInvoiceRow[]>([]);
   const [parties, setParties] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
@@ -178,13 +186,18 @@ export default function SalesPage() {
   const [amountPaid, setAmountPaid] = useState<string>("0");
   const [freightCharges, setFreightCharges] = useState<string>("0");
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "BANK" | "CHEQUE" | "OTHER">("CASH");
+  const [isSplitPayment, setIsSplitPayment] = useState(false);
+  const [paymentSplits, setPaymentSplits] = useState<
+    Array<{ method: "CASH" | "BANK" | "CHEQUE" | "OTHER"; amount: string; reference: string }>
+  >([
+    { method: "CASH", amount: "", reference: "" },
+    { method: "BANK", amount: "", reference: "" },
+  ]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Edit Invoice & Live PDF Preview States
+  // Edit Invoice & Live PDF Print States
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
-  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
-  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
 
   // References for Keyboard Navigation
@@ -482,6 +495,10 @@ export default function SalesPage() {
 
   // Open Invoice Dialog
   function openNewInvoiceDialog() {
+    if (!canCreate) {
+      confirm.alert("You do not have permission to create sales invoices.", { variant: "destructive" });
+      return;
+    }
     setEditingInvoiceId(null);
     setCommittedItems([]);
     setActiveCodeInput("");
@@ -494,6 +511,12 @@ export default function SalesPage() {
     setFormError(null);
     setAmountPaid("0");
     setFreightCharges("0");
+    setPaymentMethod("CASH");
+    setIsSplitPayment(false);
+    setPaymentSplits([
+      { method: "CASH", amount: "", reference: "" },
+      { method: "BANK", amount: "", reference: "" },
+    ]);
     setCustomerType("WALK_IN");
     setWalkInName("");
     setWalkInPhone("");
@@ -510,6 +533,10 @@ export default function SalesPage() {
 
   // Open Edit Invoice Dialog
   function openEditInvoiceDialog(inv: SaleInvoiceRow) {
+    if (!canUpdate) {
+      confirm.alert("You do not have permission to edit sales invoices.", { variant: "destructive" });
+      return;
+    }
     setEditingInvoiceId(inv.id);
     const isWalkIn = inv.customer.name.toLowerCase().includes("walk-in");
     if (isWalkIn) {
@@ -528,6 +555,11 @@ export default function SalesPage() {
     setNotes(inv.notes || "");
     setAmountPaid(String(inv.amountPaid || 0));
     setFreightCharges(String((inv as any).freightCharges || 0));
+    setIsSplitPayment(false);
+    setPaymentSplits([
+      { method: "CASH", amount: "", reference: "" },
+      { method: "BANK", amount: "", reference: "" },
+    ]);
 
     const items: CommittedLineItem[] = inv.items.map((it: any) => {
       const prod = products.find((p) => p.id === (it.product?.id || it.productId));
@@ -626,6 +658,7 @@ export default function SalesPage() {
         })),
       };
 
+      // Fetch preview PDF then immediately trigger print dialog
       const res = await fetch("/api/pdf/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -637,17 +670,44 @@ export default function SalesPage() {
         throw new Error(errText || "Failed to generate preview PDF");
       }
 
-      if (pdfPreviewUrl) {
-        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-      }
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      setPdfPreviewUrl(url);
-      setShowPdfPreviewModal(true);
+      const objectUrl = URL.createObjectURL(blob);
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;";
+      iframe.src = objectUrl;
+      document.body.appendChild(iframe);
+      iframe.onload = () => {
+        setTimeout(() => {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+          setTimeout(() => {
+            URL.revokeObjectURL(objectUrl);
+            document.body.removeChild(iframe);
+          }, 2000);
+        }, 300);
+      };
     } catch (err: any) {
-      await confirm.alert(err.message || "Failed to preview invoice PDF", { variant: "destructive" });
+      await confirm.alert(err.message || "Failed to print invoice preview", { variant: "destructive" });
     } finally {
       setPreviewLoading(false);
+    }
+  }
+
+  async function handleDeleteInvoice(inv: SaleInvoiceRow) {
+    if (!canDelete) {
+      await confirm.alert("You do not have permission to delete sales invoices.", { variant: "destructive" });
+      return;
+    }
+    const confirmed = await confirm.confirm({
+      title: "Delete Invoice",
+      description: `Delete invoice ${inv.invoiceNo}? This will reverse all stock movements and ledger entries. This cannot be undone.`,
+      variant: "destructive",
+      confirmText: "Delete",
+    });
+    if (!confirmed) return;
+    const res = await deleteSaleInvoiceAction({ id: inv.id });
+    if (!res.success) {
+      await confirm.alert(res.error || "Failed to delete invoice.", { variant: "destructive" });
     }
   }
 
@@ -991,6 +1051,17 @@ export default function SalesPage() {
       return;
     }
 
+    if (isSplitPayment && paid > 0) {
+      const activeSplits = paymentSplits.filter((s) => (parseFloat(s.amount) || 0) > 0);
+      const splitSum = activeSplits.reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
+      if (Math.abs(splitSum - paid) > 0.05) {
+        setFormError(
+          `Sum of split payments (PKR ${splitSum.toFixed(2)}) must equal Total Amount Paid (PKR ${paid.toFixed(2)}).`
+        );
+        return;
+      }
+    }
+
     const fallbackLocId = locationId || committedItems[0]?.locationId || dbLocations[0]?.id;
 
     setSubmitting(true);
@@ -1004,6 +1075,16 @@ export default function SalesPage() {
         amountPaid: paid,
         paidImmediately: paid > 0,
         paymentMethod: paid > 0 ? paymentMethod : undefined,
+        paymentSplits:
+          isSplitPayment && paid > 0
+            ? paymentSplits
+                .filter((s) => (parseFloat(s.amount) || 0) > 0)
+                .map((s) => ({
+                  method: s.method,
+                  amount: parseFloat(s.amount) || 0,
+                  reference: s.reference.trim() || undefined,
+                }))
+            : undefined,
         items: committedItems.map((item) => ({
           productId: item.productId,
           locationId: item.locationId || fallbackLocId,
@@ -1094,13 +1175,15 @@ export default function SalesPage() {
           </div>
 
           {/* Primary Action Button: Open Invoice Entry Window */}
-          <Button
-            onClick={openNewInvoiceDialog}
-            className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-3"
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New Estimate <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
-          </Button>
+          {canCreate && (
+            <Button
+              onClick={openNewInvoiceDialog}
+              className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-3"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              New Estimate <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1325,16 +1408,18 @@ export default function SalesPage() {
                       {/* Actions */}
                       <td className="py-1 px-2 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => openEditInvoiceDialog(inv)}
-                            className="h-6 px-1.5 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40"
-                            title="Edit Estimate"
-                          >
-                            <Edit className="h-3 w-3 mr-1" />
-                            Edit
-                          </Button>
+                          {canUpdate && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => openEditInvoiceDialog(inv)}
+                              className="h-6 px-1.5 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+                              title="Edit Estimate"
+                            >
+                              <Edit className="h-3 w-3 mr-1" />
+                              Edit
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"
@@ -1346,17 +1431,26 @@ export default function SalesPage() {
                             DO
                           </Button>
                           <Button
-                            asChild
                             variant="ghost"
                             size="sm"
-                            className="h-6 px-1.5 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50"
-                            title="Download PDF"
+                            className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100"
+                            title="Print Invoice"
+                            onClick={() => printDocumentPdf(`/api/pdf/sale-invoice/${inv.id}`).catch((e) => confirm.alert(e.message, { variant: "destructive" }))}
                           >
-                            <a href={`/api/pdf/sale-invoice/${inv.id}`} target="_blank" rel="noreferrer">
-                              <FileText className="h-3 w-3 mr-1" />
-                              PDF
-                            </a>
+                            <Printer className="h-3 w-3 mr-1" />
+                            Print
                           </Button>
+                          {canDelete && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-1.5 text-xs text-red-600 hover:text-red-800 hover:bg-red-50"
+                              title="Delete Invoice"
+                              onClick={() => handleDeleteInvoice(inv)}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"
@@ -2017,22 +2111,39 @@ export default function SalesPage() {
                       )}
                     </div>
 
-                    {/* Payment Method */}
+                    {/* Payment Method / Multi-mode Toggle */}
                     <div>
-                      <Label className="text-[10px] uppercase font-bold text-slate-700 dark:text-slate-300">
-                        Payment Method
-                      </Label>
-                      <select
-                        value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value as any)}
-                        disabled={numPaid <= 0}
-                        className="w-full mt-1 h-8 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-semibold disabled:opacity-50"
-                      >
-                        <option value="CASH">CASH (Drawer)</option>
-                        <option value="BANK">BANK (Transfer)</option>
-                        <option value="CHEQUE">CHEQUE</option>
-                        <option value="OTHER">OTHER</option>
-                      </select>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[10px] uppercase font-bold text-slate-700 dark:text-slate-300">
+                          Payment Mode
+                        </Label>
+                        {numPaid > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setIsSplitPayment(!isSplitPayment)}
+                            className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline"
+                          >
+                            {isSplitPayment ? "Single Mode" : "+ Multiple Modes"}
+                          </button>
+                        )}
+                      </div>
+                      {!isSplitPayment ? (
+                        <select
+                          value={paymentMethod}
+                          onChange={(e) => setPaymentMethod(e.target.value as any)}
+                          disabled={numPaid <= 0}
+                          className="w-full mt-1 h-8 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-semibold disabled:opacity-50"
+                        >
+                          <option value="CASH">CASH (Drawer)</option>
+                          <option value="BANK">BANK (Transfer)</option>
+                          <option value="CHEQUE">CHEQUE</option>
+                          <option value="OTHER">OTHER</option>
+                        </select>
+                      ) : (
+                        <div className="mt-1 text-[11px] font-bold text-indigo-700 dark:text-indigo-400">
+                          {paymentSplits.filter((s) => (parseFloat(s.amount) || 0) > 0).length} split mode(s) selected
+                        </div>
+                      )}
                     </div>
 
                     {/* Freight / Packing Charges */}
@@ -2059,6 +2170,87 @@ export default function SalesPage() {
                       />
                     </div>
                   </div>
+
+                  {/* Multiple Payment Modes Breakdown Panel */}
+                  {isSplitPayment && numPaid > 0 && (
+                    <div className="mt-2 p-2 bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded space-y-2">
+                      <div className="flex items-center justify-between text-[11px] font-bold text-indigo-900 dark:text-indigo-300">
+                        <span>Multiple Payment Allocation</span>
+                        {(() => {
+                          const splitSum = paymentSplits.reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
+                          const isMatched = Math.abs(splitSum - numPaid) < 0.05;
+                          return (
+                            <span className={isMatched ? "text-emerald-600 dark:text-emerald-400 font-bold" : "text-amber-600 dark:text-amber-400 font-bold"}>
+                              Split Total: PKR {splitSum.toFixed(2)} / Paid: PKR {numPaid.toFixed(2)} {isMatched ? "✓" : "(Diff: " + (numPaid - splitSum).toFixed(2) + ")"}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      {paymentSplits.map((split, sIdx) => (
+                        <div key={sIdx} className="flex items-center gap-1.5">
+                          <select
+                            value={split.method}
+                            onChange={(e) => {
+                              const next = [...paymentSplits];
+                              next[sIdx].method = e.target.value as any;
+                              setPaymentSplits(next);
+                            }}
+                            className="h-7 w-28 text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1 font-semibold"
+                          >
+                            <option value="CASH">CASH</option>
+                            <option value="BANK">BANK</option>
+                            <option value="CHEQUE">CHEQUE</option>
+                            <option value="OTHER">OTHER</option>
+                          </select>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={split.amount}
+                            onChange={(e) => {
+                              const next = [...paymentSplits];
+                              next[sIdx].amount = e.target.value;
+                              setPaymentSplits(next);
+                            }}
+                            placeholder="Amount"
+                            className="h-7 flex-1 text-xs text-right font-mono bg-white dark:bg-slate-900"
+                          />
+                          <Input
+                            type="text"
+                            value={split.reference}
+                            onChange={(e) => {
+                              const next = [...paymentSplits];
+                              next[sIdx].reference = e.target.value;
+                              setPaymentSplits(next);
+                            }}
+                            placeholder="Ref / Chq #"
+                            className="h-7 w-28 text-xs bg-white dark:bg-slate-900"
+                          />
+                          {paymentSplits.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setPaymentSplits(paymentSplits.filter((_, i) => i !== sIdx))}
+                              className="p-1 text-rose-500 hover:text-rose-700 text-xs"
+                              title="Remove split"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      <div className="flex justify-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPaymentSplits([...paymentSplits, { method: "BANK", amount: "", reference: "" }])}
+                          className="h-6 text-[10px] px-2 border-indigo-300 text-indigo-700 hover:bg-indigo-100 dark:hover:bg-indigo-900/40"
+                        >
+                          + Add Payment Method
+                        </Button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Notes */}
                   <div className="pt-1">
@@ -2148,7 +2340,7 @@ export default function SalesPage() {
                   title="Generate & View Live Document PDF"
                 >
                   <Eye className="h-3.5 w-3.5 text-emerald-600" />
-                  {previewLoading ? "Rendering..." : "Preview PDF"}
+                  {previewLoading ? "Printing..." : "Print Preview"}
                 </Button>
                 <Button
                   type="button"
@@ -2176,65 +2368,7 @@ export default function SalesPage() {
         </div>
       )}
 
-      {/* Pre-Posting Live PDF Document Preview Modal */}
-      {showPdfPreviewModal && pdfPreviewUrl && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
-            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-emerald-400" />
-                <span className="font-bold text-xs">Official Document Preview (Pre-Posting)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    if (pdfPreviewUrl) {
-                      const win = window.open(pdfPreviewUrl, "_blank");
-                      win?.focus();
-                    }
-                  }}
-                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
-                  title="Open in dedicated tab for safe printing"
-                >
-                  <Printer className="h-3.5 w-3.5" />
-                  Print / Open Tab
-                </Button>
-                <a
-                  href={pdfPreviewUrl}
-                  download={`Invoice-Preview-${new Date().toISOString().slice(0, 10)}.pdf`}
-                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Download
-                </a>
-                <button
-                  onClick={() => {
-                    setShowPdfPreviewModal(false);
-                    if (pdfPreviewUrl) {
-                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-                      setPdfPreviewUrl(null);
-                    }
-                  }}
-                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
-                  title="Close Preview"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
-              <iframe
-                id="pdfPreviewIframe"
-                src={pdfPreviewUrl}
-                className="w-full h-full rounded border border-slate-300 dark:border-slate-800 bg-white"
-                title="Invoice Preview"
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      {/* PDF preview replaced with browser print dialog (printDocumentPdf) */}
     </div>
   );
 }

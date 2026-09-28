@@ -24,6 +24,8 @@ import { Label } from "@/components/ui/label";
 import {
   listPurchaseOrdersAction,
   createPurchaseOrderAction,
+  updatePurchaseOrderAction,
+  deletePurchaseOrderAction,
   updatePurchaseOrderStatusAction,
 } from "@/actions/orders";
 import { listLocationsAction } from "@/actions/locations";
@@ -36,6 +38,7 @@ import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
+import { printDocumentPdf } from "@/lib/print-pdf";
 
 type PORow = {
   id: string;
@@ -89,6 +92,7 @@ export default function PurchaseOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const oneTimeNameRef = useRef<HTMLInputElement>(null);
   const destLocRef = useRef<HTMLInputElement>(null);
@@ -132,8 +136,6 @@ export default function PurchaseOrdersPage() {
   const [items, setItems] = useState<LineItem[]>([{ productId: "", quantity: 1, unitCost: 0 }]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
-  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
   const searchParams = useSearchParams();
@@ -224,15 +226,15 @@ export default function PurchaseOrdersPage() {
         throw new Error(errText || "Failed to generate preview PDF");
       }
 
-      if (pdfPreviewUrl) {
-        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-      }
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      setPdfPreviewUrl(url);
-      setShowPdfPreviewModal(true);
+      const objectUrl = URL.createObjectURL(blob);
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;";
+      iframe.src = objectUrl;
+      document.body.appendChild(iframe);
+      iframe.onload = () => { setTimeout(() => { iframe.contentWindow?.focus(); iframe.contentWindow?.print(); setTimeout(() => { URL.revokeObjectURL(objectUrl); document.body.removeChild(iframe); }, 2000); }, 300); };
     } catch (err: any) {
-      await confirm.alert(err.message || "Failed to preview PO PDF", { variant: "destructive" });
+      await confirm.alert(err.message || "Failed to print PO preview", { variant: "destructive" });
     } finally {
       setPreviewLoading(false);
     }
@@ -349,6 +351,61 @@ export default function PurchaseOrdersPage() {
     setItems(items.filter((_, idx) => idx !== index));
   }
 
+  function resetPurchaseOrderForm() {
+    setSupplierType("REGISTERED");
+    setOneTimeSupplierName("");
+    setOneTimeSupplierPhone("");
+    setSupplierId("");
+    setLocationId("");
+    setOrderDate(new Date().toISOString().slice(0, 10));
+    setNotes("");
+    setItems([{ productId: "", quantity: 1, unitCost: 0 }]);
+    setFormError(null);
+  }
+
+  function openEditPurchaseOrder(order: PORow) {
+    setEditingOrderId(order.id);
+    setSupplierType("REGISTERED");
+    setSupplierId(order.supplier.id);
+    setOneTimeSupplierName("");
+    setOneTimeSupplierPhone("");
+    setLocationId(order.location.id);
+    setOrderDate(new Date(order.date).toISOString().slice(0, 16));
+    setNotes(order.notes || "");
+    setItems(
+      order.items.map((item) => ({
+        productId: item.product.id,
+        quantity: item.quantity,
+        unitCost: item.unitCost,
+      }))
+    );
+    setFormError(null);
+    setIsDialogOpen(true);
+  }
+
+  async function handleDeletePurchaseOrder(order: PORow) {
+    const ok = await confirm({
+      title: "Delete purchase order",
+      description: `Are you sure you want to delete ${order.orderNo}? This will remove the order and its linked line items.`,
+      confirmText: "Delete",
+      variant: "destructive",
+    });
+    if (!ok) return;
+
+    try {
+      const res = await deletePurchaseOrderAction({ id: order.id });
+      if (!res.success) {
+        await confirm.alert(res.error || "Failed to delete purchase order.", { variant: "destructive" });
+        return;
+      }
+      setEditingOrderId(null);
+      setIsDialogOpen(false);
+      await loadData();
+    } catch (err: any) {
+      await confirm.alert(err?.message || "Failed to delete purchase order.", { variant: "destructive" });
+    }
+  }
+
   async function handleStatusChange(id: string, status: PurchaseOrderStatus) {
     const actionName =
       status === PurchaseOrderStatus.FULFILLED
@@ -390,41 +447,46 @@ export default function PurchaseOrdersPage() {
       return;
     }
 
+    const isEditing = Boolean(editingOrderId);
     const ok = await confirm({
-      title: "Confirm Purchase Order",
-      description: "Are you sure you want to create this purchase order?",
-      confirmText: "Create Order",
+      title: isEditing ? "Update Purchase Order" : "Confirm Purchase Order",
+      description: isEditing
+        ? "Are you sure you want to update this purchase order?"
+        : "Are you sure you want to create this purchase order?",
+      confirmText: isEditing ? "Update Order" : "Create Order",
       variant: "primary",
     });
     if (!ok) return;
 
     setSubmitting(true);
     try {
-      const res = await createPurchaseOrderAction({
+      const payload = {
+        ...(isEditing ? { id: editingOrderId } : {}),
         supplierType,
         supplierId: supplierType === "REGISTERED" ? supplierId : undefined,
         oneTimeSupplierName: supplierType === "ONE_TIME" ? (oneTimeSupplierName.trim() || "Market Vendor") : undefined,
         oneTimeSupplierPhone: supplierType === "ONE_TIME" ? (oneTimeSupplierPhone.trim() || null) : undefined,
         locationId,
         date: new Date(orderDate),
-        status: PurchaseOrderStatus.DRAFT,
+        status: isEditing ? (orders.find((o) => o.id === editingOrderId)?.status ?? PurchaseOrderStatus.DRAFT) : PurchaseOrderStatus.DRAFT,
         notes,
         items: items.map((i) => ({
           productId: i.productId,
           quantity: i.quantity,
           unitCost: i.unitCost,
         })),
-      });
+      };
+
+      const res = isEditing
+        ? await updatePurchaseOrderAction(payload)
+        : await createPurchaseOrderAction(payload);
 
       if (!res.success) {
-        setFormError(res.error || "Failed to create purchase order.");
+        setFormError(res.error || (isEditing ? "Failed to update purchase order." : "Failed to create purchase order."));
       } else {
         setIsDialogOpen(false);
-        setSupplierId("");
-        setLocationId("");
-        setOrderDate(new Date().toISOString().slice(0, 10));
-        setItems([{ productId: "", quantity: 1, unitCost: 0 }]);
-        setNotes("");
+        setEditingOrderId(null);
+        resetPurchaseOrderForm();
         await loadData();
       }
     } finally {
@@ -609,11 +671,19 @@ export default function PurchaseOrdersPage() {
                       </td>
                       <td className="py-1 px-2 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center gap-1">
-                          <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40" title="Download PDF">
-                            <a href={`/api/pdf/purchase-order/${order.id}`} target="_blank" rel="noreferrer">
-                              <FileText className="h-3 w-3 mr-1" />
-                              PDF
-                            </a>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100"
+                            title="Print Purchase Order"
+                            onClick={() => {
+                              printDocumentPdf(`/api/pdf/purchase-order/${order.id}`).catch((e) =>
+                                confirm.alert(e.message, { variant: "destructive" })
+                              );
+                            }}
+                          >
+                            <Printer className="h-3 w-3 mr-1" />
+                            Print
                           </Button>
                           {order.status === PurchaseOrderStatus.DRAFT && (
                             <Button size="sm" variant="ghost" onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.SENT)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
@@ -625,6 +695,16 @@ export default function PurchaseOrdersPage() {
                             <Button size="sm" variant="ghost" onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.FULFILLED)} className="h-6 px-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40">
                               <CheckCircle2 className="h-3 w-3 mr-1" />
                               Receive
+                            </Button>
+                          )}
+                          {(order.status === PurchaseOrderStatus.DRAFT || order.status === PurchaseOrderStatus.SENT) && (
+                            <Button size="sm" variant="ghost" onClick={() => openEditPurchaseOrder(order)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
+                              Edit
+                            </Button>
+                          )}
+                          {(order.status === PurchaseOrderStatus.DRAFT || order.status === PurchaseOrderStatus.SENT) && (
+                            <Button size="sm" variant="ghost" onClick={() => handleDeletePurchaseOrder(order)} className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40">
+                              Delete
                             </Button>
                           )}
                         </div>
@@ -670,7 +750,7 @@ export default function PurchaseOrdersPage() {
 
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div>
-                <h2 className="text-lg font-bold text-slate-900">New Purchase Order</h2>
+                <h2 className="text-lg font-bold text-slate-900">{editingOrderId ? "Edit Purchase Order" : "New Purchase Order"}</h2>
                 <p className="text-xs text-slate-500">Draft order to send to paper mills or suppliers</p>
               </div>
               <button
@@ -1002,7 +1082,7 @@ export default function PurchaseOrdersPage() {
                     Cancel
                   </Button>
                   <Button type="submit" disabled={submitting} className="bg-sky-800 text-white hover:bg-sky-700 text-xs font-semibold">
-                    {submitting ? "Saving..." : "Create Purchase Order"}
+                    {submitting ? "Saving..." : editingOrderId ? "Update Purchase Order" : "Create Purchase Order"}
                   </Button>
                 </div>
               </div>
@@ -1011,65 +1091,7 @@ export default function PurchaseOrdersPage() {
         </div>
       )}
 
-      {/* Pre-Posting Live PDF Document Preview Modal */}
-      {showPdfPreviewModal && pdfPreviewUrl && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
-            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-sky-400" />
-                <span className="font-bold text-xs">Purchase Order Document Preview (Pre-Posting)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    if (pdfPreviewUrl) {
-                      const win = window.open(pdfPreviewUrl, "_blank");
-                      win?.focus();
-                    }
-                  }}
-                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
-                  title="Open in dedicated tab for safe printing"
-                >
-                  <Printer className="h-3.5 w-3.5" />
-                  Print / Open Tab
-                </Button>
-                <a
-                  href={pdfPreviewUrl}
-                  download={`Purchase-Order-Preview-${new Date().toISOString().slice(0, 10)}.pdf`}
-                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-sky-700 hover:bg-sky-800 text-white rounded font-medium"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Download
-                </a>
-                <button
-                  onClick={() => {
-                    setShowPdfPreviewModal(false);
-                    if (pdfPreviewUrl) {
-                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-                      setPdfPreviewUrl(null);
-                    }
-                  }}
-                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
-                  title="Close Preview"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
-              <iframe
-                id="poPdfPreviewIframe"
-                src={pdfPreviewUrl}
-                className="w-full h-full rounded border border-slate-300 dark:border-slate-800 bg-white"
-                title="Purchase Order Preview"
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      {/* PDF modal removed — using browser print dialog */}
     </div>
   );
 }

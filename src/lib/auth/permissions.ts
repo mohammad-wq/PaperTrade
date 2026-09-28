@@ -43,12 +43,18 @@ export const DEFAULT_USER_PERMISSIONS: UserPermissions = Object.fromEntries(
   MODULE_DEFINITIONS.map(({ key }) => [key, { ...PERMISSION_TEMPLATE }]),
 ) as UserPermissions;
 
-export function normalizeUserPermissions(permissions?: Record<string, any> | null): UserPermissions {
+export function normalizeUserPermissions(
+  permissions?: Record<string, any> | null,
+  defaultState = false,
+): UserPermissions {
   const normalized: UserPermissions = Object.fromEntries(
-    MODULE_DEFINITIONS.map(({ key }) => [key, { ...PERMISSION_TEMPLATE }]),
+    MODULE_DEFINITIONS.map(({ key }) => [
+      key,
+      { view: defaultState, create: defaultState, update: defaultState, delete: defaultState },
+    ]),
   ) as UserPermissions;
 
-  if (!permissions) {
+  if (!permissions || typeof permissions !== "object") {
     return normalized;
   }
 
@@ -58,12 +64,14 @@ export function normalizeUserPermissions(permissions?: Record<string, any> | nul
     }
 
     const incoming = modulePermissions as Partial<ModulePermission> | undefined;
-    normalized[moduleKey] = {
-      view: incoming?.view ?? normalized[moduleKey].view,
-      create: incoming?.create ?? normalized[moduleKey].create,
-      update: incoming?.update ?? normalized[moduleKey].update,
-      delete: incoming?.delete ?? normalized[moduleKey].delete,
-    };
+    if (typeof incoming === "object" && incoming !== null) {
+      normalized[moduleKey] = {
+        view: Boolean(incoming.view),
+        create: Boolean(incoming.create),
+        update: Boolean(incoming.update),
+        delete: Boolean(incoming.delete),
+      };
+    }
   }
 
   return normalized;
@@ -95,8 +103,8 @@ export function canAccessPath(role: Role, pathname: string, permissions?: UserPe
     return true;
   }
 
-  const normalizedPermissions = normalizeUserPermissions(permissions);
-  return Boolean(normalizedPermissions[moduleKey]?.view ?? true);
+  const normalizedPermissions = normalizeUserPermissions(permissions, false);
+  return Boolean(normalizedPermissions[moduleKey]?.view);
 }
 
 export function canPerformAction(
@@ -109,6 +117,10 @@ export function canPerformAction(
     return true;
   }
 
-  const normalizedPermissions = normalizeUserPermissions(permissions);
-  return Boolean(normalizedPermissions[moduleKey]?.[action] ?? true);
+  if (!permissions) {
+    return false;
+  }
+
+  const normalizedPermissions = normalizeUserPermissions(permissions, false);
+  return Boolean(normalizedPermissions[moduleKey]?.[action]);
 }

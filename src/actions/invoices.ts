@@ -13,6 +13,7 @@ import { purchaseInvoiceSchema, updatePurchaseInvoiceSchema } from "@/schemas/pu
 import { AccountType, InvoiceStatus, PartyType, PaymentMethod, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { getActiveFinancialYear, getNextAtomicSequence, updateInvoiceSettlementStatus } from "@/lib/financial-year";
+import { z } from "zod";
 
 export async function listSaleInvoicesAction() {
   return runAction("sales.list", async () => {
@@ -328,6 +329,12 @@ export async function createSaleInvoiceAction(raw: unknown) {
           "PAYMENT_RECEIPT"
         );
         const receiptNo = `RCT-${paymentFormatted}`;
+        const splitsToRecord =
+          input.paymentSplits && input.paymentSplits.length > 0
+            ? input.paymentSplits
+            : [{ method: input.paymentMethod || PaymentMethod.CASH, amount: paidAmount, reference: null }];
+
+        const primaryMethod = splitsToRecord[0].method;
 
         const payment = await tx.payment.create({
           data: {
@@ -337,28 +344,42 @@ export async function createSaleInvoiceAction(raw: unknown) {
             partyId: targetCustomerId,
             saleInvoiceId: invoice.id,
             amount: paidAmount,
-            method: input.paymentMethod || PaymentMethod.CASH,
+            method: primaryMethod,
             direction: "IN",
             date: input.date,
             notes: `Settlement for Estimate ${invoice.invoiceNo} (${input.customerType === "WALK_IN" ? "Walk-in Sale" : "Registered Customer"})`,
             createdById: session.user.id,
+            ...(splitsToRecord.length > 1 || (input.paymentSplits && input.paymentSplits.length > 0)
+              ? {
+                  splits: {
+                    create: splitsToRecord.map((s) => ({
+                      method: s.method,
+                      amount: s.amount,
+                      reference: s.reference || null,
+                    })),
+                  },
+                }
+              : {}),
           },
         });
 
-        // Cash/Bank inflow (Debit)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.CASH,
-            debit: paidAmount,
-            credit: 0,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Payment received for ${invoice.invoiceNo} (${input.paymentMethod || PaymentMethod.CASH})`,
-            createdById: session.user.id,
-          },
-        });
+        // Cash/Bank inflow (Debit per payment method/split)
+        for (const split of splitsToRecord) {
+          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
+          await tx.ledgerEntry.create({
+            data: {
+              partyId: null,
+              accountType: AccountType.CASH,
+              debit: split.amount,
+              credit: 0,
+              referenceType: "PAYMENT",
+              referenceId: payment.id,
+              date: input.date,
+              description: `Payment received for ${invoice.invoiceNo} (${split.method})${refDesc}`,
+              createdById: session.user.id,
+            },
+          });
+        }
 
         // Customer Receivable reduction (Credit)
         await tx.ledgerEntry.create({
@@ -732,6 +753,13 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         );
         const receiptNo = `RCT-${paymentFormatted}`;
 
+        const splitsToRecord =
+          input.paymentSplits && input.paymentSplits.length > 0
+            ? input.paymentSplits
+            : [{ method: input.paymentMethod || PaymentMethod.CASH, amount: paidAmount, reference: null }];
+
+        const primaryMethod = splitsToRecord[0].method;
+
         const payment = await tx.payment.create({
           data: {
             receiptNo,
@@ -740,27 +768,41 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             partyId: targetCustomerId,
             saleInvoiceId: existing.id,
             amount: paidAmount,
-            method: input.paymentMethod || PaymentMethod.CASH,
+            method: primaryMethod,
             direction: "IN",
             date: input.date,
             notes: `Settlement for Estimate ${existing.invoiceNo} (${input.customerType === "WALK_IN" ? "Walk-in Sale" : "Registered Customer"})`,
             createdById: session.user.id,
+            ...(splitsToRecord.length > 1 || (input.paymentSplits && input.paymentSplits.length > 0)
+              ? {
+                  splits: {
+                    create: splitsToRecord.map((s) => ({
+                      method: s.method,
+                      amount: s.amount,
+                      reference: s.reference || null,
+                    })),
+                  },
+                }
+              : {}),
           },
         });
 
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.CASH,
-            debit: paidAmount,
-            credit: 0,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Payment received for ${existing.invoiceNo} (${input.paymentMethod || PaymentMethod.CASH})`,
-            createdById: session.user.id,
-          },
-        });
+        for (const split of splitsToRecord) {
+          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
+          await tx.ledgerEntry.create({
+            data: {
+              partyId: null,
+              accountType: AccountType.CASH,
+              debit: split.amount,
+              credit: 0,
+              referenceType: "PAYMENT",
+              referenceId: payment.id,
+              date: input.date,
+              description: `Payment received for ${existing.invoiceNo} (${split.method})${refDesc}`,
+              createdById: session.user.id,
+            },
+          });
+        }
 
         await tx.ledgerEntry.create({
           data: {
@@ -1057,6 +1099,13 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         );
         const receiptNo = `PAY-${paymentFormatted}`;
 
+        const splitsToRecord =
+          input.paymentSplits && input.paymentSplits.length > 0
+            ? input.paymentSplits
+            : [{ method: input.paymentMethod || PaymentMethod.CASH, amount: paidAmount, reference: null }];
+
+        const primaryMethod = splitsToRecord[0].method;
+
         const payment = await tx.payment.create({
           data: {
             receiptNo,
@@ -1065,11 +1114,22 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
             partyId: targetSupplierId!,
             purchaseInvoiceId: invoice.id,
             amount: paidAmount,
-            method: PaymentMethod.CASH,
+            method: primaryMethod,
             direction: "OUT",
             date: input.date,
             notes: `Payment for Purchase Invoice ${invoice.invoiceNo} (${supplierName})`,
             createdById: session.user.id,
+            ...(splitsToRecord.length > 1 || (input.paymentSplits && input.paymentSplits.length > 0)
+              ? {
+                  splits: {
+                    create: splitsToRecord.map((s) => ({
+                      method: s.method,
+                      amount: s.amount,
+                      reference: s.reference || null,
+                    })),
+                  },
+                }
+              : {}),
           },
         });
 
@@ -1088,20 +1148,23 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           },
         });
 
-        // Cash outflow (Credit)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.CASH,
-            debit: 0,
-            credit: paidAmount,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Cash payment for ${invoice.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
+        // Cash/Bank outflow (Credit per payment split)
+        for (const split of splitsToRecord) {
+          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
+          await tx.ledgerEntry.create({
+            data: {
+              partyId: null,
+              accountType: AccountType.CASH,
+              debit: 0,
+              credit: split.amount,
+              referenceType: "PAYMENT",
+              referenceId: payment.id,
+              date: input.date,
+              description: `Payment for ${invoice.invoiceNo} (${split.method})${refDesc}`,
+              createdById: session.user.id,
+            },
+          });
+        }
       }
 
       return {
@@ -1113,6 +1176,43 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
 
     emitRealtimeEvent(["purchases", "inventory", "parties", "ledger", "dashboard"], "create", "PurchaseInvoice", {
       invoiceId: res.invoiceId,
+      invoiceNo: res.invoiceNo,
+    });
+
+    return res;
+  });
+}
+
+export async function deletePurchaseInvoiceAction(raw: unknown) {
+  return runAction("purchases.delete", async () => {
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "purchases", "delete", (session.user as any).permissions)) {
+      throw userError("You do not have permission to delete purchase invoices.");
+    }
+    const schema = z.object({ id: z.string().min(1, "Purchase invoice ID is required") });
+    const { id } = parseInput(schema, raw);
+
+    const res = await withResourceQueue([`invoice:pi:${id}`], async (tx) => {
+      const existing = await tx.purchaseInvoice.findUnique({
+        where: { id },
+        include: { items: true, payments: true },
+      });
+      if (!existing) throw userError("Purchase invoice not found.");
+
+      for (const payment of existing.payments) {
+        await tx.ledgerEntry.deleteMany({ where: { referenceType: "PAYMENT", referenceId: payment.id } });
+        await tx.paymentSplit.deleteMany({ where: { paymentId: payment.id } });
+      }
+      await tx.payment.deleteMany({ where: { purchaseInvoiceId: id } });
+      await tx.ledgerEntry.deleteMany({ where: { referenceType: "PURCHASE_INVOICE", referenceId: id } });
+      await tx.stockMovement.deleteMany({ where: { referenceType: "PURCHASE_INVOICE", referenceId: id } });
+      await tx.purchaseInvoiceItem.deleteMany({ where: { invoiceId: id } });
+      await tx.purchaseInvoice.delete({ where: { id } });
+      return { id, invoiceNo: existing.invoiceNo };
+    });
+
+    emitRealtimeEvent(["purchases", "inventory", "parties", "ledger", "dashboard"], "delete", "PurchaseInvoice", {
+      invoiceId: res.id,
       invoiceNo: res.invoiceNo,
     });
 
@@ -1413,6 +1513,13 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
         );
         const receiptNo = `PAY-${paymentFormatted}`;
 
+        const splitsToRecord =
+          input.paymentSplits && input.paymentSplits.length > 0
+            ? input.paymentSplits
+            : [{ method: input.paymentMethod || PaymentMethod.CASH, amount: paidAmount, reference: null }];
+
+        const primaryMethod = splitsToRecord[0].method;
+
         const payment = await tx.payment.create({
           data: {
             receiptNo,
@@ -1421,11 +1528,22 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
             partyId: targetSupplierId!,
             purchaseInvoiceId: existing.id,
             amount: paidAmount,
-            method: PaymentMethod.CASH,
+            method: primaryMethod,
             direction: "OUT",
             date: input.date,
             notes: `Payment for Purchase Invoice ${existing.invoiceNo} (${supplierName}) [Edited]`,
             createdById: session.user.id,
+            ...(splitsToRecord.length > 1 || (input.paymentSplits && input.paymentSplits.length > 0)
+              ? {
+                  splits: {
+                    create: splitsToRecord.map((s) => ({
+                      method: s.method,
+                      amount: s.amount,
+                      reference: s.reference || null,
+                    })),
+                  },
+                }
+              : {}),
           },
         });
 
@@ -1443,19 +1561,22 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
           },
         });
 
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.CASH,
-            debit: 0,
-            credit: paidAmount,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Cash payment for ${existing.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
+        for (const split of splitsToRecord) {
+          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
+          await tx.ledgerEntry.create({
+            data: {
+              partyId: null,
+              accountType: AccountType.CASH,
+              debit: 0,
+              credit: split.amount,
+              referenceType: "PAYMENT",
+              referenceId: payment.id,
+              date: input.date,
+              description: `Payment for ${existing.invoiceNo} (${split.method})${refDesc}`,
+              createdById: session.user.id,
+            },
+          });
+        }
       }
 
       // 9. Update settlement status
@@ -1470,6 +1591,51 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
 
     emitRealtimeEvent(["purchases", "inventory", "parties", "ledger", "dashboard"], "update", "PurchaseInvoice", {
       invoiceId: res.invoiceId,
+      invoiceNo: res.invoiceNo,
+    });
+
+    return res;
+  });
+}
+
+export async function deleteSaleInvoiceAction(raw: unknown) {
+  return runAction("sales.delete", async () => {
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "sales", "delete", (session.user as any).permissions)) {
+      throw userError("You do not have permission to delete sale invoices.");
+    }
+    const schema = z.object({ id: z.string().min(1, "Sale invoice ID is required") });
+    const { id } = parseInput(schema, raw);
+
+    const res = await withResourceQueue([`invoice:si:${id}`], async (tx) => {
+      const existing = await tx.saleInvoice.findUnique({
+        where: { id },
+        include: { items: true, payments: true },
+      });
+      if (!existing) throw userError("Sale invoice not found.");
+
+      // 1. Reverse all linked payments and their ledger entries
+      for (const payment of existing.payments) {
+        await tx.ledgerEntry.deleteMany({ where: { referenceType: "PAYMENT", referenceId: payment.id } });
+        await tx.paymentSplit.deleteMany({ where: { paymentId: payment.id } });
+      }
+      await tx.payment.deleteMany({ where: { saleInvoiceId: id } });
+
+      // 2. Remove all ledger entries tied to this invoice
+      await tx.ledgerEntry.deleteMany({ where: { referenceType: "SALE_INVOICE", referenceId: id } });
+
+      // 3. Reverse SALE_OUT stock movements (restores inventory)
+      await tx.stockMovement.deleteMany({ where: { referenceType: "SALE_INVOICE", referenceId: id } });
+
+      // 4. Delete items, then the invoice itself
+      await tx.saleInvoiceItem.deleteMany({ where: { invoiceId: id } });
+      await tx.saleInvoice.delete({ where: { id } });
+
+      return { id, invoiceNo: existing.invoiceNo };
+    });
+
+    emitRealtimeEvent(["sales", "inventory", "parties", "ledger", "dashboard"], "delete", "SaleInvoice", {
+      invoiceId: res.id,
       invoiceNo: res.invoiceNo,
     });
 

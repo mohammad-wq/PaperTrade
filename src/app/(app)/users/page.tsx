@@ -85,7 +85,7 @@ const MODULE_CATEGORIES = [
 ];
 
 function getPresetPermissionsForRole(r: Role): UserPermissions {
-  const result = normalizeUserPermissions();
+  const result = normalizeUserPermissions(null, true);
   if (r === Role.OWNER) {
     return result;
   }

@@ -5,10 +5,10 @@ export const userPermissionsSchema = z
   .record(
     z.string(),
     z.object({
-      view: z.boolean().default(true),
-      create: z.boolean().default(true),
-      update: z.boolean().default(true),
-      delete: z.boolean().default(true),
+      view: z.boolean().default(false),
+      create: z.boolean().default(false),
+      update: z.boolean().default(false),
+      delete: z.boolean().default(false),
     }),
   )
   .default({});

@@ -28,6 +28,7 @@ import { listSaleInvoicesAction, listPurchaseInvoicesAction } from "@/actions/in
 import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
+import { printDocumentPdf } from "@/lib/print-pdf";
 
 type SaleReturnRow = {
   id: string;
@@ -556,11 +557,19 @@ export default function ReturnsPage() {
                         PKR {ret.totalAmount.toLocaleString()}
                       </td>
                       <td className="py-1 px-2 text-center whitespace-nowrap">
-                        <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40">
-                          <a href={`/api/pdf/sale-return/${ret.id}`} target="_blank" rel="noreferrer">
-                            <FileText className="h-3 w-3 mr-1" />
-                            PDF
-                          </a>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                          title="Print Return"
+                          onClick={() => {
+                            printDocumentPdf(`/api/pdf/sale-return/${ret.id}`).catch((e) =>
+                              confirm.alert(e.message, { variant: "destructive" })
+                            );
+                          }}
+                        >
+                          <Printer className="h-3 w-3 mr-1" />
+                          Print
                         </Button>
                       </td>
                     </tr>
@@ -612,11 +621,19 @@ export default function ReturnsPage() {
                       PKR {ret.totalAmount.toLocaleString()}
                     </td>
                     <td className="py-1 px-2 text-center whitespace-nowrap">
-                      <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40">
-                        <a href={`/api/pdf/purchase-return/${ret.id}`} target="_blank" rel="noreferrer">
-                          <FileText className="h-3 w-3 mr-1" />
-                          PDF
-                        </a>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-1.5 text-xs text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40"
+                        title="Print Return"
+                        onClick={() => {
+                          printDocumentPdf(`/api/pdf/purchase-return/${ret.id}`).catch((e) =>
+                            confirm.alert(e.message, { variant: "destructive" })
+                          );
+                        }}
+                      >
+                        <Printer className="h-3 w-3 mr-1" />
+                        Print
                       </Button>
                     </td>
                   </tr>

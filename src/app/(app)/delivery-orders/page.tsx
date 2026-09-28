@@ -25,6 +25,8 @@ import { Label } from "@/components/ui/label";
 import {
   listDeliveryOrdersAction,
   createDeliveryOrderAction,
+  updateDeliveryOrderAction,
+  deleteDeliveryOrderAction,
   updateDeliveryOrderStatusAction,
 } from "@/actions/orders";
 import { listLocationsAction } from "@/actions/locations";
@@ -38,6 +40,7 @@ import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
+import { printDocumentPdf } from "@/lib/print-pdf";
 
 type DORow = {
   id: string;
@@ -111,6 +114,7 @@ export default function DeliveryOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Form input refs for sequential Enter-key navigation
@@ -181,9 +185,73 @@ export default function DeliveryOrdersPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [saleInvoiceId, setSaleInvoiceId] = useState<string | null>(null);
-  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
-  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+
+  function resetDeliveryOrderForm() {
+    setOrderType("CUSTOMER");
+    setCustomerId("");
+    setLocationId("");
+    setDestinationLocationId("");
+    setSaleInvoiceId(null);
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    setOrderDate(`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`);
+    setVehicleNo("");
+    setDriverName("");
+    setDeliveredTo("");
+    setRecipientName("");
+    setNotes("");
+    setItems([{ productId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET }]);
+    setFormError(null);
+  }
+
+  function openEditDeliveryOrder(order: DORow) {
+    setEditingOrderId(order.id);
+    setOrderType(order.customer ? "CUSTOMER" : "INTERNAL_TRANSFER");
+    setCustomerId(order.customer?.id || "");
+    setLocationId(order.location.id);
+    setDestinationLocationId(order.destinationLocation?.id || "");
+    setSaleInvoiceId(order.linkedSaleInvoice?.id || null);
+    setOrderDate(new Date(order.date).toISOString().slice(0, 16));
+    setVehicleNo(order.vehicleNo || "");
+    setDriverName(order.driverName || "");
+    setDeliveredTo(order.deliveredTo || "");
+    setRecipientName(order.recipientName || "");
+    setNotes(order.notes || "");
+    setItems(
+      order.items.map((item) => ({
+        productId: item.product.id,
+        warehouseLotId: item.warehouseLot?.id || "",
+        quantity: item.quantity,
+        unit: Unit.PACKET,
+      }))
+    );
+    setFormError(null);
+    setIsDialogOpen(true);
+  }
+
+  async function handleDeleteDeliveryOrder(order: DORow) {
+    const ok = await confirm({
+      title: "Delete delivery order",
+      description: `Are you sure you want to delete ${order.doNo}? This will remove the dispatch and linked items.`,
+      confirmText: "Delete",
+      variant: "destructive",
+    });
+    if (!ok) return;
+
+    try {
+      const res = await deleteDeliveryOrderAction({ id: order.id });
+      if (!res.success) {
+        await confirm.alert(res.error || "Failed to delete delivery order.", { variant: "destructive" });
+        return;
+      }
+      setEditingOrderId(null);
+      setIsDialogOpen(false);
+      await loadData();
+    } catch (err: any) {
+      await confirm.alert(err?.message || "Failed to delete delivery order.", { variant: "destructive" });
+    }
+  }
 
   const searchParams = useSearchParams();
 
@@ -290,15 +358,15 @@ export default function DeliveryOrdersPage() {
         throw new Error(errText || "Failed to generate preview PDF");
       }
 
-      if (pdfPreviewUrl) {
-        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-      }
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      setPdfPreviewUrl(url);
-      setShowPdfPreviewModal(true);
+      const objectUrl = URL.createObjectURL(blob);
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;";
+      iframe.src = objectUrl;
+      document.body.appendChild(iframe);
+      iframe.onload = () => { setTimeout(() => { iframe.contentWindow?.focus(); iframe.contentWindow?.print(); setTimeout(() => { URL.revokeObjectURL(objectUrl); document.body.removeChild(iframe); }, 2000); }, 300); };
     } catch (err: any) {
-      await confirm.alert(err.message || "Failed to preview DO PDF", { variant: "destructive" });
+      await confirm.alert(err.message || "Failed to print DO preview", { variant: "destructive" });
     } finally {
       setPreviewLoading(false);
     }
@@ -528,28 +596,35 @@ export default function DeliveryOrdersPage() {
       return;
     }
 
-    const confirmMsg =
-      orderType === "INTERNAL_TRANSFER"
+    const isEditing = Boolean(editingOrderId);
+    const confirmMsg = isEditing
+      ? "Are you sure you want to update this delivery order?"
+      : orderType === "INTERNAL_TRANSFER"
         ? "Are you sure you want to create this internal stock transfer between locations?"
         : "Are you sure you want to create this delivery order?";
     const ok = await confirm({
-      title: orderType === "INTERNAL_TRANSFER" ? "Confirm Stock Transfer" : "Confirm Delivery Order",
+      title: isEditing
+        ? "Update Delivery Order"
+        : orderType === "INTERNAL_TRANSFER"
+          ? "Confirm Stock Transfer"
+          : "Confirm Delivery Order",
       description: confirmMsg,
-      confirmText: "Create Order",
+      confirmText: isEditing ? "Update Order" : "Create Order",
       variant: "primary",
     });
     if (!ok) return;
 
     setSubmitting(true);
     try {
-      const res = await createDeliveryOrderAction({
+      const payload = {
+        ...(isEditing ? { id: editingOrderId } : {}),
         orderType,
         customerId: orderType === "CUSTOMER" ? customerId : null,
         locationId,
         destinationLocationId: orderType === "INTERNAL_TRANSFER" ? destinationLocationId : null,
         saleInvoiceId: saleInvoiceId || undefined,
         date: new Date(orderDate),
-        status: DeliveryOrderStatus.DISPATCHED,
+        status: isEditing ? (orders.find((o) => o.id === editingOrderId)?.status ?? DeliveryOrderStatus.DRAFT) : DeliveryOrderStatus.DISPATCHED,
         vehicleNo: vehicleNo || undefined,
         driverName: driverName || undefined,
         deliveredTo: orderType === "INTERNAL_TRANSFER"
@@ -563,25 +638,18 @@ export default function DeliveryOrdersPage() {
           quantity: i.quantity,
           unit: i.unit,
         })),
-      });
+      };
+
+      const res = isEditing
+        ? await updateDeliveryOrderAction(payload)
+        : await createDeliveryOrderAction(payload);
 
       if (!res.success) {
-        setFormError(res.error || "Failed to create delivery order.");
+        setFormError(res.error || (isEditing ? "Failed to update delivery order." : "Failed to create delivery order."));
       } else {
         setIsDialogOpen(false);
-        setOrderType("CUSTOMER");
-        setCustomerId("");
-        setLocationId("");
-        setDestinationLocationId("");
-        const now = new Date();
-        const pad = (n: number) => String(n).padStart(2, "0");
-        setOrderDate(`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`);
-        setVehicleNo("");
-        setDriverName("");
-        setDeliveredTo("");
-        setRecipientName("");
-        setNotes("");
-        setItems([{ productId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET }]);
+        setEditingOrderId(null);
+        resetDeliveryOrderForm();
         await loadData();
       }
     } finally {
@@ -824,12 +892,30 @@ export default function DeliveryOrdersPage() {
                             Deliver
                           </Button>
                         )}
-                        <Button asChild variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40" title="Download PDF">
-                          <a href={`/api/pdf/delivery-order/${order.id}`} target="_blank" rel="noreferrer">
-                            <FileText className="h-3 w-3 mr-1" />
-                            PDF
-                          </a>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100"
+                          title="Print Delivery Order"
+                          onClick={() => {
+                            printDocumentPdf(`/api/pdf/delivery-order/${order.id}`).catch((e) =>
+                              confirm.alert(e.message, { variant: "destructive" })
+                            );
+                          }}
+                        >
+                          <Printer className="h-3 w-3 mr-1" />
+                          Print
                         </Button>
+                        {(order.status === DeliveryOrderStatus.DRAFT || order.status === DeliveryOrderStatus.DISPATCHED) && (
+                          <Button size="sm" variant="ghost" onClick={() => openEditDeliveryOrder(order)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
+                            Edit
+                          </Button>
+                        )}
+                        {(order.status === DeliveryOrderStatus.DRAFT || order.status === DeliveryOrderStatus.DISPATCHED) && (
+                          <Button size="sm" variant="ghost" onClick={() => handleDeleteDeliveryOrder(order)} className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40">
+                            Delete
+                          </Button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -872,7 +958,7 @@ export default function DeliveryOrdersPage() {
 
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div>
-                <h2 className="text-lg font-bold text-slate-900">New Delivery Order</h2>
+                <h2 className="text-lg font-bold text-slate-900">{editingOrderId ? "Edit Delivery Order" : "New Delivery Order"}</h2>
                 <p className="text-xs text-slate-500">Dispatch paper consignment with vehicle and driver details</p>
               </div>
               <button
@@ -1366,7 +1452,7 @@ export default function DeliveryOrdersPage() {
                     Cancel
                   </Button>
                   <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs font-semibold">
-                    {submitting ? "Saving..." : "Create Delivery Order"}
+                    {submitting ? "Saving..." : editingOrderId ? "Update Delivery Order" : "Create Delivery Order"}
                   </Button>
                 </div>
               </div>
@@ -1454,65 +1540,7 @@ export default function DeliveryOrdersPage() {
         </div>
       )}
 
-      {/* Pre-Posting Live PDF Document Preview Modal */}
-      {showPdfPreviewModal && pdfPreviewUrl && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
-            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-amber-400" />
-                <span className="font-bold text-xs">Delivery Order Document Preview (Pre-Posting)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    if (pdfPreviewUrl) {
-                      const win = window.open(pdfPreviewUrl, "_blank");
-                      win?.focus();
-                    }
-                  }}
-                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
-                  title="Open in dedicated tab for safe printing"
-                >
-                  <Printer className="h-3.5 w-3.5" />
-                  Print / Open Tab
-                </Button>
-                <a
-                  href={pdfPreviewUrl}
-                  download={`Delivery-Order-Preview-${new Date().toISOString().slice(0, 10)}.pdf`}
-                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-amber-700 hover:bg-amber-800 text-white rounded font-medium"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Download
-                </a>
-                <button
-                  onClick={() => {
-                    setShowPdfPreviewModal(false);
-                    if (pdfPreviewUrl) {
-                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-                      setPdfPreviewUrl(null);
-                    }
-                  }}
-                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
-                  title="Close Preview"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
-              <iframe
-                id="doPdfPreviewIframe"
-                src={pdfPreviewUrl}
-                className="w-full h-full rounded border border-slate-300 dark:border-slate-800 bg-white"
-                title="Delivery Order Preview"
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      {/* PDF modal removed — using browser print dialog */}
     </div>
   );
 }
