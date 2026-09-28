@@ -1371,18 +1371,33 @@ export default function DeliveryOrdersPage() {
                           value={item.unit}
                           onChange={(e) => handleUnitChange(idx, e.target.value as Unit)}
                           onKeyDown={(e) => {
+                            if (e.key === "Enter" && e.shiftKey) {
+                              e.preventDefault();
+                              notesRef.current?.focus();
+                              notesRef.current?.select();
+                              return;
+                            }
                             if (e.key === "Enter") {
                               e.preventDefault();
                               if (idx === items.length - 1) {
-                                addItem();
-                                setTimeout(() => {
-                                  productRefs.current[idx + 1]?.current?.focus();
-                                  productRefs.current[idx + 1]?.current?.select();
-                                }, 50);
+                                if (!item.productId || item.quantity <= 0) {
+                                  notesRef.current?.focus();
+                                  notesRef.current?.select();
+                                } else {
+                                  addItem();
+                                  setTimeout(() => {
+                                    productRefs.current[idx + 1]?.current?.focus();
+                                    productRefs.current[idx + 1]?.current?.select();
+                                  }, 50);
+                                }
                               } else {
                                 productRefs.current[idx + 1]?.current?.focus();
                                 productRefs.current[idx + 1]?.current?.select();
                               }
+                            } else if (e.key === "ArrowDown" && idx === items.length - 1) {
+                              e.preventDefault();
+                              notesRef.current?.focus();
+                              notesRef.current?.select();
                             }
                           }}
                           className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
@@ -1424,6 +1439,10 @@ export default function DeliveryOrdersPage() {
                     if (e.key === "Enter") {
                       e.preventDefault();
                       void handleSubmit(e);
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      const lastIdx = items.length - 1;
+                      unitRefs.current[lastIdx]?.current?.focus();
                     }
                   }}
                   placeholder="e.g. Unload at warehouse gate #2"

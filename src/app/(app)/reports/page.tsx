@@ -11,7 +11,6 @@ import {
   FileSpreadsheet,
   Users,
   Printer,
-  Download,
   Search,
   Wallet,
   ArrowDownLeft,
@@ -342,8 +341,35 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-3">
+      {/* Printable Black & White Header (Only visible when printing) */}
+      <div className="hidden print:block mb-4 border-b-2 border-black pb-2 text-black">
+        <div className="flex justify-between items-start">
+          <div>
+            <h1 className="text-xl font-bold uppercase tracking-tight">Paper Trade Management</h1>
+            <p className="text-xs font-semibold uppercase">
+              {tab === "PL" && "Income Statement (Profit & Loss)"}
+              {tab === "CASH" && "Cash Flow Statement"}
+              {tab === "BS" && "Balance Sheet Statement"}
+              {tab === "PARTY" && "Party Account Statement"}
+            </p>
+          </div>
+          <div className="text-right text-[10px] space-y-0.5">
+            <p>Printed: {format(new Date(), "dd/MM/yyyy HH:mm")}</p>
+            {tab === "PL" && <p>Period: {plStart || "Beginning"} to {plEnd || "Present"}</p>}
+            {tab === "CASH" && <p>Period: {cfStart || "Beginning"} to {cfEnd || "Present"}</p>}
+            {tab === "BS" && <p>As of: {bsDate || "Current"}</p>}
+            {tab === "PARTY" && partyData && (
+              <>
+                <p>Party: {partyData.party.name} ({partyData.party.type})</p>
+                <p>Period: {partyStart || "Beginning"} to {partyEnd || "Present"}</p>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Top Banner */}
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-md shadow-xs">
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-md shadow-xs print:hidden">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-emerald-50 dark:bg-emerald-950/40 rounded-md border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
             <BarChart3 className="h-5 w-5" />
@@ -379,7 +405,7 @@ export default function ReportsPage() {
       </div>
 
       {/* Segmented Report Tabs */}
-      <div className="flex flex-wrap gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 p-1 shadow-2xs">
+      <div className="flex flex-wrap gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 p-1 shadow-2xs print:hidden">
         <button
           onClick={() => setTab("PL")}
           className={`flex-1 min-w-[130px] rounded px-3 py-1.5 text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
@@ -429,7 +455,7 @@ export default function ReportsPage() {
       {/* Tab 1: Profit & Loss */}
       {tab === "PL" && (
         <div className="space-y-6">
-          <Card className="border-slate-200/80 bg-white">
+          <Card className="border-slate-200/80 bg-white print:hidden">
             <CardContent className="p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
                 <div className="space-y-1">
@@ -464,15 +490,14 @@ export default function ReportsPage() {
                     Download Excel
                   </a>
                 </Button>
-                <Button asChild size="sm" className="bg-emerald-800 text-white hover:bg-emerald-700 text-xs shadow-xs">
-                  <a
-                    href={`/api/pdf/reports/profit-loss?download=true${plStart ? `&startDate=${plStart}` : ""}${plEnd ? `&endDate=${plEnd}` : ""}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Download className="mr-1.5 h-3.5 w-3.5" />
-                    Download P&L PDF
-                  </a>
+                <Button
+                  type="button"
+                  onClick={() => window.print()}
+                  size="sm"
+                  className="bg-emerald-800 text-white hover:bg-emerald-700 text-xs shadow-xs gap-1.5"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Print P&L
                 </Button>
               </div>
             </CardContent>
@@ -531,15 +556,15 @@ export default function ReportsPage() {
                         Excel
                       </a>
                     </Button>
-                    <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200">
-                      <a
-                        href={`/api/pdf/reports/profit-loss?${plStart ? `startDate=${plStart}&` : ""}${plEnd ? `endDate=${plEnd}` : ""}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <Printer className="mr-1.5 h-3.5 w-3.5 text-slate-600" />
-                        View Print Preview
-                      </a>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => window.print()}
+                      className="h-8 text-xs border-slate-200 gap-1.5"
+                    >
+                      <Printer className="h-3.5 w-3.5 text-slate-600" />
+                      Print
                     </Button>
                   </div>
                 </CardHeader>
@@ -819,7 +844,7 @@ export default function ReportsPage() {
       {/* Tab 2: Cash Flow Statement */}
       {tab === "CASH" && (
         <div className="space-y-6">
-          <Card className="border-slate-200/80 bg-white">
+          <Card className="border-slate-200/80 bg-white print:hidden">
             <CardContent className="p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
                 <div className="space-y-1">
@@ -854,15 +879,14 @@ export default function ReportsPage() {
                     Download Excel
                   </a>
                 </Button>
-                <Button asChild size="sm" className="bg-teal-800 text-white hover:bg-teal-700 text-xs shadow-xs">
-                  <a
-                    href={`/api/pdf/reports/cash-flow?download=true${cfStart ? `&startDate=${cfStart}` : ""}${cfEnd ? `&endDate=${cfEnd}` : ""}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Download className="mr-1.5 h-3.5 w-3.5" />
-                    Download Cash Flow PDF
-                  </a>
+                <Button
+                  type="button"
+                  onClick={() => window.print()}
+                  size="sm"
+                  className="bg-teal-800 text-white hover:bg-teal-700 text-xs shadow-xs gap-1.5"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Print Cash Flow
                 </Button>
               </div>
             </CardContent>
@@ -925,15 +949,15 @@ export default function ReportsPage() {
                         Excel
                       </a>
                     </Button>
-                    <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200">
-                      <a
-                        href={`/api/pdf/reports/cash-flow?${cfStart ? `startDate=${cfStart}&` : ""}${cfEnd ? `endDate=${cfEnd}` : ""}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <Printer className="mr-1.5 h-3.5 w-3.5 text-slate-600" />
-                        View Print Preview
-                      </a>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => window.print()}
+                      className="h-8 text-xs border-slate-200 gap-1.5"
+                    >
+                      <Printer className="h-3.5 w-3.5 text-slate-600" />
+                      Print
                     </Button>
                   </div>
                 </CardHeader>
@@ -1013,7 +1037,7 @@ export default function ReportsPage() {
       {/* Tab 3: Balance Sheet */}
       {tab === "BS" && (
         <div className="space-y-6">
-          <Card className="border-slate-200/80 bg-white">
+          <Card className="border-slate-200/80 bg-white print:hidden">
             <CardContent className="p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
               <div className="space-y-1">
                 <label className="text-[11px] font-semibold text-slate-600">Statement As Of Date</label>
@@ -1037,15 +1061,14 @@ export default function ReportsPage() {
                     Download Excel
                   </a>
                 </Button>
-                <Button asChild size="sm" className="bg-amber-800 text-white hover:bg-amber-700 text-xs shadow-xs">
-                  <a
-                    href={`/api/pdf/reports/balance-sheet?download=true${bsDate ? `&asOfDate=${bsDate}` : ""}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Download className="mr-1.5 h-3.5 w-3.5" />
-                    Download Balance Sheet PDF
-                  </a>
+                <Button
+                  type="button"
+                  onClick={() => window.print()}
+                  size="sm"
+                  className="bg-amber-800 text-white hover:bg-amber-700 text-xs shadow-xs gap-1.5"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Print Balance Sheet
                 </Button>
               </div>
             </CardContent>
@@ -1238,7 +1261,7 @@ export default function ReportsPage() {
       {/* Tab 4: Party Statement */}
       {tab === "PARTY" && (
         <div className="space-y-6">
-          <Card className="border-slate-200/80 bg-white">
+          <Card className="border-slate-200/80 bg-white print:hidden">
             <CardContent className="p-4 space-y-3">
               <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
                 <div className="space-y-1">
@@ -1345,15 +1368,14 @@ export default function ReportsPage() {
                       Download Excel
                     </a>
                   </Button>
-                  <Button asChild size="sm" className="bg-sky-800 text-white hover:bg-sky-700 text-xs shadow-xs">
-                    <a
-                      href={`/api/pdf/reports/party-statement?download=true&partyId=${partyData.party.id}${partyStart ? `&startDate=${partyStart}` : ""}${partyEnd ? `&endDate=${partyEnd}` : ""}${selectedProductId !== "ALL" ? `&productId=${selectedProductId}` : ""}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <Download className="mr-1.5 h-3.5 w-3.5" />
-                      Download PDF
-                    </a>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => window.print()}
+                    className="bg-sky-800 text-white hover:bg-sky-700 text-xs shadow-xs gap-1.5"
+                  >
+                    <Printer className="h-3.5 w-3.5" />
+                    Print Statement
                   </Button>
                 </div>
               </div>
@@ -1397,7 +1419,7 @@ export default function ReportsPage() {
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button size="sm" variant="outline" onClick={() => window.print()} className="h-8 text-xs border-slate-200">
+                    <Button size="sm" variant="outline" onClick={() => window.print()} className="h-8 text-xs border-slate-200 gap-1.5">
                       <Printer className="mr-1.5 h-3.5 w-3.5" />
                       Print
                     </Button>
@@ -1408,16 +1430,6 @@ export default function ReportsPage() {
                       >
                         <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-emerald-700" />
                         Excel
-                      </a>
-                    </Button>
-                    <Button asChild size="sm" variant="outline" className="h-8 text-xs border-slate-200">
-                      <a
-                        href={`/api/pdf/reports/party-statement?partyId=${partyData.party.id}${partyStart ? `&startDate=${partyStart}` : ""}${partyEnd ? `&endDate=${partyEnd}` : ""}${selectedProductId !== "ALL" ? `&productId=${selectedProductId}` : ""}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <Download className="mr-1.5 h-3.5 w-3.5 text-slate-600" />
-                        PDF Preview
                       </a>
                     </Button>
                   </div>

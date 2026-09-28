@@ -29,6 +29,7 @@ import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf } from "@/lib/print-pdf";
+import { handleFormKeyDown } from "@/lib/keyboard-nav";
 
 type SaleReturnRow = {
   id: string;
@@ -698,7 +699,7 @@ export default function ReturnsPage() {
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+            <form onSubmit={handleSubmit} onKeyDown={(e) => handleFormKeyDown(e)} className="mt-4 space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1">
                   <Label htmlFor="targetInvoice" className="text-xs font-semibold">

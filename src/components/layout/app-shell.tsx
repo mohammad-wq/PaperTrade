@@ -191,7 +191,7 @@ export function AppShell({
   return (
     <div className="min-h-screen bg-[#faf8f5]">
       {/* Mobile Top Header */}
-      <header className="sticky top-0 z-40 border-b border-amber-950/10 bg-[#faf8f5]/95 backdrop-blur-md md:hidden">
+      <header className="sticky top-0 z-40 border-b border-amber-950/10 bg-[#faf8f5]/95 backdrop-blur-md md:hidden print:hidden">
         <div className="flex min-h-14 items-center justify-between px-4">
           <Sheet>
             <SheetTrigger asChild>
@@ -245,8 +245,8 @@ export function AppShell({
       </header>
 
       {/* Desktop Sidebar + Content Layout */}
-      <div className="md:grid md:grid-cols-[16.5rem_minmax(0,1fr)] min-h-screen">
-        <aside className="hidden border-r border-amber-950/10 bg-[#f7f4ee]/80 backdrop-blur-sm md:flex md:flex-col md:justify-between p-4 sticky top-0 h-screen overflow-y-auto">
+      <div className="md:grid md:grid-cols-[16.5rem_minmax(0,1fr)] min-h-screen print:block">
+        <aside className="hidden border-r border-amber-950/10 bg-[#f7f4ee]/80 backdrop-blur-sm md:flex md:flex-col md:justify-between p-4 sticky top-0 h-screen overflow-y-auto print:hidden">
           <div>
             {/* Brand Card */}
             <div className="mb-6 flex items-center justify-between rounded-xl border border-emerald-900/10 bg-white/70 p-3 shadow-xs">
@@ -284,7 +284,7 @@ export function AppShell({
           </div>
         </aside>
 
-        <main className="min-w-0 p-4 md:p-8">{children}</main>
+        <main className="min-w-0 p-4 md:p-8 print:p-0 print:m-0 print:w-full">{children}</main>
       </div>
     </div>
   );

@@ -1085,6 +1085,11 @@ export default function PaymentsPage() {
                     if (e.key === "Enter") {
                       e.preventDefault();
                       void handleSubmit(e);
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      const lastIdx = splits.length - 1;
+                      splitRefRefs.current[lastIdx]?.current?.focus();
+                      splitRefRefs.current[lastIdx]?.current?.select();
                     }
                   }}
                   placeholder="e.g. Received by cashier Ali, cleared bank deposit"

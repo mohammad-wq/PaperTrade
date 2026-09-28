@@ -920,6 +920,14 @@ export default function SalesPage() {
         productInputRef.current?.select();
       }
     } else if (e.key === "ArrowDown") {
+      if (!showTypeahead || typeaheadMatches.length === 0) {
+        if (!activeCodeInput.trim() && committedItems.length > 0) {
+          e.preventDefault();
+          amountPaidInputRef.current?.focus();
+          amountPaidInputRef.current?.select();
+          return;
+        }
+      }
       e.preventDefault();
       if (!showTypeahead && typeaheadMatches.length > 0) setShowTypeahead(true);
       setTypeaheadIndex((prev) => Math.min(prev + 1, typeaheadMatches.length - 1));
@@ -2099,6 +2107,10 @@ export default function SalesPage() {
                             e.preventDefault();
                             freightInputRef.current?.focus();
                             freightInputRef.current?.select();
+                          } else if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            productInputRef.current?.focus();
+                            productInputRef.current?.select();
                           }
                         }}
                         placeholder="0.00"
@@ -2163,6 +2175,10 @@ export default function SalesPage() {
                             e.preventDefault();
                             notesInputRef.current?.focus();
                             notesInputRef.current?.select();
+                          } else if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            amountPaidInputRef.current?.focus();
+                            amountPaidInputRef.current?.select();
                           }
                         }}
                         placeholder="0.00"
@@ -2262,6 +2278,10 @@ export default function SalesPage() {
                         if (e.key === "Enter") {
                           e.preventDefault();
                           void handleSaveInvoice();
+                        } else if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          freightInputRef.current?.focus();
+                          freightInputRef.current?.select();
                         }
                       }}
                       placeholder="Estimate notes / remarks (press Enter to save)"

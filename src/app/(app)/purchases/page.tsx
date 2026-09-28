@@ -1353,14 +1353,33 @@ export default function PurchasesPage() {
                             value={item.unitCost}
                             onChange={(e) => handleCostChange(idx, Number(e.target.value) || 0)}
                             onKeyDown={(e) => {
+                              if (e.key === "Enter" && e.shiftKey) {
+                                e.preventDefault();
+                                amountPaidRef.current?.focus();
+                                amountPaidRef.current?.select();
+                                return;
+                              }
                               if (e.key === "Enter") {
                                 e.preventDefault();
                                 if (idx === items.length - 1) {
-                                  addItem();
+                                  if (!item.productId || item.quantity <= 0) {
+                                    amountPaidRef.current?.focus();
+                                    amountPaidRef.current?.select();
+                                  } else {
+                                    addItem();
+                                    setTimeout(() => {
+                                      productRefs.current[idx + 1]?.current?.focus();
+                                      productRefs.current[idx + 1]?.current?.select();
+                                    }, 50);
+                                  }
                                 } else {
                                   productRefs.current[idx + 1]?.current?.focus();
                                   productRefs.current[idx + 1]?.current?.select();
                                 }
+                              } else if (e.key === "ArrowDown" && idx === items.length - 1) {
+                                e.preventDefault();
+                                amountPaidRef.current?.focus();
+                                amountPaidRef.current?.select();
                               }
                             }}
                             className="h-8 text-xs text-right font-mono"
@@ -1416,6 +1435,11 @@ export default function PurchasesPage() {
                             e.preventDefault();
                             freightRef.current?.focus();
                             freightRef.current?.select();
+                          } else if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            const lastIdx = items.length - 1;
+                            costRefs.current[lastIdx]?.current?.focus();
+                            costRefs.current[lastIdx]?.current?.select();
                           }
                         }}
                         placeholder="0.00"
@@ -1470,6 +1494,10 @@ export default function PurchasesPage() {
                             e.preventDefault();
                             notesRef.current?.focus();
                             notesRef.current?.select();
+                          } else if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            amountPaidRef.current?.focus();
+                            amountPaidRef.current?.select();
                           }
                         }}
                         placeholder="0.00"
@@ -1573,6 +1601,10 @@ export default function PurchasesPage() {
                           e.preventDefault();
                           const fakeEv = { preventDefault: () => {} } as React.FormEvent;
                           void handleSubmit(fakeEv);
+                        } else if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          freightRef.current?.focus();
+                          freightRef.current?.select();
                         }
                       }}
                       placeholder="e.g. Mill consignment #442 (press Enter to save)"

@@ -9,6 +9,7 @@ import {
   calculateCashFlow,
   calculatePartyStatement,
 } from "@/lib/financial-reports";
+import { renderPartyStatementPdfKit } from "@/lib/pdfkit-generator";
 import {
   ProfitLossPdfView,
   CashFlowPdfView,
@@ -152,7 +153,11 @@ export async function GET(
         .replace(/^_+|_+$/g, "") || "Account";
       filename = `Statement-${safeName}.pdf`;
 
-      docElement = React.createElement(PartyStatementPdfView, {
+      const pdfBuffer = await renderPartyStatementPdfKit({
+        companyName: process.env.BUSINESS_NAME || "PAPER TRADE CO.",
+        companyAddress: process.env.BUSINESS_ADDRESS || "Wholesale Paper Market, Station Road",
+        companyPhone: process.env.BUSINESS_PHONE || "+92-300-1234567",
+        companyEmail: process.env.BUSINESS_EMAIL || undefined,
         party: data.party,
         currentBalance: data.currentBalance,
         openingBalance: data.openingBalance,
@@ -160,9 +165,31 @@ export async function GET(
         startDate: safeFormatDate(startDate),
         endDate: safeFormatDate(endDate),
         ledgerRows: data.ledgerRows.map((r) => ({
-          ...r,
           date: safeFormatDate(r.date) || "—",
+          referenceDocNo: r.referenceDocNo,
+          referenceType: r.referenceType,
+          description: r.description,
+          debit: Number(r.debit) || 0,
+          credit: Number(r.credit) || 0,
+          runningBalance: Number(r.runningBalance) || 0,
+          detailRows: r.detailRows?.map((d) => ({
+            productName: d.productName,
+            quantity: Number(d.quantity) || 0,
+            unit: d.unit,
+            rate: Number(d.rate) || 0,
+            amount: Number(d.amount) || 0,
+          })),
         })),
+      });
+
+      const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+      return new NextResponse(new Uint8Array(pdfBuffer), {
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `${isDownload ? "attachment" : "inline"}; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          "Cache-Control": "private, max-age=60",
+          "X-Content-Type-Options": "nosniff",
+        },
       });
     } else if (reportType === "general-ledger") {
       const accountType = searchParams.get("accountType") || undefined;

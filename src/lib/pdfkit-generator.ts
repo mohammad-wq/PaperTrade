@@ -58,6 +58,45 @@ export interface PdfPaymentReceiptData {
   splits?: Array<{ method: string; amount: number; reference?: string | null }>;
 }
 
+export interface PdfPartyStatementRow {
+  date: string;
+  referenceDocNo?: string | null;
+  referenceType?: string | null;
+  description: string;
+  debit: number;
+  credit: number;
+  runningBalance: number;
+  detailRows?: Array<{
+    productName: string;
+    quantity: number;
+    unit: string;
+    rate: number;
+    amount: number;
+  }>;
+}
+
+export interface PdfPartyStatementData {
+  companyName?: string;
+  companyAddress?: string;
+  companyPhone?: string;
+  companyEmail?: string;
+  party: {
+    id?: string;
+    name: string;
+    type: string;
+    phone?: string | null;
+    email?: string | null;
+    address?: string | null;
+    creditLimit?: number | null;
+  };
+  currentBalance: number;
+  openingBalance?: number;
+  openingBalanceSourceYear?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  ledgerRows: PdfPartyStatementRow[];
+}
+
 const formatMoney = (val?: number | null) => {
   if (typeof val !== "number" || isNaN(val)) return "0.00";
   return val.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -609,3 +648,255 @@ export function renderPaymentReceiptPdfKit(data: PdfPaymentReceiptData): Promise
     }
   });
 }
+
+export function renderPartyStatementPdfKit(data: PdfPartyStatementData): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    try {
+      const leftMargin = 28;
+      const rightMargin = 567.28;
+      const contentWidth = rightMargin - leftMargin; // 539.28
+
+      const doc = new PDFDocument({
+        size: "A4",
+        margins: { top: 24, bottom: 36, left: leftMargin, right: 28 },
+        bufferPages: true,
+        autoFirstPage: true,
+      });
+
+      const chunks: Buffer[] = [];
+      doc.on("data", (c) => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      const companyName = data.companyName || process.env.BUSINESS_NAME || "PAPER TRADE CO.";
+      const companyAddress = data.companyAddress || process.env.BUSINESS_ADDRESS || "Wholesale Paper Market, Station Road";
+      const companyPhone = data.companyPhone || process.env.BUSINESS_PHONE || "+92-300-1234567";
+
+      const safeOpeningBalance = typeof data.openingBalance === "number" && !isNaN(data.openingBalance) ? data.openingBalance : 0;
+      const safeCurrentBalance = typeof data.currentBalance === "number" && !isNaN(data.currentBalance) ? data.currentBalance : 0;
+      const rows = Array.isArray(data.ledgerRows) ? data.ledgerRows : [];
+
+      const totalDebits = rows.reduce((sum, r) => sum + (Number(r.debit) || 0), 0);
+      const totalCredits = rows.reduce((sum, r) => sum + (Number(r.credit) || 0), 0);
+
+      const colW = { date: 54, ref: 70, desc: 196, debit: 68, credit: 68, bal: 83.28 };
+      const colX = {
+        date: leftMargin,
+        ref: leftMargin + colW.date,
+        desc: leftMargin + colW.date + colW.ref,
+        debit: leftMargin + colW.date + colW.ref + colW.desc,
+        credit: leftMargin + colW.date + colW.ref + colW.desc + colW.debit,
+        bal: leftMargin + colW.date + colW.ref + colW.desc + colW.debit + colW.credit,
+      };
+
+      // Helper to draw table header
+      const drawTableHeader = (y: number): number => {
+        doc.rect(leftMargin, y, contentWidth, 18).fill("#0f172a");
+        doc.font("Helvetica-Bold").fontSize(7).fillColor("#ffffff");
+        
+        doc.text("DATE", colX.date + 4, y + 5, { width: colW.date - 6, lineBreak: false });
+        doc.text("TRAN # / REF", colX.ref + 4, y + 5, { width: colW.ref - 6, lineBreak: false });
+        doc.text("PARTICULARS / DESCRIPTION", colX.desc + 4, y + 5, { width: colW.desc - 6, lineBreak: false });
+        doc.text("DEBIT (PKR)", colX.debit, y + 5, { width: colW.debit - 4, align: "right", lineBreak: false });
+        doc.text("CREDIT (PKR)", colX.credit, y + 5, { width: colW.credit - 4, align: "right", lineBreak: false });
+        doc.text("BALANCE (PKR)", colX.bal, y + 5, { width: colW.bal - 4, align: "right", lineBreak: false });
+
+        return y + 18;
+      };
+
+      // 1. Brand & Header Block
+      let y = 24;
+      doc.font("Helvetica-Bold").fontSize(13).fillColor("#0f172a").text(companyName, leftMargin, y, { lineBreak: false });
+      doc.font("Helvetica").fontSize(7).fillColor("#475569");
+      doc.text(`${companyAddress}  •  Phone: ${companyPhone}`, leftMargin, y + 16, { lineBreak: false });
+
+      // Right title banner
+      doc.font("Helvetica-Bold").fontSize(13).fillColor("#0284c7").text("STATEMENT OF ACCOUNT", leftMargin, y, {
+        align: "right",
+        width: contentWidth,
+        lineBreak: false,
+      });
+      const periodLabel = `Period: ${data.startDate || "Beginning"} to ${data.endDate || "Present"}`;
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#334155").text(periodLabel, leftMargin, y + 16, {
+        align: "right",
+        width: contentWidth,
+        lineBreak: false,
+      });
+
+      y += 32;
+      doc.strokeColor("#cbd5e1").lineWidth(0.8).moveTo(leftMargin, y).lineTo(rightMargin, y).stroke();
+      y += 8;
+
+      // 2. Account Details & KPI Cards Summary
+      const cardHeight = 44;
+      const cardGap = 6;
+      const partyBoxWidth = 230;
+      const kpiBoxWidth = (contentWidth - partyBoxWidth - cardGap * 3) / 3;
+
+      // Party Info Card
+      doc.rect(leftMargin, y, partyBoxWidth, cardHeight).fillAndStroke("#f8fafc", "#e2e8f0");
+      doc.font("Helvetica-Bold").fontSize(6.5).fillColor("#64748b").text("ACCOUNT INFORMATION", leftMargin + 8, y + 5, { lineBreak: false });
+      doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#0f172a").text(`${data.party.name} (${data.party.type})`, leftMargin + 8, y + 15, { width: partyBoxWidth - 16, lineBreak: false });
+      const meta = [data.party.phone ? `Ph: ${data.party.phone}` : null, data.party.address ? `Addr: ${data.party.address}` : null].filter(Boolean).join("  |  ") || "Contact: On file";
+      doc.font("Helvetica").fontSize(6.5).fillColor("#475569").text(meta, leftMargin + 8, y + 27, { width: partyBoxWidth - 16, lineBreak: false });
+
+      // Opening Balance Card
+      let kpiX = leftMargin + partyBoxWidth + cardGap;
+      doc.rect(kpiX, y, kpiBoxWidth, cardHeight).fillAndStroke("#f8fafc", "#e2e8f0");
+      doc.font("Helvetica-Bold").fontSize(6.5).fillColor("#64748b").text("OPENING BALANCE", kpiX + 6, y + 5, { lineBreak: false });
+      const opLabel = safeOpeningBalance >= 0 ? "Dr (Receivable)" : "Cr (Payable)";
+      doc.font("Helvetica-Bold").fontSize(8).fillColor(safeOpeningBalance >= 0 ? "#0369a1" : "#b45309").text(`PKR ${formatMoney(Math.abs(safeOpeningBalance))}`, kpiX + 6, y + 16, { lineBreak: false });
+      doc.font("Helvetica").fontSize(6).fillColor("#64748b").text(opLabel, kpiX + 6, y + 28, { lineBreak: false });
+
+      // Total Activity Card (Debits / Credits)
+      kpiX += kpiBoxWidth + cardGap;
+      doc.rect(kpiX, y, kpiBoxWidth, cardHeight).fillAndStroke("#f8fafc", "#e2e8f0");
+      doc.font("Helvetica-Bold").fontSize(6.5).fillColor("#64748b").text("TOTAL TRANSACTIONS", kpiX + 6, y + 5, { lineBreak: false });
+      doc.font("Helvetica").fontSize(6.5).fillColor("#166534").text(`Total Dr: PKR ${formatMoney(totalDebits)}`, kpiX + 6, y + 16, { lineBreak: false });
+      doc.font("Helvetica").fontSize(6.5).fillColor("#991b1b").text(`Total Cr: PKR ${formatMoney(totalCredits)}`, kpiX + 6, y + 27, { lineBreak: false });
+
+      // Closing Balance Card (Highlighted)
+      kpiX += kpiBoxWidth + cardGap;
+      const isDue = safeCurrentBalance > 0;
+      doc.rect(kpiX, y, kpiBoxWidth, cardHeight).fillAndStroke(isDue ? "#eff6ff" : "#f0fdf4", isDue ? "#93c5fd" : "#86efac");
+      doc.font("Helvetica-Bold").fontSize(6.5).fillColor(isDue ? "#1d4ed8" : "#15803d").text("CLOSING BALANCE", kpiX + 6, y + 5, { lineBreak: false });
+      const curLabel = safeCurrentBalance > 0 ? "Dr (Owes You)" : safeCurrentBalance < 0 ? "Cr (Advance/You Owe)" : "Settled (0.00)";
+      doc.font("Helvetica-Bold").fontSize(8.5).fillColor(isDue ? "#1e40af" : "#166534").text(`PKR ${formatMoney(Math.abs(safeCurrentBalance))}`, kpiX + 6, y + 16, { lineBreak: false });
+      doc.font("Helvetica-Bold").fontSize(6).fillColor(isDue ? "#1e40af" : "#166534").text(curLabel, kpiX + 6, y + 28, { lineBreak: false });
+
+      y += cardHeight + 12;
+
+      // 3. Transactions Ledger Table
+      y = drawTableHeader(y);
+
+      // Row 0: Opening Balance Brought Forward
+      doc.rect(leftMargin, y, contentWidth, 16).fill("#fffbeb");
+      doc.strokeColor("#fed7aa").lineWidth(0.5).moveTo(leftMargin, y + 16).lineTo(rightMargin, y + 16).stroke();
+      doc.font("Helvetica-Bold").fontSize(6.5).fillColor("#78350f");
+      doc.text(data.startDate || "—", colX.date + 4, y + 4, { width: colW.date - 6, lineBreak: false });
+      doc.text("B/F", colX.ref + 4, y + 4, { width: colW.ref - 6, lineBreak: false });
+      doc.text("Balance Brought Forward", colX.desc + 4, y + 4, { width: colW.desc - 6, lineBreak: false });
+      if (safeOpeningBalance >= 0) {
+        doc.text(formatMoney(Math.abs(safeOpeningBalance)), colX.debit, y + 4, { width: colW.debit - 4, align: "right", lineBreak: false });
+        doc.text("—", colX.credit, y + 4, { width: colW.credit - 4, align: "right", lineBreak: false });
+      } else {
+        doc.text("—", colX.debit, y + 4, { width: colW.debit - 4, align: "right", lineBreak: false });
+        doc.text(formatMoney(Math.abs(safeOpeningBalance)), colX.credit, y + 4, { width: colW.credit - 4, align: "right", lineBreak: false });
+      }
+      const bwdDrCr = safeOpeningBalance >= 0 ? "Dr" : "Cr";
+      doc.text(`${formatMoney(Math.abs(safeOpeningBalance))} ${bwdDrCr}`, colX.bal, y + 4, { width: colW.bal - 4, align: "right", lineBreak: false });
+      y += 16;
+
+      // Render Transaction Rows
+      if (rows.length === 0) {
+        doc.rect(leftMargin, y, contentWidth, 24).fill("#ffffff");
+        doc.font("Helvetica").fontSize(7.5).fillColor("#94a3b8").text("No transactions recorded for this period.", leftMargin, y + 8, {
+          width: contentWidth,
+          align: "center",
+          lineBreak: false,
+        });
+        y += 24;
+      } else {
+        for (let idx = 0; idx < rows.length; idx++) {
+          const r = rows[idx];
+          const hasDetails = Array.isArray(r.detailRows) && r.detailRows.length > 0;
+          const detailHeight = hasDetails ? 16 + (r.detailRows!.length * 11) : 0;
+          const rowHeight = 16 + detailHeight;
+
+          // Page boundary check
+          if (y + rowHeight > 780) {
+            doc.addPage();
+            y = 28;
+            y = drawTableHeader(y);
+          }
+
+          // Alternating background
+          const rowBg = idx % 2 === 1 ? "#f8fafc" : "#ffffff";
+          doc.rect(leftMargin, y, contentWidth, rowHeight).fill(rowBg);
+
+          // Top line of row
+          doc.font("Helvetica").fontSize(6.5).fillColor("#334155");
+          doc.text(r.date, colX.date + 4, y + 4, { width: colW.date - 6, lineBreak: false });
+
+          const refText = r.referenceDocNo || r.referenceType || "—";
+          doc.font("Helvetica-Bold").fontSize(6.5).fillColor("#0f172a");
+          doc.text(refText, colX.ref + 4, y + 4, { width: colW.ref - 6, lineBreak: false });
+
+          doc.text(r.description, colX.desc + 4, y + 4, { width: colW.desc - 8, lineBreak: false });
+
+          doc.font("Helvetica").fontSize(6.5).fillColor("#0f172a");
+          doc.text(r.debit > 0 ? formatMoney(r.debit) : "—", colX.debit, y + 4, { width: colW.debit - 4, align: "right", lineBreak: false });
+          doc.text(r.credit > 0 ? formatMoney(r.credit) : "—", colX.credit, y + 4, { width: colW.credit - 4, align: "right", lineBreak: false });
+
+          const drCr = r.runningBalance >= 0 ? "Dr" : "Cr";
+          doc.font("Helvetica-Bold").fontSize(6.5).fillColor("#0f172a");
+          doc.text(`${formatMoney(Math.abs(r.runningBalance))} ${drCr}`, colX.bal, y + 4, { width: colW.bal - 4, align: "right", lineBreak: false });
+
+          // Render itemized detail sub-table if attached
+          if (hasDetails) {
+            let subY = y + 16;
+            const subBoxX = colX.desc + 4;
+            const subBoxW = colW.desc + colW.debit + colW.credit + colW.bal - 12;
+
+            doc.rect(subBoxX, subY, subBoxW, detailHeight - 4).fillAndStroke("#f1f5f9", "#cbd5e1");
+
+            // Sub-header
+            doc.font("Helvetica-Bold").fontSize(5.5).fillColor("#475569");
+            doc.text("ITEM DESCRIPTION", subBoxX + 4, subY + 3, { width: 140, lineBreak: false });
+            doc.text("QUANTITY", subBoxX + 148, subY + 3, { width: 60, align: "right", lineBreak: false });
+            doc.text("UNIT RATE", subBoxX + 212, subY + 3, { width: 60, align: "right", lineBreak: false });
+            doc.text("AMOUNT (PKR)", subBoxX + 276, subY + 3, { width: 70, align: "right", lineBreak: false });
+            subY += 10;
+            doc.strokeColor("#cbd5e1").lineWidth(0.5).moveTo(subBoxX, subY).lineTo(subBoxX + subBoxW, subY).stroke();
+
+            for (const item of r.detailRows!) {
+              doc.font("Helvetica").fontSize(5.5).fillColor("#1e293b");
+              doc.text(item.productName, subBoxX + 4, subY + 2, { width: 140, lineBreak: false });
+              doc.text(`${item.quantity} ${item.unit}`, subBoxX + 148, subY + 2, { width: 60, align: "right", lineBreak: false });
+              doc.text(formatMoney(item.rate), subBoxX + 212, subY + 2, { width: 60, align: "right", lineBreak: false });
+              doc.font("Helvetica-Bold").fontSize(5.5).fillColor("#0f172a");
+              doc.text(formatMoney(item.amount), subBoxX + 276, subY + 2, { width: 70, align: "right", lineBreak: false });
+              subY += 10;
+            }
+          }
+
+          // Row separator line
+          doc.strokeColor("#e2e8f0").lineWidth(0.5).moveTo(leftMargin, y + rowHeight).lineTo(rightMargin, y + rowHeight).stroke();
+          y += rowHeight;
+        }
+      }
+
+      // 4. Totals Footer Row
+      if (y + 22 > 780) {
+        doc.addPage();
+        y = 28;
+      }
+      doc.rect(leftMargin, y, contentWidth, 20).fill("#f1f5f9");
+      doc.strokeColor("#0f172a").lineWidth(1).moveTo(leftMargin, y).lineTo(rightMargin, y).stroke();
+      doc.strokeColor("#0f172a").lineWidth(1).moveTo(leftMargin, y + 20).lineTo(rightMargin, y + 20).stroke();
+
+      doc.font("Helvetica-Bold").fontSize(7).fillColor("#0f172a");
+      doc.text("TOTAL TRANSACTIONS & CLOSING BALANCE:", leftMargin + 6, y + 6, { width: colW.date + colW.ref + colW.desc - 10, lineBreak: false });
+      doc.text(formatMoney(totalDebits), colX.debit, y + 6, { width: colW.debit - 4, align: "right", lineBreak: false });
+      doc.text(formatMoney(totalCredits), colX.credit, y + 6, { width: colW.credit - 4, align: "right", lineBreak: false });
+
+      const finalDrCr = safeCurrentBalance >= 0 ? "Dr" : "Cr";
+      doc.text(`${formatMoney(Math.abs(safeCurrentBalance))} ${finalDrCr}`, colX.bal, y + 6, { width: colW.bal - 4, align: "right", lineBreak: false });
+
+      // 5. Multi-page footer labeling
+      const range = doc.bufferedPageRange();
+      for (let i = range.start; i < range.start + range.count; i++) {
+        doc.switchToPage(i);
+        doc.strokeColor("#cbd5e1").lineWidth(0.5).moveTo(leftMargin, 812).lineTo(rightMargin, 812).stroke();
+        doc.font("Helvetica").fontSize(6).fillColor("#64748b");
+        doc.text(`${companyName}  •  Certified Party Statement Ledger  •  Generated: ${new Date().toLocaleString()}`, leftMargin, 816, { lineBreak: false });
+        doc.text(`Page ${i + 1} of ${range.count}`, leftMargin, 816, { align: "right", width: contentWidth, lineBreak: false });
+      }
+
+      doc.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+

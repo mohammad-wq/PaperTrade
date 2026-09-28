@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { listExpensesAction, createExpenseAction } from "@/actions/expenses";
 import { ExpenseCategory, PaymentMethod } from "@prisma/client";
 import { format } from "date-fns";
+import { handleFormKeyDown } from "@/lib/keyboard-nav";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 
@@ -340,7 +341,7 @@ export default function ExpensesPage() {
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+            <form onSubmit={handleSubmit} onKeyDown={(e) => handleFormKeyDown(e)} className="mt-4 space-y-4">
               <div className="space-y-1">
                 <Label htmlFor="category" className="text-xs font-semibold">
                   Expense Category <span className="text-rose-500">*</span>

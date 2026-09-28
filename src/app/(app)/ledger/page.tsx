@@ -10,8 +10,6 @@ import {
   FileText,
   FileSpreadsheet,
   X,
-  Eye,
-  Download,
   Calendar,
   RotateCcw,
   CheckCircle2,
@@ -62,11 +60,6 @@ export default function LedgerPage() {
   const [endDate, setEndDate] = useState("");
   const [query, setQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
-
-  // Live PDF Preview Modal
-  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
-  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -160,28 +153,6 @@ export default function LedgerPage() {
     }
   }
 
-  async function handlePreviewPdf() {
-    setPreviewLoading(true);
-    try {
-      const url = `/api/pdf/reports/general-ledger?startDate=${startDate}&endDate=${endDate}&partyId=${partyId !== "ALL" ? partyId : ""}&accountType=${accountType !== "ALL" ? accountType : ""}&referenceType=${referenceType !== "ALL" ? referenceType : ""}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "Failed to render General Ledger PDF");
-      }
-      if (pdfPreviewUrl) {
-        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-      }
-      const blob = await res.blob();
-      const objUrl = URL.createObjectURL(blob);
-      setPdfPreviewUrl(objUrl);
-      setShowPdfPreviewModal(true);
-    } catch (err: any) {
-      alert(err.message || "Failed to preview PDF");
-    } finally {
-      setPreviewLoading(false);
-    }
-  }
 
   const filteredEntries = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -284,39 +255,12 @@ export default function LedgerPage() {
             variant="outline"
             size="sm"
             onClick={() => window.print()}
-            className="h-8 text-xs border-slate-300 text-slate-700 gap-1.5"
+            className="h-8 text-xs bg-slate-900 hover:bg-slate-800 text-white border-slate-900 gap-1.5 font-medium shadow-xs"
             title="Print B&W Ledger Statement"
           >
             <Printer className="h-3.5 w-3.5" />
-            Print
+            Print Ledger
           </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={handlePreviewPdf}
-            disabled={previewLoading}
-            className="h-8 text-xs border-emerald-600 text-emerald-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 gap-1.5 font-semibold"
-            title="Preview Ledger in PDF Format"
-          >
-            <Eye className="h-3.5 w-3.5 text-emerald-700" />
-            {previewLoading ? "Rendering..." : "Preview PDF"}
-          </Button>
-
-          <a
-            href={`/api/pdf/reports/general-ledger?download=true&startDate=${startDate}&endDate=${endDate}&partyId=${partyId !== "ALL" ? partyId : ""}&accountType=${accountType !== "ALL" ? accountType : ""}&referenceType=${referenceType !== "ALL" ? referenceType : ""}`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <Button
-              size="sm"
-              className="h-8 text-xs bg-emerald-800 hover:bg-emerald-900 text-white font-medium shadow-xs gap-1"
-            >
-              <Download className="h-3.5 w-3.5" />
-              Download PDF
-            </Button>
-          </a>
         </div>
       </div>
 
@@ -610,66 +554,6 @@ export default function LedgerPage() {
           </table>
         </div>
       </div>
-
-      {/* Live PDF Preview Modal */}
-      {showPdfPreviewModal && pdfPreviewUrl && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
-            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-emerald-400" />
-                <span className="font-bold text-xs">General Ledger Statement PDF Preview</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    if (pdfPreviewUrl) {
-                      const win = window.open(pdfPreviewUrl, "_blank");
-                      win?.focus();
-                    }
-                  }}
-                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
-                  title="Open in dedicated tab for safe printing"
-                >
-                  <Printer className="h-3.5 w-3.5" />
-                  Print / Open Tab
-                </Button>
-                <a
-                  href={pdfPreviewUrl}
-                  download={`General-Ledger-Statement-${new Date().toISOString().slice(0, 10)}.pdf`}
-                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-emerald-700 hover:bg-emerald-800 text-white rounded font-medium"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Download
-                </a>
-                <button
-                  onClick={() => {
-                    setShowPdfPreviewModal(false);
-                    if (pdfPreviewUrl) {
-                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-                      setPdfPreviewUrl(null);
-                    }
-                  }}
-                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
-                  title="Close Preview"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
-              <iframe
-                id="ledgerPdfPreviewIframe"
-                src={pdfPreviewUrl}
-                className="w-full h-full rounded border border-slate-200 dark:border-slate-800 bg-white"
-                title="General Ledger PDF Preview"
-              />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

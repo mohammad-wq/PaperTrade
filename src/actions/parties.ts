@@ -1,7 +1,7 @@
 "use server";
 
 import { z } from "zod";
-import { AccountType, PartyType, Role } from "@prisma/client";
+import { AccountType, PartyType, Role, StockMovementType } from "@prisma/client";
 import { parseInput, runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
@@ -30,15 +30,27 @@ export async function listPartiesAction() {
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
     });
 
-    const result = await Promise.all(
-      parties.map(async (party) => ({
-        ...party,
-        creditLimit: party.creditLimit ? Number(party.creditLimit) : null,
-        balance: await getPartyBalance(party.id),
-      })),
-    );
+    if (parties.length === 0) return [];
 
-    return result;
+    const partyIds = parties.map((p) => p.id);
+    const balanceAggregates = await prisma.ledgerEntry.groupBy({
+      by: ["partyId"],
+      where: { partyId: { in: partyIds } },
+      _sum: { debit: true, credit: true },
+    });
+
+    const balanceMap = new Map<string, number>();
+    for (const b of balanceAggregates) {
+      if (b.partyId) {
+        balanceMap.set(b.partyId, Number(b._sum.debit ?? 0) - Number(b._sum.credit ?? 0));
+      }
+    }
+
+    return parties.map((party) => ({
+      ...party,
+      creditLimit: party.creditLimit ? Number(party.creditLimit) : null,
+      balance: balanceMap.get(party.id) ?? 0,
+    }));
   });
 }
 
@@ -108,7 +120,7 @@ export async function getPartyDetailsAction(partyId: string) {
 export async function listInventoryAction() {
   return runAction("inventory.list", async () => {
     await requireSession();
-    const [products, locations] = await Promise.all([
+    const [products, locations, rawMovements] = await Promise.all([
       prisma.product.findMany({
         where: { deletedAt: null, isActive: true },
         orderBy: { name: "asc" },
@@ -123,46 +135,81 @@ export async function listInventoryAction() {
           },
         },
       }),
+      prisma.stockMovement.groupBy({
+        by: ["productId", "locationId", "warehouseLotId", "type"],
+        _sum: { quantity: true },
+      }),
     ]);
 
-    const rows = await Promise.all(
-      locations.flatMap((location) =>
-        products.map(async (product) => {
-          const available = await getStockOnHand(product.id, location.id);
-          let lots: Array<{
+    const INBOUND_SET = new Set<StockMovementType>([
+      StockMovementType.PURCHASE_IN,
+      StockMovementType.TRANSFER_IN,
+      StockMovementType.SALE_RETURN,
+    ]);
+    const OUTBOUND_SET = new Set<StockMovementType>([
+      StockMovementType.SALE_OUT,
+      StockMovementType.TRANSFER_OUT,
+      StockMovementType.DELIVERY_OUT,
+      StockMovementType.PURCHASE_RETURN,
+    ]);
+
+    // Build ultra-fast in-memory stock lookup maps
+    const locStockMap = new Map<string, number>();
+    const lotStockMap = new Map<string, number>();
+
+    for (const m of rawMovements) {
+      const qty = Number(m._sum.quantity ?? 0);
+      let delta = 0;
+      if (m.type === StockMovementType.ADJUSTMENT) {
+        delta = qty;
+      } else if (INBOUND_SET.has(m.type)) {
+        delta = qty;
+      } else if (OUTBOUND_SET.has(m.type)) {
+        delta = -qty;
+      }
+
+      const locKey = `${m.productId}:${m.locationId}`;
+      locStockMap.set(locKey, (locStockMap.get(locKey) ?? 0) + delta);
+
+      const lotKey = `${m.productId}:${m.locationId}:${m.warehouseLotId || ""}`;
+      lotStockMap.set(lotKey, (lotStockMap.get(lotKey) ?? 0) + delta);
+    }
+
+    const rows = locations.flatMap((location) =>
+      products.map((product) => {
+        const available = locStockMap.get(`${product.id}:${location.id}`) ?? 0;
+        let lots: Array<{
+          id: string | null;
+          lotNumber: string;
+          description: string | null;
+          available: number;
+        }> = [];
+
+        if (location.warehouseLots.length > 0) {
+          const lotStocks: Array<{
             id: string | null;
             lotNumber: string;
             description: string | null;
             available: number;
-          }> = [];
+          }> = location.warehouseLots.map((lot) => ({
+            id: lot.id,
+            lotNumber: lot.lotNumber,
+            description: lot.description,
+            available: lotStockMap.get(`${product.id}:${location.id}:${lot.id}`) ?? 0,
+          }));
 
-          if (location.warehouseLots.length > 0) {
-            const lotStocks: Array<{
-              id: string | null;
-              lotNumber: string;
-              description: string | null;
-              available: number;
-            }> = await Promise.all(
-              location.warehouseLots.map(async (lot) => ({
-                id: lot.id,
-                lotNumber: lot.lotNumber,
-                description: lot.description,
-                available: await getStockOnHand(product.id, location.id, undefined, lot.id),
-              })),
-            );
-
-            const unassigned = await getStockOnHand(product.id, location.id, undefined, null);
-            if (unassigned !== 0) {
-              lotStocks.push({
-                id: null,
-                lotNumber: "Unassigned",
-                description: "Stock without lot assignment",
-                available: unassigned,
-              });
-            }
-
-            lots = lotStocks;
+          const unassigned = lotStockMap.get(`${product.id}:${location.id}:`) ?? 0;
+          if (unassigned !== 0) {
+            lotStocks.push({
+              id: null,
+              lotNumber: "Unassigned",
+              description: "Stock without lot assignment",
+              available: unassigned,
+            });
           }
+
+          lots = lotStocks;
+        }
 
           return {
             productId: product.id,
@@ -182,12 +229,11 @@ export async function listInventoryAction() {
             isActive: product.isActive,
             lots,
           };
-        }),
-      ),
-    );
+        })
+      );
 
-    return rows.flat();
-  });
+      return rows;
+    });
 }
 
 export async function upsertPartyAction(raw: unknown) {

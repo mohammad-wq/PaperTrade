@@ -245,8 +245,8 @@ function PartiesPageContent() {
       } else if (e.key === "Enter") {
         void handleSaveParty();
       }
-    } else if (e.key === "ArrowUp") {
-      if ((e.currentTarget as HTMLElement).tagName === "SELECT" && !e.altKey) {
+    } else if (e.key === "ArrowUp" || (e.shiftKey && e.key === "Enter")) {
+      if ((e.currentTarget as HTMLElement).tagName === "SELECT" && !e.altKey && e.key === "ArrowUp") {
         return; // Allow native select option navigation
       }
       e.preventDefault();
