@@ -11,6 +11,7 @@ export function SessionSecurityGuard() {
   const { data: session, status } = useSession();
   const pathname = usePathname();
   const isLoggingOutRef = useRef(false);
+  const initialCheckedRef = useRef(false);
 
   useEffect(() => {
     if (status !== "authenticated" || !session?.user) {
@@ -56,6 +57,11 @@ export function SessionSecurityGuard() {
       }
     }
 
+    if (initialCheckedRef.current) {
+      return;
+    }
+    initialCheckedRef.current = true;
+
     // Check if this window/tab has active session in this browser process
     const isSessionActive = sessionStorage.getItem(SESSION_FLAG) === "active";
 
@@ -98,7 +104,7 @@ export function SessionSecurityGuard() {
         channel.close();
       }
     };
-  }, [status, session, pathname]);
+  }, [status, session]);
 
   return null;
 }

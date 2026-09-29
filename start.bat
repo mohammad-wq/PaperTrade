@@ -1,182 +1,327 @@
+
 @echo off
-REM ==============================================================================
-REM Paper Trade - Native Windows Launcher
-REM Starts the standalone Node.js server, monitors health, and opens default browser.
-REM 100% Native Windows - Zero Docker / Virtualization overhead.
-REM ==============================================================================
+setlocal EnableExtensions EnableDelayedExpansion
+title Paper Trade Launcher
+
+REM ============================================================
+REM PAPER TRADE - NATIVE WINDOWS LAUNCHER
+REM ============================================================
 
 cd /d "%~dp0"
 
-echo ======================================================================
-echo  Starting Paper Trade Management System (Native Windows)...
-echo ======================================================================
+set "APP_URL=http://localhost:3000"
+set "APP_DIR=%CD%"
+set "MAX_ATTEMPTS=30"
+set "ATTEMPTS=0"
+set "USED_NSSM=0"
+
+echo ============================================================
+echo   Starting Paper Trade Management System
+echo ============================================================
 echo.
 
-REM 1. Quick check: is the application ALREADY running?
+REM ============================================================
+REM STEP 1 - CHECK IF APPLICATION IS ALREADY RUNNING
+REM ============================================================
+
 echo [1/3] Checking application status...
-where curl >nul 2>&1
-if not errorlevel 1 (
-    curl -s -f -L -o nul http://localhost:3000 >nul 2>&1
-    if not errorlevel 1 (
-        echo Application is already running and responsive!
-        goto app_ready
-    )
-) else (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = [System.Net.WebRequest]::Create('http://localhost:3000'); $r.Timeout = 1000; $res = $r.GetResponse(); exit 0 } catch { exit 1 }" >nul 2>&1
-    if not errorlevel 1 (
-        echo Application is already running and responsive!
-        goto app_ready
-    )
-)
 
-REM 2. Verify Node.js is installed
+call :check_health
+if not errorlevel 1 goto app_ready
+
+REM ============================================================
+REM STEP 2 - VERIFY NODE.JS
+REM ============================================================
+
 where node >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo ======================================================================
-    echo  [ERROR] Node.js is not installed or not in system PATH!
-    echo ======================================================================
-    echo.
-    echo  Node.js LTS (v20 or newer) is required to run Paper Trade natively.
-    echo.
-    echo  Steps to fix:
-    echo   1. Download and install Node.js LTS from: https://nodejs.org/
-    echo   2. Restart Command Prompt after installation.
-    echo.
-    echo ======================================================================
-    echo Press any key to exit...
-    pause >nul
-    exit /b 1
-)
+if errorlevel 1 goto node_missing
 
-REM 3. Verify PostgreSQL service is running (checks PG 18, 17, 16)
-for %%v in (postgresql-x64-18 postgresql-x64-17 postgresql-x64-16 postgresql) do (
-    sc query %%v >nul 2>&1
-    if not errorlevel 1 (
-        sc query %%v | findstr /i "RUNNING" >nul 2>&1
-        if errorlevel 1 (
-            echo [!] PostgreSQL service (%%v) is stopped. Attempting to start...
-            net start %%v >nul 2>&1
-        )
-    )
-)
+echo [OK] Node.js detected.
+node --version
 
-REM 4. Check for NSSM Windows Service "PaperTrade"
-set USED_NSSM=0
-where nssm >nul 2>&1
-if not errorlevel 1 (
-    nssm status PaperTrade >nul 2>&1
-    if not errorlevel 1 (
-        echo [2/3] Starting Windows Service 'PaperTrade' via NSSM...
-        nssm start PaperTrade >nul 2>&1
-        set USED_NSSM=1
-    )
-)
+REM ============================================================
+REM STEP 3 - CHECK POSTGRESQL SERVICES
+REM ============================================================
 
-REM 5. Fallback: If not started via NSSM, launch node server.js directly
-if %USED_NSSM%==0 (
-    set SERVER_JS=server.js
-    if not exist "%SERVER_JS%" (
-        if exist ".next\standalone\server.js" (
-            set SERVER_JS=.next\standalone\server.js
-        ) else (
-            echo.
-            echo ======================================================================
-            echo  [ERROR] server.js not found in current directory or .next\standalone!
-            echo ======================================================================
-            echo.
-            echo  Please ensure the standalone build files are located in this folder.
-            echo.
-            pause
-            exit /b 1
-        )
-    )
-
-    REM Ensure static and public assets exist in standalone directory
-    if exist ".next\static" if exist ".next\standalone" (
-        if not exist ".next\standalone\.next\static" (
-            echo [!] Syncing static assets to standalone directory...
-            xcopy /E /I /Y /Q ".next\static" ".next\standalone\.next\static" >nul 2>&1
-        )
-        if exist "public" if not exist ".next\standalone\public" (
-            xcopy /E /I /Y /Q "public" ".next\standalone\public" >nul 2>&1
-        )
-    )
-
-    echo [2/3] Launching Node.js standalone server (memory-capped fallback)...
-    start "Paper Trade Server" /min cmd /c "node --max-old-space-size=1536 %SERVER_JS%"
-)
-
-REM 6. Poll until application responds on http://localhost:3000
 echo.
-echo [3/3] Waiting for application to initialize on http://localhost:3000...
-set ATTEMPTS=0
-set MAX_ATTEMPTS=30
+echo Checking PostgreSQL...
+
+set "PG_FOUND=0"
+
+for %%S in (postgresql-x64-18 postgresql-x64-17 postgresql-x64-16 postgresql-x64-15 postgresql) do call :check_postgres %%S
+
+if "!PG_FOUND!"=="0" echo [WARNING] No standard PostgreSQL service found.
+
+REM ============================================================
+REM STEP 4 - CHECK NSSM WINDOWS SERVICE
+REM ============================================================
+
+echo.
+echo Checking PaperTrade Windows service...
+
+where nssm >nul 2>&1
+if errorlevel 1 goto prepare_node
+
+nssm status PaperTrade >nul 2>&1
+if errorlevel 1 goto prepare_node
+
+echo PaperTrade service found.
+echo Attempting to start service...
+
+nssm start PaperTrade >nul 2>&1
+
+REM The service may already be running.
+call :check_health
+if not errorlevel 1 goto app_ready
+
+set "USED_NSSM=1"
+goto poll_start
+
+REM ============================================================
+REM STEP 5 - PREPARE STANDALONE NODE SERVER
+REM ============================================================
+
+:prepare_node
+
+echo.
+echo [2/3] Preparing standalone Node.js server...
+
+REM Prefer the Next.js standalone build.
+
+if exist ".next\standalone\server.js" goto use_standalone
+
+REM Fall back to root server.js if available.
+
+if exist "server.js" goto use_root
+
+goto server_missing
+
+:use_standalone
+
+echo [OK] Standalone build found.
+
+REM Copy static assets when available.
+
+if not exist ".next\static" goto check_public
+if not exist ".next\standalone\.next\static" mkdir ".next\standalone\.next\static"
+
+xcopy ".next\static\*" ".next\standalone\.next\static\" /E /I /Y /Q >nul
+if errorlevel 1 echo [WARNING] Could not synchronize static assets.
+
+:check_public
+
+if not exist "public" goto check_env
+if not exist ".next\standalone\public" mkdir ".next\standalone\public"
+
+xcopy "public\*" ".next\standalone\public\" /E /I /Y /Q >nul
+if errorlevel 1 echo [WARNING] Could not synchronize public assets.
+
+:check_env
+
+REM Make the environment file available to standalone server.
+
+if not exist ".env" goto launch_standalone
+
+copy /Y ".env" ".next\standalone\.env" >nul
+if errorlevel 1 echo [WARNING] Could not copy .env file.
+
+:launch_standalone
+
+echo.
+echo Starting standalone server...
+
+start "Paper Trade Server" /D "%APP_DIR%\.next\standalone" cmd /k "node --max-old-space-size=1536 server.js"
+
+goto poll_start
+
+:use_root
+
+echo [OK] Root server.js found.
+echo Starting Node.js server...
+
+start "Paper Trade Server" /D "%APP_DIR%" cmd /k "node --max-old-space-size=1536 server.js"
+
+goto poll_start
+
+REM ============================================================
+REM STEP 6 - WAIT FOR SERVER
+REM ============================================================
+
+:poll_start
+
+echo.
+echo [3/3] Waiting for application to initialize...
+echo URL: %APP_URL%
+echo.
+
+set "ATTEMPTS=0"
 
 :poll_loop
+
 set /a ATTEMPTS+=1
 
-where curl >nul 2>&1
-if errorlevel 1 goto try_powershell
-
-curl -s -f -L -o nul http://localhost:3000 >nul 2>&1
-if not errorlevel 1 goto app_ready
-goto check_timeout
-
-:try_powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = [System.Net.WebRequest]::Create('http://localhost:3000'); $r.Timeout = 1500; $res = $r.GetResponse(); exit 0 } catch { exit 1 }" >nul 2>&1
+call :check_health
 if not errorlevel 1 goto app_ready
 
-:check_timeout
-if %ATTEMPTS% GEQ %MAX_ATTEMPTS% goto app_timeout
+if !ATTEMPTS! GEQ !MAX_ATTEMPTS! goto app_timeout
 
-<nul set /p =.
+<nul set /p "=."
 timeout /t 2 /nobreak >nul
+
 goto poll_loop
 
-:app_ready
-echo.
-echo.
-echo [OK] Application is online and ready!
-echo Opening browser to http://localhost:3000...
-start http://localhost:3000
+REM ============================================================
+REM HEALTH CHECK
+REM ============================================================
 
-echo.
-echo ======================================================================
-echo  Paper Trade Management System is running!
-echo ======================================================================
-echo  * Local Machine URL:   http://localhost:3000
-echo  * LAN (Second PC) URL: http://^<YOUR-PC-IP-ADDRESS^>:3000
-echo    (Run "ipconfig" in Command Prompt to find your IPv4 Address)
-echo.
-echo  To stop the application cleanly, double-click stop.bat
-echo ======================================================================
-echo.
-echo This window will close in 8 seconds, or press any key to close now...
-timeout /t 8
+:check_health
+
+where curl >nul 2>&1
+if errorlevel 1 goto health_powershell
+
+curl --max-time 2 -s -f -o nul "%APP_URL%" >nul 2>&1
+exit /b %errorlevel%
+
+:health_powershell
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri 'http://localhost:3000' -UseBasicParsing -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+
+exit /b %errorlevel%
+
+REM ============================================================
+REM POSTGRESQL SERVICE CHECK
+REM ============================================================
+
+:check_postgres
+
+sc query "%~1" >nul 2>&1
+if errorlevel 1 exit /b 0
+
+set "PG_FOUND=1"
+
+sc query "%~1" | findstr /C:"RUNNING" >nul 2>&1
+if not errorlevel 1 goto postgres_running
+
+echo [WARNING] PostgreSQL service %~1 is stopped.
+echo Attempting to start it...
+
+net start "%~1" >nul 2>&1
+if errorlevel 1 goto postgres_failed
+
+echo [OK] PostgreSQL service started.
 exit /b 0
 
+:postgres_running
+
+echo [OK] PostgreSQL service %~1 is running.
+exit /b 0
+
+:postgres_failed
+
+echo [WARNING] Could not start PostgreSQL service.
+echo Administrator privileges may be required.
+exit /b 0
+
+REM ============================================================
+REM SUCCESS
+REM ============================================================
+
+:app_ready
+
+echo.
+echo.
+echo ============================================================
+echo   APPLICATION IS ONLINE
+echo ============================================================
+echo.
+echo Local URL: %APP_URL%
+echo.
+echo For access from another PC on your network:
+echo.
+echo   1. Run ipconfig to find your IPv4 address.
+echo   2. Open http://YOUR-PC-IP:3000 on the second PC.
+echo   3. Ensure your firewall permits the connection.
+echo.
+echo To stop the application, use stop.bat.
+echo ============================================================
+echo.
+
+echo Opening default browser...
+
+start "" "%APP_URL%"
+
+echo.
+echo Launcher will close in 8 seconds.
+timeout /t 8 /nobreak >nul
+
+exit /b 0
+
+REM ============================================================
+REM ERROR - NODE.JS NOT FOUND
+REM ============================================================
+
+:node_missing
+
+echo.
+echo ============================================================
+echo ERROR: Node.js was not found.
+echo ============================================================
+echo.
+echo Install Node.js LTS from:
+echo https://nodejs.org/
+echo.
+echo Restart Command Prompt after installation.
+echo.
+pause
+exit /b 1
+
+REM ============================================================
+REM ERROR - SERVER NOT FOUND
+REM ============================================================
+
+:server_missing
+
+echo.
+echo ============================================================
+echo ERROR: Standalone server.js was not found.
+echo ============================================================
+echo.
+echo Expected location:
+echo .next\standalone\server.js
+echo.
+echo Ensure the Next.js standalone build exists.
+echo.
+pause
+exit /b 1
+
+REM ============================================================
+REM ERROR - STARTUP TIMEOUT
+REM ============================================================
+
 :app_timeout
+
 echo.
 echo.
-echo ======================================================================
-echo  [WARNING] Application startup is taking longer than expected.
-echo ======================================================================
+echo ============================================================
+echo WARNING: Application did not respond within 60 seconds.
+echo ============================================================
 echo.
-echo  The web server has not responded on http://localhost:3000 yet.
+echo Possible causes:
 echo.
-echo  Likely causes:
-echo   1. PostgreSQL service is not running.
-echo      - Open Services (services.msc) and ensure "postgresql-x64-16" is Running.
-echo      - Or run in Admin CMD: sc query postgresql-x64-16
-echo   2. Database credentials in .env are incorrect.
-echo      - Check DATABASE_URL in .env (e.g. postgresql://user:password@localhost:5432/paperbiz)
-echo   3. Port 3000 is occupied by another application.
-echo      - Run: netstat -ano | findstr :3000
-echo   4. Pending database migrations.
-echo      - Run: npx prisma migrate deploy
+echo 1. PostgreSQL is stopped.
+echo 2. Incorrect DATABASE_URL in .env.
+echo 3. Port 3000 is occupied.
+echo 4. Pending Prisma migrations.
+echo 5. Node.js encountered a startup error.
 echo.
-echo ======================================================================
-echo Press any key to exit...
-pause >nul
+echo Check the Paper Trade Server window for error messages.
+echo.
+echo Useful diagnostic commands:
+echo.
+echo netstat -ano ^| findstr :3000
+echo npx prisma migrate deploy
+echo.
+echo ============================================================
+echo.
+pause
 exit /b 1

@@ -8,6 +8,7 @@ import { userError } from "@/lib/errors";
 import { LocationType, Role } from "@prisma/client";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { revalidatePath } from "next/cache";
+import { revalidateLocations } from "@/lib/cached-lookups";
 
 const locationSchema = z.object({
   id: z.string().optional(),
@@ -88,6 +89,7 @@ export async function createLocationAction(raw: unknown) {
       type: location.type,
     });
 
+    revalidateLocations();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");
@@ -144,6 +146,7 @@ export async function updateLocationAction(raw: unknown) {
       type: updated.type,
     });
 
+    revalidateLocations();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");
@@ -180,6 +183,7 @@ export async function deactivateLocationAction(raw: unknown) {
 
     emitRealtimeEvent(["locations", "inventory"], "delete", "Location", { id });
 
+    revalidateLocations();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");
@@ -208,6 +212,7 @@ export async function reactivateLocationAction(raw: unknown) {
 
     emitRealtimeEvent(["locations", "inventory"], "update", "Location", { id });
 
+    revalidateLocations();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");

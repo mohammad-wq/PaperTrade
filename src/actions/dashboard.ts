@@ -6,9 +6,10 @@ import { prisma } from "@/lib/db";
 import { startOfDay, endOfDay } from "date-fns";
 import { StockMovementType } from "@prisma/client";
 
-export async function getDashboardMetricsAction() {
-  return runAction("dashboard.metrics", async () => {
-    await requireSession();
+import { unstable_cache } from "next/cache";
+
+export const getCachedDashboardMetrics = unstable_cache(
+  async () => {
     const todayStart = startOfDay(new Date());
     const todayEnd = endOfDay(new Date());
 
@@ -60,13 +61,14 @@ export async function getDashboardMetricsAction() {
     // Calculate low stock alerts
     // Batch query stock movements for all active products across locations (replaces N+1 query loop)
     const productIds = activeProducts.map((p) => p.id);
-    const stockMovements = productIds.length > 0
-      ? await prisma.stockMovement.groupBy({
-          by: ["productId", "locationId", "type"],
-          where: { productId: { in: productIds } },
-          _sum: { quantity: true },
-        })
-      : [];
+    const stockMovements =
+      productIds.length > 0
+        ? await prisma.stockMovement.groupBy({
+            by: ["productId", "locationId", "type"],
+            where: { productId: { in: productIds } },
+            _sum: { quantity: true },
+          })
+        : [];
 
     const INBOUND_SET = new Set<StockMovementType>([
       StockMovementType.PURCHASE_IN,
@@ -165,6 +167,15 @@ export async function getDashboardMetricsAction() {
         status: p.status,
       })),
     };
+  },
+  ["dashboard-metrics"],
+  { revalidate: 45, tags: ["dashboard"] }
+);
+
+export async function getDashboardMetricsAction() {
+  return runAction("dashboard.metrics", async () => {
+    await requireSession();
+    return getCachedDashboardMetrics();
   });
 }
 

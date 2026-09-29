@@ -5,10 +5,12 @@ import { parseInput, runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
-import { LocationType, Role } from "@prisma/client";
+import { LocationType, Role, StockMovementType } from "@prisma/client";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { revalidatePath } from "next/cache";
 import { getLotStockOnHand } from "@/lib/stock";
+
+import { revalidateWarehouseLots } from "@/lib/cached-lookups";
 
 const createLotSchema = z.object({
   locationId: z.string().min(1, "Location is required"),
@@ -43,26 +45,56 @@ export async function listWarehouseLotsAction(
       orderBy: [{ isActive: "desc" }, { lotNumber: "asc" }],
     });
 
-    const lotsWithStock = await Promise.all(
-      lots.map(async (lot) => {
-        const totalStock = await getLotStockOnHand(lot.id);
-        return {
-          id: lot.id,
-          locationId: lot.locationId,
-          locationName: lot.location.name,
-          locationType: lot.location.type,
-          lotNumber: lot.lotNumber,
-          description: lot.description,
-          isActive: lot.isActive,
-          deletedAt: lot.deletedAt ? lot.deletedAt.toISOString() : null,
-          createdAt: lot.createdAt.toISOString(),
-          updatedAt: lot.updatedAt.toISOString(),
-          currentStock: totalStock,
-        };
-      }),
-    );
+    const lotIds = lots.map((l) => l.id);
+    const stockSums =
+      lotIds.length > 0
+        ? await prisma.stockMovement.groupBy({
+            by: ["warehouseLotId", "type"],
+            where: { warehouseLotId: { in: lotIds } },
+            _sum: { quantity: true },
+          })
+        : [];
 
-    return lotsWithStock;
+    const INBOUND_SET = new Set<StockMovementType>([
+      StockMovementType.PURCHASE_IN,
+      StockMovementType.TRANSFER_IN,
+      StockMovementType.SALE_RETURN,
+    ]);
+
+    const OUTBOUND_SET = new Set<StockMovementType>([
+      StockMovementType.SALE_OUT,
+      StockMovementType.TRANSFER_OUT,
+      StockMovementType.DELIVERY_OUT,
+      StockMovementType.PURCHASE_RETURN,
+    ]);
+
+    const stockMap = new Map<string, number>();
+    for (const row of stockSums) {
+      if (!row.warehouseLotId) continue;
+      const current = stockMap.get(row.warehouseLotId) ?? 0;
+      const qty = Number(row._sum.quantity ?? 0);
+      let delta = 0;
+      if (row.type === StockMovementType.ADJUSTMENT || INBOUND_SET.has(row.type)) {
+        delta = qty;
+      } else if (OUTBOUND_SET.has(row.type)) {
+        delta = -qty;
+      }
+      stockMap.set(row.warehouseLotId, current + delta);
+    }
+
+    return lots.map((lot) => ({
+      id: lot.id,
+      locationId: lot.locationId,
+      locationName: lot.location.name,
+      locationType: lot.location.type,
+      lotNumber: lot.lotNumber,
+      description: lot.description,
+      isActive: lot.isActive,
+      deletedAt: lot.deletedAt ? lot.deletedAt.toISOString() : null,
+      createdAt: lot.createdAt.toISOString(),
+      updatedAt: lot.updatedAt.toISOString(),
+      currentStock: stockMap.get(lot.id) ?? 0,
+    }));
   });
 }
 
@@ -119,6 +151,7 @@ export async function createWarehouseLotAction(raw: unknown) {
       lotNumber: lot.lotNumber,
     });
 
+    revalidateWarehouseLots();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");
@@ -167,6 +200,7 @@ export async function updateWarehouseLotAction(raw: unknown) {
       lotNumber: updated.lotNumber,
     });
 
+    revalidateWarehouseLots();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");
@@ -197,6 +231,7 @@ export async function deactivateWarehouseLotAction(raw: unknown) {
       locationId: lot.locationId,
     });
 
+    revalidateWarehouseLots();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");
@@ -227,6 +262,7 @@ export async function reactivateWarehouseLotAction(raw: unknown) {
       locationId: lot.locationId,
     });
 
+    revalidateWarehouseLots();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");

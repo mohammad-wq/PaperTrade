@@ -25,6 +25,9 @@ export function useRealtimeListener(
     const moduleList = (modulesKey ? modulesKey.split(",") : []) as RealtimeModule[];
 
     const unsubscribe = subscribe(moduleList, (event) => {
+      if (typeof document !== "undefined" && document.hidden) {
+        return; // Pause processing events while tab is hidden
+      }
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
         onUpdateRef.current(event);

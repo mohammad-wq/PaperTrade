@@ -126,11 +126,13 @@ function NavLinks({ role, onNavigate, permissions }: { role: Role; onNavigate?: 
               {visibleItems.map((item) => {
                 const Icon = item.icon;
                 const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
+                const shouldPrefetch = item.href === "/dashboard" || item.href === "/sales" || item.href === "/products";
 
                 return (
                   <Link
                     key={item.href}
                     href={item.href}
+                    prefetch={shouldPrefetch}
                     onClick={onNavigate}
                     className={cn(
                       "group flex min-h-10 items-center justify-between rounded-lg px-3 py-2 text-xs font-medium transition-colors",

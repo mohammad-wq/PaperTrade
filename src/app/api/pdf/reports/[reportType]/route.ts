@@ -9,7 +9,7 @@ import {
   calculateCashFlow,
   calculatePartyStatement,
 } from "@/lib/financial-reports";
-import { renderPartyStatementPdfKit } from "@/lib/pdfkit-generator";
+import { renderPartyStatementPdfKit, renderGeneralLedgerPdfKit } from "@/lib/pdfkit-generator";
 import {
   ProfitLossPdfView,
   CashFlowPdfView,
@@ -48,11 +48,45 @@ export async function GET(
   const { reportType } = await params;
   const searchParams = request.nextUrl.searchParams;
   const isDownload = searchParams.get("download") === "true";
-  const startDate = searchParams.get("startDate") || undefined;
-  const endDate = searchParams.get("endDate") || undefined;
-  const asOfDate = searchParams.get("asOfDate") || undefined;
-  const partyId = searchParams.get("partyId") || undefined;
-  const productId = searchParams.get("productId") || undefined;
+
+  // Treat empty/whitespace/ALL/null query parameters as not provided
+  const getCleanParam = (val: string | null): string | undefined => {
+    if (!val) return undefined;
+    const trimmed = val.trim();
+    if (!trimmed || trimmed === "" || trimmed.toUpperCase() === "ALL" || trimmed === "undefined" || trimmed === "null") {
+      return undefined;
+    }
+    return trimmed;
+  };
+
+  const startDate = getCleanParam(searchParams.get("startDate"));
+  const endDate = getCleanParam(searchParams.get("endDate"));
+  const asOfDate = getCleanParam(searchParams.get("asOfDate"));
+  const partyId = getCleanParam(searchParams.get("partyId"));
+  const productId = getCleanParam(searchParams.get("productId"));
+  const accountType = getCleanParam(searchParams.get("accountType"));
+  const referenceType = getCleanParam(searchParams.get("referenceType"));
+
+  // Input validation with clear error messages instead of 500
+  if (startDate && isNaN(new Date(startDate).getTime())) {
+    return new NextResponse("Invalid 'startDate' parameter. Expected format: YYYY-MM-DD", { status: 400 });
+  }
+  if (endDate && isNaN(new Date(endDate).getTime())) {
+    return new NextResponse("Invalid 'endDate' parameter. Expected format: YYYY-MM-DD", { status: 400 });
+  }
+  if (asOfDate && isNaN(new Date(asOfDate).getTime())) {
+    return new NextResponse("Invalid 'asOfDate' parameter. Expected format: YYYY-MM-DD", { status: 400 });
+  }
+
+  if (partyId) {
+    const existingParty = await prisma.party.findUnique({
+      where: { id: partyId },
+      select: { id: true },
+    });
+    if (!existingParty) {
+      return new NextResponse(`Party not found with ID '${partyId}'.`, { status: 404 });
+    }
+  }
 
   try {
     let docElement: React.ReactElement | null = null;
@@ -192,8 +226,6 @@ export async function GET(
         },
       });
     } else if (reportType === "general-ledger") {
-      const accountType = searchParams.get("accountType") || undefined;
-      const referenceType = searchParams.get("referenceType") || undefined;
       const dateFilter: Record<string, Date> = {};
       if (startDate) dateFilter.gte = new Date(startDate);
       if (endDate) {
@@ -416,7 +448,11 @@ export async function GET(
       ].filter(Boolean).join(" | ") || "All Transactions";
 
       filename = `General-Ledger-${startDate || "all"}-to-${endDate || "present"}.pdf`;
-      docElement = React.createElement(GeneralLedgerPdfView, {
+      const pdfBuffer = await renderGeneralLedgerPdfKit({
+        companyName: process.env.BUSINESS_NAME || "PAPER TRADE CO.",
+        companyAddress: process.env.BUSINESS_ADDRESS || "Wholesale Paper Market, Station Road",
+        companyPhone: process.env.BUSINESS_PHONE || "+92-300-1234567",
+        companyEmail: process.env.BUSINESS_EMAIL || undefined,
         period,
         filterInfo: filters,
         openingBalance,
@@ -424,6 +460,16 @@ export async function GET(
         totalCredit,
         closingBalance,
         entries: mappedEntries,
+      });
+
+      const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+      return new NextResponse(new Uint8Array(pdfBuffer), {
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `${isDownload ? "attachment" : "inline"}; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          "Cache-Control": "private, max-age=60",
+          "X-Content-Type-Options": "nosniff",
+        },
       });
     }
 

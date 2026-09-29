@@ -146,10 +146,18 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     };
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        if (!eventSourceRef.current || eventSourceRef.current.readyState === EventSource.CLOSED) {
-          connect();
+      if (document.hidden) {
+        // Pause stream and clear reconnect timers while tab is hidden to save resources
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
+          eventSourceRef.current = null;
         }
+        setStatus("disconnected");
+      } else {
+        // Tab is visible again: reconnect immediately
+        retryAttemptRef.current = 0;
+        connect();
       }
     };
 

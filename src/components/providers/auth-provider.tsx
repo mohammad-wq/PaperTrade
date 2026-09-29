@@ -8,7 +8,7 @@ import { ConfirmProvider } from "@/components/providers/confirm-provider";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
-    <SessionProvider>
+    <SessionProvider refetchOnWindowFocus={false} refetchInterval={0}>
       <SessionSecurityGuard />
       <RealtimeProvider>
         <ConfirmProvider>{children}</ConfirmProvider>

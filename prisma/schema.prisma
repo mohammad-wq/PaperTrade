@@ -187,6 +187,8 @@ model WarehouseLot {
 
   @@unique([locationId, lotNumber])
   @@index([locationId, isActive])
+  @@index([deletedAt])
+  @@index([isActive, deletedAt])
 }
 
 model Category {
@@ -241,6 +243,8 @@ model Product {
   @@index([categoryId])
   @@index([qualityId])
   @@index([isActive])
+  @@index([deletedAt])
+  @@index([isActive, deletedAt])
   @@index([name])
 }
 
@@ -279,6 +283,8 @@ model StockMovement {
   createdBy    User          @relation(fields: [createdById], references: [id])
 
   @@index([productId, locationId, type])
+  @@index([productId, locationId, warehouseLotId, type])
+  @@index([locationId])
   @@index([productId, warehouseLotId])
   @@index([warehouseLotId])
   @@index([referenceType, referenceId])
@@ -310,6 +316,8 @@ model Party {
   @@index([type, isActive])
   @@index([name])
   @@index([createdAt])
+  @@index([deletedAt])
+  @@index([isActive, deletedAt])
 }
 
 model PurchaseOrder {
@@ -625,7 +633,9 @@ model LedgerEntry {
 
   @@index([sourceFinancialYearId])
   @@index([partyId, date])
+  @@index([partyId])
   @@index([accountType, date])
+  @@index([accountType])
   @@index([referenceType, referenceId])
   @@index([date])
 }

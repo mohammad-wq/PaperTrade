@@ -51,61 +51,24 @@ export async function listProductsAction() {
   });
 }
 
+import {
+  getCachedCategories,
+  getCachedQualities,
+  revalidateCategories,
+  revalidateQualities,
+} from "@/lib/cached-lookups";
+
 export async function listCategoriesAction() {
   return runAction("categories.list", async () => {
     await requireSession();
-    let categories = await prisma.category.findMany({
-      where: { isActive: true },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    });
-
-    if (categories.length === 0) {
-      const defaults = ["Writing Paper", "Board", "Newsprint", "Copier", "Offset", "Art Paper"];
-      for (const name of defaults) {
-        await prisma.category.upsert({
-          where: { name },
-          update: { isActive: true },
-          create: { name, isActive: true },
-        });
-      }
-      categories = await prisma.category.findMany({
-        where: { isActive: true },
-        orderBy: { name: "asc" },
-        select: { id: true, name: true },
-      });
-    }
-
-    return categories;
+    return getCachedCategories();
   });
 }
 
 export async function listQualitiesAction() {
   return runAction("qualities.list", async () => {
     await requireSession();
-    let qualities = await prisma.quality.findMany({
-      where: { isActive: true },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    });
-
-    if (qualities.length === 0) {
-      const defaults = ["A Grade", "B Grade", "C Grade", "Standard", "Premium", "Economy"];
-      for (const name of defaults) {
-        await prisma.quality.upsert({
-          where: { name },
-          update: { isActive: true },
-          create: { name, isActive: true },
-        });
-      }
-      qualities = await prisma.quality.findMany({
-        where: { isActive: true },
-        orderBy: { name: "asc" },
-        select: { id: true, name: true },
-      });
-    }
-
-    return qualities;
+    return getCachedQualities();
   });
 }
 
@@ -122,6 +85,7 @@ export async function createCategoryAction(rawName: string) {
       create: { name, isActive: true },
       select: { id: true, name: true },
     });
+    revalidateCategories();
     return category;
   });
 }
@@ -139,6 +103,7 @@ export async function createQualityAction(rawName: string) {
       create: { name, isActive: true },
       select: { id: true, name: true },
     });
+    revalidateQualities();
     return quality;
   });
 }
