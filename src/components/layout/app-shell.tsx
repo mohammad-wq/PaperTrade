@@ -78,6 +78,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: "Inventory & Warehousing",
     items: [
       { href: "/inventory", label: "Inventory Stock", icon: PackageSearch, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "inventory" },
+      { href: "/partnerships", label: "Partnership Hub", icon: Warehouse, roles: [Role.OWNER, Role.MANAGER], moduleKey: "inventory" },
       { href: "/stock-movements", label: "Stock Movements", icon: ArrowRightLeft, roles: [Role.OWNER, Role.MANAGER], moduleKey: "stock-movements" },
       { href: "/settings/locations", label: "Locations & Lots", icon: MapPin, roles: [Role.OWNER], moduleKey: "inventory" },
       { href: "/storage-charges", label: "Storage Charges", icon: Warehouse, roles: [Role.OWNER, Role.MANAGER], moduleKey: "storage-charges" },

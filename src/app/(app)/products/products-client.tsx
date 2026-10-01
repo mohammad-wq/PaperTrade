@@ -462,15 +462,15 @@ export default function ProductsClient({
     setFormError(null);
   }
 
-  // Vertical Sequential Enter & Arrow Navigation Engine
+  // Vertical Sequential Enter Navigation Engine
   function handleNavKeyDown(e: React.KeyboardEvent<HTMLElement>, currentIndex: number) {
-    if (e.key === "Enter" || e.key === "ArrowDown") {
-      if (e.key === "ArrowDown" && e.currentTarget.tagName === "SELECT" && !e.altKey) {
-        return; // Allow native select option navigation
-      }
+    if ((e.target as HTMLElement)?.tagName?.toLowerCase() === "textarea" && e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
+      return; // Allow regular newline entry inside <textarea> fields
+    }
+    if (e.key === "Enter") {
       e.preventDefault();
       // Final field is Remarks (index 14) -> Enter saves immediately!
-      if (currentIndex === 14 && e.key === "Enter") {
+      if (currentIndex === 14) {
         void handleSaveProduct();
         return;
       }
@@ -487,23 +487,8 @@ export default function ProductsClient({
         if (nextEl instanceof HTMLInputElement) {
           nextEl.select();
         }
-      }
-    } else if (e.key === "ArrowUp" || (e.shiftKey && e.key === "Enter")) {
-      if (e.currentTarget.tagName === "SELECT" && !e.altKey && e.key === "ArrowUp") {
-        return; // Allow native select option navigation
-      }
-      e.preventDefault();
-      let prevIndex = currentIndex - 1;
-      let prevEl = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${prevIndex}"]`);
-      while (!prevEl && prevIndex >= 0) {
-        prevIndex--;
-        prevEl = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${prevIndex}"]`);
-      }
-      if (prevEl) {
-        prevEl.focus();
-        if (prevEl instanceof HTMLInputElement) {
-          prevEl.select();
-        }
+      } else {
+        void handleSaveProduct();
       }
     } else if (e.key === "Escape") {
       e.preventDefault();

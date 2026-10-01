@@ -188,7 +188,7 @@ export async function GET(
           destinationLocation: true,
           linkedSaleInvoice: true,
           financialYear: true,
-          items: { include: { product: true, warehouseLot: true } },
+          items: { include: { product: true, warehouseLot: true, location: true } },
         },
       });
 
@@ -224,6 +224,7 @@ export async function GET(
             name: formatProductName(item.product),
             specs: baseSpecs,
             lot: lotLabel,
+            locationName: item.location?.name || doRecord.location?.name || null,
             quantity: toItemNumber(item.quantity),
             unit: item.unit,
           };

@@ -8,6 +8,7 @@ const lineItem = z.object({
   warehouseLotId: z.string().optional().nullable(),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unitPrice: z.coerce.number().min(0),
+  unitCost: z.coerce.number().optional().nullable(),
 });
 
 export const saleInvoiceBaseSchema = z.object({

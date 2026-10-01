@@ -43,11 +43,19 @@ import { Label } from "@/components/ui/label";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useRealtime } from "@/components/providers/realtime-provider";
 import { cn } from "@/lib/utils";
+import { handleFormEnterKeyDown } from "@/lib/keyboard-nav";
 
 type InventoryRow = {
   productId: string;
   productNo: string;
   productName: string;
+  baseProductName?: string;
+  stockCategory?: "REGULAR" | "BENEFICIARY";
+  beneficiaryName?: string | null;
+  beneficiaryId?: string | null;
+  lotId?: string | null;
+  lotNumber?: string | null;
+  unitCost?: number;
   locationId: string;
   locationName: string;
   locationType?: string;
@@ -103,6 +111,7 @@ export default function InventoryClient({
   const [selectedLocationId, setSelectedLocationId] = useState("all");
   const [selectedLotId, setSelectedLotId] = useState("all");
   const [stockFilter, setStockFilter] = useState<"NON_ZERO" | "ZERO" | "ALL">("NON_ZERO");
+  const [partnerStockFilter, setPartnerStockFilter] = useState<"ALL" | "REGULAR" | "BENEFICIARY">("ALL");
   const [activeTab, setActiveTab] = useState<"ALL" | "LOW">("ALL");
   const [viewMode, setViewMode] = useState<"table" | "cards">("table");
   const [showAdjustModal, setShowAdjustModal] = useState(false);
@@ -394,6 +403,8 @@ export default function InventoryClient({
 
   const nonZeroCount = useMemo(() => rows.filter((r) => r.available !== 0).length, [rows]);
   const zeroCount = useMemo(() => rows.filter((r) => r.available === 0).length, [rows]);
+  const regularCount = useMemo(() => rows.filter((r) => r.stockCategory !== "BENEFICIARY").length, [rows]);
+  const beneficiaryCount = useMemo(() => rows.filter((r) => r.stockCategory === "BENEFICIARY").length, [rows]);
 
   const filteredRows = useMemo(() => {
     const search = debouncedQuery.trim().toLowerCase();
@@ -421,10 +432,18 @@ export default function InventoryClient({
         return false;
       }
 
+      // 3b. Partner / Beneficiary Stock Filter
+      if (partnerStockFilter === "REGULAR" && row.stockCategory === "BENEFICIARY") {
+        return false;
+      }
+      if (partnerStockFilter === "BENEFICIARY" && row.stockCategory !== "BENEFICIARY") {
+        return false;
+      }
+
       // 4. Query Omnisearch
       const matchesQuery =
         !search ||
-        `${row.productName} ${row.productNo} ${row.locationName}`.toLowerCase().includes(search) ||
+        `${row.productName} ${row.productNo} ${row.locationName} ${row.beneficiaryName || ""} ${row.lotNumber || ""}`.toLowerCase().includes(search) ||
         (row.lots && row.lots.some((l) => l.lotNumber.toLowerCase().includes(search)));
       if (!matchesQuery) return false;
 
@@ -434,7 +453,7 @@ export default function InventoryClient({
       const matchesTab = activeTab === "ALL" || isLowStock;
       return matchesTab;
     });
-  }, [rows, debouncedQuery, selectedLocationId, selectedLocationLots, selectedLotId, stockFilter, activeTab]);
+  }, [rows, debouncedQuery, selectedLocationId, selectedLocationLots, selectedLotId, stockFilter, partnerStockFilter, activeTab]);
 
   const lowStockCount = useMemo(
     () => rows.filter((r) => {
@@ -1100,6 +1119,17 @@ export default function InventoryClient({
               <option value="unassigned">Unassigned Stock</option>
             </select>
           )}
+
+          {/* Partner / Beneficiary Stock Filter */}
+          <select
+            value={partnerStockFilter}
+            onChange={(e) => setPartnerStockFilter(e.target.value as "ALL" | "REGULAR" | "BENEFICIARY")}
+            className="h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200"
+          >
+            <option value="ALL">All Stock ({rows.length})</option>
+            <option value="REGULAR">Regular Stock Only ({regularCount})</option>
+            <option value="BENEFICIARY">Beneficiary Stock Only ({beneficiaryCount})</option>
+          </select>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -1252,8 +1282,12 @@ export default function InventoryClient({
 
                     return (
                       <tr
-                        key={`${row.locationId}-${row.productId}`}
-                        className="hover:bg-amber-50/60 dark:hover:bg-slate-800/60 transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40"
+                        key={`${row.locationId}-${row.productId}-${row.stockCategory || "REG"}-${row.lotId || "reg"}`}
+                        className={`transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40 ${
+                          row.stockCategory === "BENEFICIARY"
+                            ? "hover:bg-amber-100/70 dark:hover:bg-amber-950/40 bg-amber-50/20"
+                            : "hover:bg-emerald-50/50 dark:hover:bg-slate-800/60"
+                        }`}
                       >
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 font-mono font-bold text-slate-900 dark:text-slate-100 whitespace-nowrap">
                           <div className="flex items-center gap-1.5">
@@ -1266,7 +1300,32 @@ export default function InventoryClient({
                           </div>
                         </td>
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 font-medium text-slate-800 dark:text-slate-200">
-                          {row.productName}
+                          <div className="flex flex-col gap-0.5">
+                            <span className="font-semibold text-slate-900 dark:text-slate-100">
+                              {row.baseProductName || row.productName}
+                            </span>
+                            <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                              {row.stockCategory === "BENEFICIARY" ? (
+                                <>
+                                  <span className="inline-flex items-center gap-1 rounded bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.2 text-[10px] font-semibold">
+                                    Beneficiary: {row.beneficiaryName} - Lot {row.lotNumber}
+                                  </span>
+                                  <span className="text-[10px] text-amber-800 dark:text-amber-300 font-mono font-medium">
+                                    Lot Cost: PKR {row.unitCost != null ? row.unitCost.toFixed(2) : "-"}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="inline-flex items-center gap-1 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 px-1.5 py-0.2 text-[10px] font-semibold">
+                                    Regular Stock
+                                  </span>
+                                  <span className="text-[10px] text-slate-500 font-mono">
+                                    Avg Cost: PKR {row.unitCost != null ? row.unitCost.toFixed(2) : "-"}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </div>
                         </td>
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 whitespace-nowrap text-slate-600">
                           {row.length}&quot; × {row.breadth}&quot; • {row.gsm} GSM
@@ -1401,9 +1460,13 @@ export default function InventoryClient({
 
             return (
               <div
-                key={`${row.locationId}-${row.productId}`}
+                key={`${row.locationId}-${row.productId}-${row.stockCategory || "REG"}-${row.lotId || "reg"}`}
                 className={`rounded-lg border p-3.5 transition-all flex flex-col justify-between bg-white shadow-xs ${
-                  isLow ? "border-rose-200 bg-rose-50/30" : "border-slate-200 hover:border-slate-300"
+                  row.stockCategory === "BENEFICIARY"
+                    ? "border-amber-300 bg-amber-50/30"
+                    : isLow
+                    ? "border-rose-200 bg-rose-50/30"
+                    : "border-slate-200 hover:border-slate-300"
                 }`}
               >
                 <div className="space-y-1.5">
@@ -1411,6 +1474,15 @@ export default function InventoryClient({
                     <div>
                       <div className="flex items-center gap-1.5">
                         <span className="font-bold text-xs text-slate-900">{row.productNo}</span>
+                        {row.stockCategory === "BENEFICIARY" ? (
+                          <span className="rounded bg-amber-100 text-amber-900 border border-amber-200 px-1 py-0.2 text-[9px] font-semibold">
+                            Partner Lot
+                          </span>
+                        ) : (
+                          <span className="rounded bg-emerald-50 text-emerald-800 border border-emerald-200 px-1 py-0.2 text-[9px] font-semibold">
+                            Regular
+                          </span>
+                        )}
                         {row.isActive === false && (
                           <span className="rounded bg-amber-100 px-1 py-0.2 text-[9px] font-semibold text-amber-800">
                             Inactive
@@ -1418,6 +1490,11 @@ export default function InventoryClient({
                         )}
                       </div>
                       <p className="text-xs font-semibold text-slate-800">{row.productName}</p>
+                      <p className="text-[10px] text-slate-500 font-mono mt-0.5">
+                        {row.stockCategory === "BENEFICIARY"
+                          ? `Lot Cost: PKR ${row.unitCost?.toFixed(2) || "-"}`
+                          : `Avg Cost: PKR ${row.unitCost?.toFixed(2) || "-"}`}
+                      </p>
                     </div>
                     <span
                       className={`rounded-md px-2 py-0.5 text-xs font-extrabold ${
@@ -1521,7 +1598,7 @@ export default function InventoryClient({
               </button>
             </div>
 
-            <form onSubmit={handleAdjustment} className="mt-4 space-y-3 text-xs">
+            <form onSubmit={handleAdjustment} onKeyDown={handleFormEnterKeyDown} className="mt-4 space-y-3 text-xs">
               {adjError && (
                 <div className="rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700 font-medium flex items-center gap-2">
                   <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
@@ -1694,7 +1771,7 @@ export default function InventoryClient({
               </button>
             </div>
 
-            <form onSubmit={handleTransfer} className="mt-4 space-y-3 text-xs">
+            <form onSubmit={handleTransfer} onKeyDown={handleFormEnterKeyDown} className="mt-4 space-y-3 text-xs">
               {trError && (
                 <div className="rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700 font-medium flex items-center gap-2">
                   <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
@@ -1929,11 +2006,7 @@ export default function InventoryClient({
 
             <form
               onSubmit={handleBulkAdjustment}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "BUTTON") {
-                  e.preventDefault();
-                }
-              }}
+              onKeyDown={handleFormEnterKeyDown}
               className="mt-4 space-y-4"
             >
               {bulkAdjError && (
@@ -2200,11 +2273,7 @@ export default function InventoryClient({
 
             <form
               onSubmit={handleBulkTransfer}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "BUTTON") {
-                  e.preventDefault();
-                }
-              }}
+              onKeyDown={handleFormEnterKeyDown}
               className="mt-4 space-y-4"
             >
               {bulkTrError && (

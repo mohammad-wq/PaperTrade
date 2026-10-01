@@ -32,7 +32,7 @@ export async function listSaleInvoicesAction() {
           include: {
             product: { select: { id: true, productNo: true, name: true, unit: true } },
             location: { select: { id: true, name: true, type: true } },
-            warehouseLot: { select: { id: true, lotNumber: true } },
+            warehouseLot: { select: { id: true, lotNumber: true, partnerId: true, unitCost: true } },
           },
         },
       },
@@ -48,6 +48,7 @@ export async function listSaleInvoicesAction() {
         ...item,
         quantity: Number(item.quantity),
         unitPrice: Number(item.unitPrice),
+        unitCost: item.unitCost != null ? Number(item.unitCost) : 0,
         lineTotal: Number(item.lineTotal),
       })),
     }));
@@ -186,6 +187,35 @@ export async function createSaleInvoiceAction(raw: unknown) {
 
       const isSettled = paidAmount >= totalAmount - 0.001;
 
+      // Resolve unitCost for each sold line item (from lot or product cost price)
+      const resolvedItems = await Promise.all(
+        input.items.map(async (item) => {
+          let unitCost = (item as any).unitCost != null ? Number((item as any).unitCost) : null;
+          if (unitCost === null && item.warehouseLotId) {
+            const lot = await tx.warehouseLot.findUnique({
+              where: { id: item.warehouseLotId },
+              select: { unitCost: true },
+            });
+            if (lot?.unitCost != null) {
+              unitCost = Number(lot.unitCost);
+            }
+          }
+          if (unitCost === null) {
+            const prod = await tx.product.findUnique({
+              where: { id: item.productId },
+              select: { costPrice: true },
+            });
+            if (prod?.costPrice != null) {
+              unitCost = Number(prod.costPrice);
+            }
+          }
+          return {
+            ...item,
+            resolvedUnitCost: unitCost,
+          };
+        })
+      );
+
       const invoice = await tx.saleInvoice.create({
         data: {
           invoiceNo: formattedNumber,
@@ -203,12 +233,13 @@ export async function createSaleInvoiceAction(raw: unknown) {
           notes: finalNotes || null,
           createdById: session.user.id,
           items: {
-            create: input.items.map((item) => ({
+            create: resolvedItems.map((item) => ({
               productId: item.productId,
               locationId: item.locationId || fallbackLocationId,
               warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
+              unitCost: item.resolvedUnitCost,
               lineTotal: item.quantity * item.unitPrice,
             })),
           },
@@ -622,18 +653,48 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         },
       });
 
+      // Resolve unitCost for each sold line item (from lot or product cost price)
+      const resolvedUpdateItems = await Promise.all(
+        input.items.map(async (item) => {
+          let unitCost = (item as any).unitCost != null ? Number((item as any).unitCost) : null;
+          if (unitCost === null && item.warehouseLotId) {
+            const lot = await tx.warehouseLot.findUnique({
+              where: { id: item.warehouseLotId },
+              select: { unitCost: true },
+            });
+            if (lot?.unitCost != null) {
+              unitCost = Number(lot.unitCost);
+            }
+          }
+          if (unitCost === null) {
+            const prod = await tx.product.findUnique({
+              where: { id: item.productId },
+              select: { costPrice: true },
+            });
+            if (prod?.costPrice != null) {
+              unitCost = Number(prod.costPrice);
+            }
+          }
+          return {
+            ...item,
+            resolvedUnitCost: unitCost,
+          };
+        })
+      );
+
       // Re-create items
       await tx.saleInvoiceItem.deleteMany({
         where: { invoiceId: existing.id },
       });
       await tx.saleInvoiceItem.createMany({
-        data: input.items.map((item) => ({
+        data: resolvedUpdateItems.map((item) => ({
           invoiceId: existing.id,
           productId: item.productId,
           locationId: item.locationId || fallbackLocationId,
           warehouseLotId: item.warehouseLotId || null,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          unitCost: item.resolvedUnitCost,
           lineTotal: item.quantity * item.unitPrice,
         })),
       });
@@ -923,7 +984,7 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         }
         const supp = await tx.party.findUnique({
           where: { id: input.supplierId },
-          select: { id: true, name: true },
+          select: { id: true, name: true, isBeneficiary: true },
         });
         if (!supp) throw userError("Supplier not found.");
         targetSupplierId = supp.id;
@@ -977,6 +1038,24 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           },
         },
       });
+
+      // Update lots with unitCost and partnerId if supplier is a partner/beneficiary
+      const isSupplierBeneficiary = targetSupplierId
+        ? (await tx.party.findUnique({ where: { id: targetSupplierId }, select: { isBeneficiary: true } }))?.isBeneficiary
+        : false;
+
+      for (const item of input.items) {
+        const lotId = item.warehouseLotId || input.warehouseLotId;
+        if (lotId) {
+          await tx.warehouseLot.update({
+            where: { id: lotId },
+            data: {
+              unitCost: item.unitCost,
+              ...(isSupplierBeneficiary ? { partnerId: targetSupplierId } : {}),
+            },
+          });
+        }
+      }
 
       // Update PO status if linked and check if stock was already fulfilled
       let alreadyFulfilledByPO = false;

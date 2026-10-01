@@ -19,7 +19,7 @@ async function resolveInternalTransferLocationId(
   deliveredTo?: string | null,
   destinationLocationId?: string | null,
 ) {
-  if (destinationLocationId && destinationLocationId !== sourceLocationId) {
+  if (destinationLocationId) {
     return destinationLocationId;
   }
 
@@ -52,65 +52,23 @@ async function createDeliveryOrderStockMovements(
   order: {
     id: string;
     doNo: string;
-    locationId: string;
+    locationId?: string | null;
     destinationLocationId?: string | null;
     deliveredTo?: string | null;
     saleInvoiceId?: string | null;
-    items: Array<{ productId: string; quantity: number; warehouseLotId?: string | null }>;
+    items: Array<{
+      productId: string;
+      quantity: number;
+      locationId?: string | null;
+      warehouseLotId?: string | null;
+    }>;
   },
 ) {
-  const destinationLocationId = await resolveInternalTransferLocationId(
-    tx,
-    order.locationId,
-    order.deliveredTo,
-    order.destinationLocationId,
-  );
-
-  if (destinationLocationId) {
-    for (const item of order.items) {
-      await tx.stockMovement.create({
-        data: {
-          productId: item.productId,
-          locationId: order.locationId,
-          warehouseLotId: (item as any).warehouseLotId || null,
-          type: StockMovementType.TRANSFER_OUT,
-          quantity: item.quantity,
-          referenceType: "DELIVERY_ORDER",
-          referenceId: order.id,
-          createdById: sessionUserId,
-          notes: `Transfer via DO ${order.doNo}`,
-        },
-      });
-
-      await tx.stockMovement.create({
-        data: {
-          productId: item.productId,
-          locationId: destinationLocationId,
-          type: StockMovementType.TRANSFER_IN,
-          quantity: item.quantity,
-          referenceType: "DELIVERY_ORDER",
-          referenceId: order.id,
-          createdById: sessionUserId,
-          notes: `Transfer via DO ${order.doNo}`,
-        },
-      });
-    }
-
-    return;
-  }
-
-  // Check if stock has ALREADY been deducted by a linked Sale Invoice
+  // 1. Invoice-Sourced DO:
+  // When a DO has saleInvoiceId set, it serves solely as a physical dispatch or pickup receipt.
+  // Completely disable any inventory triggers. Stock has already been deducted upon Sale Invoice posting.
   if (order.saleInvoiceId) {
-    const existingSaleMovement = await tx.stockMovement.findFirst({
-      where: {
-        referenceType: "SALE_INVOICE",
-        referenceId: order.saleInvoiceId,
-      },
-    });
-    if (existingSaleMovement) {
-      // Stock already deducted upon sale invoice creation; avoid duplicate DELIVERY_OUT
-      return;
-    }
+    return;
   }
 
   // Also check reverse link if SaleInvoice points to this delivery order
@@ -119,32 +77,72 @@ async function createDeliveryOrderStockMovements(
     select: { id: true },
   });
   if (linkedSaleInvoice) {
-    const existingSaleMovement = await tx.stockMovement.findFirst({
-      where: {
-        referenceType: "SALE_INVOICE",
-        referenceId: linkedSaleInvoice.id,
-      },
-    });
-    if (existingSaleMovement) {
-      return;
-    }
+    return;
+  }
+
+  // 2. Standalone DO (no saleInvoiceId):
+  // Represents an internal stock transfer between two locations.
+  // Destination location can come from destinationLocationId or deliveredTo.
+  const destinationLocationId = await resolveInternalTransferLocationId(
+    tx,
+    order.locationId || "",
+    order.deliveredTo,
+    order.destinationLocationId,
+  );
+
+  // If no destination location is set, treat as a pure printed slip with no inventory bindings
+  if (!destinationLocationId) {
+    return;
   }
 
   for (const item of order.items) {
+    // Line location strictly takes precedence over header location
+    const sourceLocId = item.locationId || order.locationId;
+    if (!sourceLocId || sourceLocId === destinationLocationId) {
+      continue;
+    }
+
+    // TRANSFER_OUT from source location
     await tx.stockMovement.create({
       data: {
         productId: item.productId,
-        locationId: order.locationId,
-        warehouseLotId: (item as any).warehouseLotId || null,
-        type: StockMovementType.DELIVERY_OUT,
+        locationId: sourceLocId,
+        warehouseLotId: item.warehouseLotId || null,
+        type: StockMovementType.TRANSFER_OUT,
         quantity: item.quantity,
         referenceType: "DELIVERY_ORDER",
         referenceId: order.id,
         createdById: sessionUserId,
-        notes: `Dispatched via DO ${order.doNo}`,
+        notes: `Transfer via DO ${order.doNo}`,
+      },
+    });
+
+    // TRANSFER_IN to destination location
+    await tx.stockMovement.create({
+      data: {
+        productId: item.productId,
+        locationId: destinationLocationId,
+        warehouseLotId: item.warehouseLotId || null,
+        type: StockMovementType.TRANSFER_IN,
+        quantity: item.quantity,
+        referenceType: "DELIVERY_ORDER",
+        referenceId: order.id,
+        createdById: sessionUserId,
+        notes: `Transfer via DO ${order.doNo}`,
       },
     });
   }
+}
+
+export { createDeliveryOrderStockMovements };
+
+export async function executeDeliveryOrderStockMovements(doId: string, userId: string) {
+  const order = await prisma.deliveryOrder.findUnique({
+    where: { id: doId },
+    include: { items: true },
+  });
+  if (!order) return;
+  await createDeliveryOrderStockMovements(prisma, userId, order);
 }
 
 export async function listPurchaseOrdersAction() {
@@ -162,6 +160,8 @@ export async function listPurchaseOrdersAction() {
         items: {
           include: {
             product: { select: { id: true, productNo: true, name: true, unit: true } },
+            destinationLocation: { select: { id: true, name: true, type: true } },
+            warehouseLot: { select: { id: true, lotNumber: true } },
           },
         },
       },
@@ -188,7 +188,7 @@ export async function createPurchaseOrderAction(raw: unknown) {
     const input = parseInput(purchaseOrderSchema, raw);
 
     const stockKeys = input.status === PurchaseOrderStatus.FULFILLED
-      ? input.items.map((item) => `stock:${item.productId}:${input.locationId}`)
+      ? input.items.map((item) => `stock:${item.productId}:${item.destinationLocationId || input.locationId}`)
       : [];
     const partyKey = input.supplierId ? `party:${input.supplierId}` : "party:one-time";
     const docKey = "doc:purchase_order";
@@ -238,6 +238,8 @@ export async function createPurchaseOrderAction(raw: unknown) {
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
+              destinationLocationId: item.destinationLocationId || input.locationId || null,
+              warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
               unitCost: item.unitCost,
               lineTotal: item.quantity * item.unitCost,
@@ -252,7 +254,8 @@ export async function createPurchaseOrderAction(raw: unknown) {
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: input.locationId,
+              locationId: item.destinationLocationId || input.locationId,
+              warehouseLotId: item.warehouseLotId || null,
               type: StockMovementType.PURCHASE_IN,
               quantity: item.quantity,
               referenceType: "PURCHASE_ORDER",
@@ -345,6 +348,8 @@ export async function updatePurchaseOrderAction(raw: unknown) {
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
+              destinationLocationId: item.destinationLocationId || input.locationId || null,
+              warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
               unitCost: item.unitCost,
               lineTotal: item.quantity * item.unitCost,
@@ -358,7 +363,8 @@ export async function updatePurchaseOrderAction(raw: unknown) {
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: input.locationId,
+              locationId: item.destinationLocationId || input.locationId,
+              warehouseLotId: item.warehouseLotId || null,
               type: StockMovementType.PURCHASE_IN,
               quantity: item.quantity,
               referenceType: "PURCHASE_ORDER",
@@ -456,7 +462,8 @@ export async function updatePurchaseOrderStatusAction(raw: unknown) {
             await tx.stockMovement.create({
               data: {
                 productId: item.productId,
-                locationId: order.locationId,
+                locationId: (item as any).destinationLocationId || order.locationId,
+                warehouseLotId: (item as any).warehouseLotId || null,
                 type: StockMovementType.PURCHASE_IN,
                 quantity: item.quantity,
                 referenceType: "PURCHASE_ORDER",
@@ -497,12 +504,13 @@ export async function listDeliveryOrdersAction() {
       include: {
         financialYear: { select: { id: true, label: true, isActive: true } },
         customer: { select: { id: true, name: true, phone: true } },
-        location: { select: { id: true, name: true } },
-        destinationLocation: { select: { id: true, name: true } },
+        location: { select: { id: true, name: true, type: true } },
+        destinationLocation: { select: { id: true, name: true, type: true } },
         linkedSaleInvoice: { select: { id: true, invoiceNo: true } },
         items: {
           include: {
-            product: { select: { id: true, productNo: true, name: true } },
+            product: { select: { id: true, productNo: true, name: true, unit: true } },
+            location: { select: { id: true, name: true, type: true } },
             warehouseLot: { select: { id: true, lotNumber: true } },
           },
         },
@@ -527,32 +535,16 @@ export async function createDeliveryOrderAction(raw: unknown) {
     }
     const input = parseInput(deliveryOrderSchema, raw);
 
-    const stockKeys = input.items.map((i) => `stock:${i.productId}:${input.locationId}`);
+    const stockKeys = input.items.map((i) => `stock:${i.productId}:${i.locationId || input.locationId || "unassigned"}`);
     const partyKey = input.customerId ? `party:${input.customerId}` : null;
     const docKey = "doc:delivery_order";
     const lockKeys = [...stockKeys, ...(partyKey ? [partyKey] : []), docKey];
 
     const res = await withResourceQueue(lockKeys, async (tx) => {
-      // 1. Verify dispatch location is a WAREHOUSE
-      const dispatchLoc = await tx.location.findUnique({
-        where: { id: input.locationId },
-        select: { id: true, name: true, type: true },
-      });
-      if (!dispatchLoc || dispatchLoc.type !== "WAREHOUSE") {
-        throw userError("Delivery Orders must be dispatched from a Warehouse location.");
-      }
-
-      // 2. Verify all consignment items have lots specified
-      for (const item of input.items) {
-        if (!item.warehouseLotId || !item.warehouseLotId.trim()) {
-          const product = await tx.product.findUnique({
-            where: { id: item.productId },
-            select: { name: true, productNo: true },
-          });
-          throw userError(
-            `A warehouse lot must be specified for "${product?.productNo ?? ""} ${product?.name ?? ""}". All warehouse consignments require lot tracking.`
-          );
-        }
+      // Resolve fallback location if header locationId was omitted
+      let headerLocationId = input.locationId;
+      if (!headerLocationId) {
+        headerLocationId = input.items.find((it) => it.locationId)?.locationId || (await tx.location.findFirst({ select: { id: true } }))?.id || "";
       }
 
       const activeFy = await getActiveFinancialYear(tx);
@@ -562,31 +554,23 @@ export async function createDeliveryOrderAction(raw: unknown) {
         "DELIVERY_ORDER"
       );
 
-      // If creating directly with DISPATCHED status, verify stock first
-      if (input.status === DeliveryOrderStatus.DISPATCHED) {
-        let alreadyDeducted = false;
-        if (input.saleInvoiceId) {
-          const existingSaleMovement = await tx.stockMovement.findFirst({
-            where: {
-              referenceType: "SALE_INVOICE",
-              referenceId: input.saleInvoiceId,
-            },
-          });
-          if (existingSaleMovement) {
-            alreadyDeducted = true;
-          }
-        }
-
-        if (!alreadyDeducted) {
-          for (const item of input.items) {
-            const available = await getStockOnHand(item.productId, input.locationId, tx);
+      // If creating directly with DISPATCHED status, verify stock first ONLY for standalone DOs
+      if (input.status === DeliveryOrderStatus.DISPATCHED && !input.saleInvoiceId) {
+        for (const item of input.items) {
+          const sourceLoc = item.locationId || headerLocationId;
+          if (sourceLoc) {
+            const available = await getStockOnHand(item.productId, sourceLoc, tx);
             if (available < Number(item.quantity)) {
               const product = await tx.product.findUnique({
                 where: { id: item.productId },
                 select: { name: true, productNo: true },
               });
+              const loc = await tx.location.findUnique({
+                where: { id: sourceLoc },
+                select: { name: true },
+              });
               throw userError(
-                `Insufficient stock for "${product?.productNo ?? ""} ${product?.name ?? ""}". Available: ${available}, Required: ${item.quantity}.`,
+                `Insufficient stock for "${product?.productNo ?? ""} ${product?.name ?? ""}" at ${loc?.name || "selected location"}. Available: ${available}, Required: ${item.quantity}.`,
               );
             }
           }
@@ -599,7 +583,7 @@ export async function createDeliveryOrderAction(raw: unknown) {
           financialYearId: activeFy.id,
           sequenceNo,
           customerId: input.customerId || null,
-          locationId: input.locationId,
+          locationId: headerLocationId,
           destinationLocationId: input.destinationLocationId || null,
           saleInvoiceId: input.saleInvoiceId || null,
           date: input.date,
@@ -612,6 +596,7 @@ export async function createDeliveryOrderAction(raw: unknown) {
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
+              locationId: item.locationId || input.locationId || null,
               warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
               unit: (item.unit ?? Unit.PACKET) as Unit,
@@ -620,7 +605,7 @@ export async function createDeliveryOrderAction(raw: unknown) {
         },
       });
 
-      // If DISPATCHED, create dispatch or internal transfer stock movements
+      // If DISPATCHED, create internal transfer movements for standalone DOs
       if (input.status === DeliveryOrderStatus.DISPATCHED) {
         await createDeliveryOrderStockMovements(tx, session.user.id, {
           id: order.id,
@@ -632,6 +617,7 @@ export async function createDeliveryOrderAction(raw: unknown) {
           items: input.items.map((item) => ({
             productId: item.productId,
             quantity: Number(item.quantity),
+            locationId: item.locationId || input.locationId || null,
             warehouseLotId: item.warehouseLotId || null,
           })),
         });
@@ -653,7 +639,7 @@ const updateDeliveryOrderSchema = z.object({
   id: z.string().min(1, "Delivery order ID is required"),
   orderType: z.enum(["CUSTOMER", "INTERNAL_TRANSFER"]).default("CUSTOMER"),
   customerId: z.string().optional().nullable().or(z.literal("")),
-  locationId: z.string().min(1, "Source / Dispatch Location is required"),
+  locationId: z.string().optional().nullable().or(z.literal("")),
   destinationLocationId: z.string().optional().nullable().or(z.literal("")),
   saleInvoiceId: z.string().optional().nullable(),
   date: z.coerce.date(),
@@ -680,7 +666,7 @@ const updateDeliveryOrderSchema = z.object({
         message: "Destination location is required for internal transfer",
       });
     }
-    if (data.destinationLocationId === data.locationId) {
+    if (data.locationId && data.destinationLocationId === data.locationId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["destinationLocationId"],
@@ -715,11 +701,13 @@ export async function updateDeliveryOrderAction(raw: unknown) {
       });
       await tx.deliveryOrderItem.deleteMany({ where: { doId: existing.id } });
 
+      const headerLocationId = input.locationId || existing.locationId;
+
       const updated = await tx.deliveryOrder.update({
         where: { id: existing.id },
         data: {
           customerId: input.customerId || null,
-          locationId: input.locationId,
+          locationId: headerLocationId,
           destinationLocationId: input.destinationLocationId || null,
           saleInvoiceId: input.saleInvoiceId || null,
           date: input.date,
@@ -736,6 +724,7 @@ export async function updateDeliveryOrderAction(raw: unknown) {
         data: input.items.map((item) => ({
           doId: existing.id,
           productId: item.productId,
+          locationId: item.locationId || headerLocationId || null,
           warehouseLotId: item.warehouseLotId || null,
           quantity: item.quantity,
           unit: (item.unit ?? Unit.PACKET) as Unit,
@@ -753,6 +742,7 @@ export async function updateDeliveryOrderAction(raw: unknown) {
           items: input.items.map((item) => ({
             productId: item.productId,
             quantity: Number(item.quantity),
+            locationId: item.locationId || headerLocationId || null,
             warehouseLotId: item.warehouseLotId || null,
           })),
         });
@@ -840,60 +830,40 @@ export async function updateDeliveryOrderStatusAction(raw: unknown) {
         order.status !== DeliveryOrderStatus.DISPATCHED &&
         order.status !== DeliveryOrderStatus.DELIVERED
       ) {
-        let alreadyDeducted = false;
-        if (order.saleInvoiceId) {
-          const existingSaleMovement = await tx.stockMovement.findFirst({
-            where: {
-              referenceType: "SALE_INVOICE",
-              referenceId: order.saleInvoiceId,
-            },
-          });
-          if (existingSaleMovement) {
-            alreadyDeducted = true;
-          }
-        }
-        if (!alreadyDeducted) {
-          const linkedSaleInvoice = await tx.saleInvoice.findFirst({
-            where: { deliveryOrderId: order.id },
-            select: { id: true },
-          });
-          if (linkedSaleInvoice) {
-            const existingSaleMovement = await tx.stockMovement.findFirst({
-              where: {
-                referenceType: "SALE_INVOICE",
-                referenceId: linkedSaleInvoice.id,
-              },
-            });
-            if (existingSaleMovement) {
-              alreadyDeducted = true;
-            }
-          }
-        }
+        // Only standalone DOs move inventory or need stock checks!
+        const isInvoiceSourced = Boolean(
+          order.saleInvoiceId ||
+          (await tx.saleInvoice.findFirst({ where: { deliveryOrderId: order.id }, select: { id: true } }))
+        );
 
-        if (!alreadyDeducted) {
+        if (!isInvoiceSourced) {
           for (const item of order.items) {
-            const available = await getStockOnHand(item.productId, order.locationId, tx);
-            if (available < Number(item.quantity)) {
-              throw userError(
-                `Insufficient stock for "${item.product.productNo} - ${item.product.name}" to dispatch. Available: ${available} ${item.unit}, Required: ${item.quantity}.`,
-              );
+            const sourceLoc = (item as any).locationId || order.locationId;
+            if (sourceLoc) {
+              const available = await getStockOnHand(item.productId, sourceLoc, tx);
+              if (available < Number(item.quantity)) {
+                throw userError(
+                  `Insufficient stock for "${item.product.productNo} - ${item.product.name}" to dispatch. Available: ${available} ${item.unit}, Required: ${item.quantity}.`,
+                );
+              }
             }
           }
-        }
 
-        await createDeliveryOrderStockMovements(tx, session.user.id, {
-          id: order.id,
-          doNo: order.doNo,
-          locationId: order.locationId,
-          destinationLocationId: order.destinationLocationId,
-          deliveredTo: order.deliveredTo,
-          saleInvoiceId: order.saleInvoiceId,
-          items: order.items.map((item) => ({
-            productId: item.productId,
-            quantity: Number(item.quantity),
-            warehouseLotId: item.warehouseLotId || null,
-          })),
-        });
+          await createDeliveryOrderStockMovements(tx, session.user.id, {
+            id: order.id,
+            doNo: order.doNo,
+            locationId: order.locationId,
+            destinationLocationId: order.destinationLocationId,
+            deliveredTo: order.deliveredTo,
+            saleInvoiceId: order.saleInvoiceId,
+            items: order.items.map((item) => ({
+              productId: item.productId,
+              quantity: Number(item.quantity),
+              locationId: (item as any).locationId || order.locationId || null,
+              warehouseLotId: item.warehouseLotId || null,
+            })),
+          });
+        }
       }
 
       const updated = await tx.deliveryOrder.update({

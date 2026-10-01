@@ -35,6 +35,7 @@ import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf } from "@/lib/print-pdf";
+import { handleFormEnterKeyDown } from "@/lib/keyboard-nav";
 
 type PaymentSplitRow = {
   id: string;
@@ -807,7 +808,7 @@ export default function PaymentsPage() {
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+            <form onSubmit={handleSubmit} onKeyDown={handleFormEnterKeyDown} className="mt-4 space-y-4">
               {/* Direction Toggle */}
               <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-2.5">
                 <Label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-2">
@@ -1143,7 +1144,7 @@ export default function PaymentsPage() {
               </div>
             )}
 
-            <form onSubmit={handleExpenseSubmit} className="mt-4 space-y-4">
+            <form onSubmit={handleExpenseSubmit} onKeyDown={handleFormEnterKeyDown} className="mt-4 space-y-4">
               <div className="space-y-1">
                 <Label htmlFor="expense-description" className="text-xs font-semibold">
                   Expense Description <span className="text-rose-500">*</span>

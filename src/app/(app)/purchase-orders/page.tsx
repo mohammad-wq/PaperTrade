@@ -16,6 +16,7 @@ import {
   Eye,
   Printer,
   Download,
+  ShoppingCart,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,6 +32,7 @@ import {
 import { listLocationsAction } from "@/actions/locations";
 import { listPartiesAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
+import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
 import { PurchaseOrderStatus } from "@prisma/client";
 import { format } from "date-fns";
 import { formatDateTime } from "@/lib/utils";
@@ -43,6 +45,7 @@ import { printDocumentPdf } from "@/lib/print-pdf";
 type PORow = {
   id: string;
   orderNo: string;
+  sequenceNo?: number | null;
   date: Date;
   status: PurchaseOrderStatus;
   notes: string | null;
@@ -54,6 +57,10 @@ type PORow = {
     quantity: number;
     unitCost: number;
     lineTotal: number;
+    destinationLocationId?: string | null;
+    warehouseLotId?: string | null;
+    destinationLocation?: { id: string; name: string } | null;
+    warehouseLot?: { id: string; lotNumber: string } | null;
     product: { id: string; productNo: string; name: string; unit: string };
   }>;
 };
@@ -79,6 +86,8 @@ type LineItem = {
   productId: string;
   quantity: number;
   unitCost: number;
+  destinationLocationId?: string;
+  warehouseLotId?: string;
 };
 
 export default function PurchaseOrdersPage() {
@@ -86,7 +95,8 @@ export default function PurchaseOrdersPage() {
   const [orders, setOrders] = useState<PORow[]>([]);
   const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
-  const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string }>>([]);
+  const [dbLocations, setDbLocations] = useState<Array<{ id: string; name: string; type?: string }>>([]);
+  const [warehouseLots, setWarehouseLots] = useState<Array<{ id: string; locationId: string; lotNumber: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -99,6 +109,8 @@ export default function PurchaseOrdersPage() {
   const orderDateRef = useRef<HTMLInputElement>(null);
   const notesRef = useRef<HTMLInputElement>(null);
   const productRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const locationRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const lotRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
   const qtyRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
   const costRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
 
@@ -243,11 +255,12 @@ export default function PurchaseOrdersPage() {
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const [poRes, partyRes, prodRes, locRes] = await Promise.all([
+      const [poRes, partyRes, prodRes, locRes, lotRes] = await Promise.all([
         listPurchaseOrdersAction(),
         listPartiesAction(),
         listProductsAction(),
         listLocationsAction(),
+        listWarehouseLotsAction(undefined, false),
       ]);
 
       if (poRes.success && poRes.data) {
@@ -261,12 +274,15 @@ export default function PurchaseOrdersPage() {
         setProducts(prodRes.data as ProductOption[]);
       }
       if (locRes.success && locRes.data) {
-        const locs = locRes.data as Array<{ id: string; name: string }>;
+        const locs = locRes.data as Array<{ id: string; name: string; type?: string }>;
         setDbLocations(locs);
         if (locs.length > 0) {
           const shop = locs.find((l) => l.name.toLowerCase() === "shop") ?? locs[0];
           setLocationId((prev) => prev || shop.id);
         }
+      }
+      if (lotRes.success && lotRes.data) {
+        setWarehouseLots(lotRes.data as any);
       }
     } finally {
       if (!isBackground) setLoading(false);
@@ -283,9 +299,9 @@ export default function PurchaseOrdersPage() {
 
   const locations = useMemo(() => {
     if (dbLocations.length > 0) return dbLocations;
-    const map = new Map<string, string>();
-    orders.forEach((o) => map.set(o.location.id, o.location.name));
-    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+    const map = new Map<string, { id: string; name: string; type?: string }>();
+    orders.forEach((o) => map.set(o.location.id, { id: o.location.id, name: o.location.name }));
+    return Array.from(map.values());
   }, [dbLocations, orders]);
 
   const filteredOrders = useMemo(() => {
@@ -325,6 +341,22 @@ export default function PurchaseOrdersPage() {
     setItems(updated);
   }
 
+  function handleItemDestinationChange(index: number, locId: string) {
+    const updated = [...items];
+    updated[index].destinationLocationId = locId;
+    const lotMatches = warehouseLots.some(
+      (l) => l.id === updated[index].warehouseLotId && l.locationId === locId,
+    );
+    if (!lotMatches) updated[index].warehouseLotId = "";
+    setItems(updated);
+  }
+
+  function handleItemLotChange(index: number, lotId: string) {
+    const updated = [...items];
+    updated[index].warehouseLotId = lotId;
+    setItems(updated);
+  }
+
   function handleQuantityChange(index: number, qty: number) {
     const updated = [...items];
     updated[index].quantity = qty;
@@ -339,7 +371,10 @@ export default function PurchaseOrdersPage() {
 
   function addItem() {
     const nextIdx = items.length;
-    setItems((prev) => [...prev, { productId: "", quantity: 1, unitCost: 0 }]);
+    setItems((prev) => [
+      ...prev,
+      { productId: "", quantity: 1, unitCost: 0, destinationLocationId: locationId || "", warehouseLotId: "" },
+    ]);
     setTimeout(() => {
       productRefs.current[nextIdx]?.current?.focus();
       productRefs.current[nextIdx]?.current?.select();
@@ -359,7 +394,7 @@ export default function PurchaseOrdersPage() {
     setLocationId("");
     setOrderDate(new Date().toISOString().slice(0, 10));
     setNotes("");
-    setItems([{ productId: "", quantity: 1, unitCost: 0 }]);
+    setItems([{ productId: "", quantity: 1, unitCost: 0, destinationLocationId: "", warehouseLotId: "" }]);
     setFormError(null);
   }
 
@@ -377,16 +412,41 @@ export default function PurchaseOrdersPage() {
         productId: item.product.id,
         quantity: item.quantity,
         unitCost: item.unitCost,
+        destinationLocationId: item.destinationLocationId || order.location.id,
+        warehouseLotId: item.warehouseLotId || item.warehouseLot?.id || "",
       }))
     );
     setFormError(null);
     setIsDialogOpen(true);
   }
 
+  function handleCreatePurchaseInvoiceFromPO(po: PORow) {
+    const payload = {
+      purchaseOrderId: po.id,
+      supplierId: po.supplier?.id || null,
+      supplierName: po.supplier?.name || "",
+      locationId: po.location?.id || (po as any).locationId || "",
+      items: po.items.map((item: any) => ({
+        productId: item.product?.id || item.productId || "",
+        destinationLocationId: item.destinationLocationId || po.location?.id || undefined,
+        warehouseLotId: item.warehouseLotId || item.warehouseLot?.id || undefined,
+        quantity: item.quantity,
+        unitCost: item.unitCost,
+        unit: item.product?.unit || "",
+      })),
+    };
+    try {
+      sessionStorage.setItem("draft_from_po", JSON.stringify(payload));
+    } catch (e) {
+      console.error("Failed to store draft_from_po in sessionStorage", e);
+    }
+    window.open("/purchases?action=new&fromPO=1", "_blank");
+  }
+
   async function handleDeletePurchaseOrder(order: PORow) {
     const ok = await confirm({
       title: "Delete purchase order",
-      description: `Are you sure you want to delete ${order.orderNo}? This will remove the order and its linked line items.`,
+      description: `Are you sure you want to delete ${order.orderNo}? This will remove the order document and related line items.`,
       confirmText: "Delete",
       variant: "destructive",
     });
@@ -472,6 +532,8 @@ export default function PurchaseOrdersPage() {
         notes,
         items: items.map((i) => ({
           productId: i.productId,
+          destinationLocationId: i.destinationLocationId || locationId || undefined,
+          warehouseLotId: i.warehouseLotId || undefined,
           quantity: i.quantity,
           unitCost: i.unitCost,
         })),
@@ -684,6 +746,16 @@ export default function PurchaseOrdersPage() {
                           >
                             <Printer className="h-3 w-3 mr-1" />
                             Print
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleCreatePurchaseInvoiceFromPO(order)}
+                            className="h-6 px-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                            title="Create Purchase Invoice from this PO"
+                          >
+                            <ShoppingCart className="h-3 w-3 mr-1" />
+                            + Invoice
                           </Button>
                           {order.status === PurchaseOrderStatus.DRAFT && (
                             <Button size="sm" variant="ghost" onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.SENT)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
@@ -941,14 +1013,20 @@ export default function PurchaseOrdersPage() {
                 <div className="space-y-3">
                   {items.map((item, idx) => {
                     while (productRefs.current.length <= idx) productRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (locationRefs.current.length <= idx) locationRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (lotRefs.current.length <= idx) lotRefs.current.push(React.createRef<HTMLInputElement>());
                     while (qtyRefs.current.length <= idx) qtyRefs.current.push(React.createRef<HTMLInputElement>());
                     while (costRefs.current.length <= idx) costRefs.current.push(React.createRef<HTMLInputElement>());
+
+                    const lineDestId = item.destinationLocationId || locationId;
+                    const lineLots = warehouseLots.filter((lot) => lot.locationId === lineDestId);
 
                     return (
                       <div
                         key={idx}
-                        className="grid gap-2 sm:grid-cols-[1fr_100px_120px_100px_36px] items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50"
+                        className="grid gap-2 sm:grid-cols-[1.2fr_130px_110px_80px_90px_85px_32px] items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50"
                       >
+                        {/* Product */}
                         <div>
                           <SearchCombobox
                             options={products.map((p) => ({
@@ -960,14 +1038,61 @@ export default function PurchaseOrdersPage() {
                             onChange={(val) => handleProductChange(idx, val)}
                             inputRef={productRefs.current[idx]}
                             onEnterPress={() => {
-                              qtyRefs.current[idx]?.current?.focus();
-                              qtyRefs.current[idx]?.current?.select();
+                              locationRefs.current[idx]?.current?.focus();
+                              locationRefs.current[idx]?.current?.select();
                             }}
                             placeholder="Select paper item..."
                             className="w-full text-xs"
                           />
                         </div>
 
+                        {/* Destination Location */}
+                        <div>
+                          <SearchCombobox
+                            options={locations.map((loc) => ({
+                              id: loc.id,
+                              label: loc.name,
+                            }))}
+                            value={item.destinationLocationId || locationId || ""}
+                            onChange={(val) => handleItemDestinationChange(idx, val)}
+                            inputRef={locationRefs.current[idx]}
+                            onEnterPress={() => {
+                              if (lineLots.length > 0) {
+                                lotRefs.current[idx]?.current?.focus();
+                                lotRefs.current[idx]?.current?.select();
+                              } else {
+                                qtyRefs.current[idx]?.current?.focus();
+                                qtyRefs.current[idx]?.current?.select();
+                              }
+                            }}
+                            placeholder="Destination"
+                            className="w-full text-xs"
+                          />
+                        </div>
+
+                        {/* Lot (Optional) */}
+                        <div>
+                          <SearchCombobox
+                            options={[
+                              { id: "", label: "No Lot" },
+                              ...lineLots.map((lot) => ({
+                                id: lot.id,
+                                label: `#${lot.lotNumber}`,
+                              })),
+                            ]}
+                            value={item.warehouseLotId || ""}
+                            onChange={(val) => handleItemLotChange(idx, val)}
+                            inputRef={lotRefs.current[idx]}
+                            onEnterPress={() => {
+                              qtyRefs.current[idx]?.current?.focus();
+                              qtyRefs.current[idx]?.current?.select();
+                            }}
+                            placeholder="Lot (Opt)"
+                            className="w-full text-xs font-mono"
+                          />
+                        </div>
+
+                        {/* Quantity */}
                         <div>
                           <Input
                             ref={qtyRefs.current[idx]}
@@ -983,12 +1108,13 @@ export default function PurchaseOrdersPage() {
                                 costRefs.current[idx]?.current?.select();
                               }
                             }}
-                            className="h-8 text-xs text-right"
+                            className="h-8 text-xs text-right font-mono"
                             placeholder="Qty"
                             required
                           />
                         </div>
 
+                        {/* Unit Cost */}
                         <div>
                           <Input
                             ref={costRefs.current[idx]}
@@ -1008,7 +1134,7 @@ export default function PurchaseOrdersPage() {
                                 }
                               }
                             }}
-                            className="h-8 text-xs text-right"
+                            className="h-8 text-xs text-right font-mono"
                             placeholder="Unit Cost"
                             required
                           />

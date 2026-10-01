@@ -97,6 +97,7 @@ type ProductOption = {
 
 type LineItem = {
   productId: string;
+  locationId?: string;
   warehouseLotId?: string;
   quantity: number;
   unit: Unit;
@@ -129,6 +130,7 @@ export default function DeliveryOrdersPage() {
   const notesRef = useRef<HTMLInputElement>(null);
 
   const productRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
+  const locationRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
   const lotRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
   const qtyRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
   const unitRefs = useRef<React.RefObject<HTMLSelectElement>[]>([]);
@@ -201,7 +203,7 @@ export default function DeliveryOrdersPage() {
     setDeliveredTo("");
     setRecipientName("");
     setNotes("");
-    setItems([{ productId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET }]);
+    setItems([{ productId: "", locationId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET }]);
     setFormError(null);
   }
 
@@ -219,8 +221,9 @@ export default function DeliveryOrdersPage() {
     setRecipientName(order.recipientName || "");
     setNotes(order.notes || "");
     setItems(
-      order.items.map((item) => ({
+      order.items.map((item: any) => ({
         productId: item.product.id,
+        locationId: item.locationId || order.location.id,
         warehouseLotId: item.warehouseLot?.id || "",
         quantity: item.quantity,
         unit: Unit.PACKET,
@@ -283,6 +286,7 @@ export default function DeliveryOrdersPage() {
             setItems(
               parsed.items.map((item: any) => ({
                 productId: item.productId || "",
+                locationId: item.locationId || parsed.locationId || "",
                 quantity: Number(item.quantity) || 1,
                 unit: item.unit && Object.values(Unit).includes(item.unit) ? item.unit : Unit.PACKET,
                 warehouseLotId: item.warehouseLotId || "",
@@ -498,8 +502,18 @@ export default function DeliveryOrdersPage() {
     setItems(updated);
   }
 
+  function handleItemLocationChange(index: number, newLocId: string) {
+    const updated = [...items];
+    updated[index].locationId = newLocId;
+    const lotMatches = warehouseLots.some(
+      (l) => l.id === updated[index].warehouseLotId && l.locationId === newLocId,
+    );
+    if (!lotMatches) updated[index].warehouseLotId = "";
+    setItems(updated);
+  }
+
   function addItem() {
-    setItems([...items, { productId: "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET }]);
+    setItems([...items, { productId: "", locationId: locationId || "", warehouseLotId: "", quantity: 1, unit: Unit.PACKET }]);
   }
 
   function removeItem(index: number) {
@@ -569,30 +583,19 @@ export default function DeliveryOrdersPage() {
       setFormError("Please select a customer or provide a recipient name.");
       return;
     }
-    if (!locationId) {
-      setFormError("Please select a source/dispatch location.");
-      return;
-    }
     if (orderType === "INTERNAL_TRANSFER") {
       if (!destinationLocationId) {
         setFormError("Please select a destination location.");
         return;
       }
-      if (destinationLocationId === locationId) {
+      const sourceLoc = locationId || items[0]?.locationId;
+      if (destinationLocationId === sourceLoc) {
         setFormError("Destination location must be different from source location.");
         return;
       }
     }
-    if (!locationId) {
-      setFormError("Please select a warehouse dispatch location.");
-      return;
-    }
-    const missingLot = items.find((i) => !i.warehouseLotId || !i.warehouseLotId.trim());
-    if (missingLot) {
-      const prod = products.find((p) => p.id === missingLot.productId);
-      setFormError(
-        `A warehouse lot must be specified for "${prod?.productNo ?? ""} ${prod?.name ?? "each item"}". All warehouse consignments require lot tracking.`
-      );
+    if (items.some((i) => !i.productId || i.quantity <= 0)) {
+      setFormError("Please select a valid product and quantity > 0 for all items.");
       return;
     }
 
@@ -619,8 +622,8 @@ export default function DeliveryOrdersPage() {
       const payload = {
         ...(isEditing ? { id: editingOrderId } : {}),
         orderType,
-        customerId: orderType === "CUSTOMER" ? customerId : null,
-        locationId,
+        customerId: orderType === "CUSTOMER" ? (customerId || null) : null,
+        locationId: locationId || undefined,
         destinationLocationId: orderType === "INTERNAL_TRANSFER" ? destinationLocationId : null,
         saleInvoiceId: saleInvoiceId || undefined,
         date: new Date(orderDate),
@@ -634,6 +637,7 @@ export default function DeliveryOrdersPage() {
         notes: notes || undefined,
         items: items.map((i) => ({
           productId: i.productId,
+          locationId: i.locationId || locationId || undefined,
           warehouseLotId: i.warehouseLotId || undefined,
           quantity: i.quantity,
           unit: i.unit,
@@ -1068,12 +1072,14 @@ export default function DeliveryOrdersPage() {
 
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold">
-                        Dispatch Warehouse <span className="text-rose-500">*</span>
+                        Default Source Location <span className="text-slate-400 font-normal">(Optional default)</span>
                       </Label>
                       <SearchCombobox
-                        options={warehouseLocations.map((loc) => ({
+                        options={locations.map((loc) => ({
                           id: loc.id,
-                          label: `${loc.name} [Warehouse]`,
+                          label: `${loc.name} ${loc.type === "WAREHOUSE" ? "[Warehouse]" : "[Shop]"}`,
+                          badge: loc.type === "SHOP" ? "Shop" : "Warehouse",
+                          badgeColor: loc.type === "SHOP" ? "sky" : "amber",
                         }))}
                         value={locationId}
                         onChange={(val) => handleLocationChange(val)}
@@ -1081,7 +1087,7 @@ export default function DeliveryOrdersPage() {
                         onEnterPress={() => {
                           orderDateRef.current?.focus();
                         }}
-                        placeholder="Select warehouse..."
+                        placeholder="Select default location..."
                         className="text-xs h-8"
                       />
                     </div>
@@ -1258,54 +1264,84 @@ export default function DeliveryOrdersPage() {
                 </div>
 
                 <div className="space-y-3">
-                  {items.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className={cn(
-                        "grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50",
-                        showLotSelector
-                          ? "sm:grid-cols-[1fr_150px_100px_110px_36px]"
-                          : "sm:grid-cols-[1fr_120px_120px_36px]"
-                      )}
-                    >
-                      <div>
-                        <SearchCombobox
-                          options={products.map((p) => ({
-                            id: p.id,
-                            label: `${p.productNo} - ${p.name}`,
-                            sublabel: p.unit,
-                          }))}
-                          value={item.productId}
-                          onChange={(val) => handleProductChange(idx, val)}
-                          inputRef={productRefs.current[idx]}
-                          onEnterPress={() => {
-                            if (!item.productId) {
-                              notesRef.current?.focus();
-                              notesRef.current?.select();
-                              return;
-                            }
-                            if (showLotSelector && sourceLocationLots.length > 0) {
-                              lotRefs.current[idx]?.current?.focus();
-                              lotRefs.current[idx]?.current?.select();
-                            } else {
-                              qtyRefs.current[idx]?.current?.focus();
-                              qtyRefs.current[idx]?.current?.select();
-                            }
-                          }}
-                          placeholder="Select paper item..."
-                          className="text-xs h-8"
-                        />
-                      </div>
+                  {items.map((item, idx) => {
+                    while (productRefs.current.length <= idx) productRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (locationRefs.current.length <= idx) locationRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (lotRefs.current.length <= idx) lotRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (qtyRefs.current.length <= idx) qtyRefs.current.push(React.createRef<HTMLInputElement>());
+                    while (unitRefs.current.length <= idx) unitRefs.current.push(React.createRef<HTMLSelectElement>());
 
-                      {showLotSelector && (
+                    const lineLocId = item.locationId || locationId;
+                    const lineLots = warehouseLots.filter((lot) => lot.locationId === lineLocId);
+
+                    return (
+                      <div
+                        key={idx}
+                        className="grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50 sm:grid-cols-[1.2fr_140px_130px_90px_90px_36px]"
+                      >
+                        {/* Product Selector */}
+                        <div>
+                          <SearchCombobox
+                            options={products.map((p) => ({
+                              id: p.id,
+                              label: `${p.productNo} - ${p.name}`,
+                              sublabel: p.unit,
+                            }))}
+                            value={item.productId}
+                            onChange={(val) => handleProductChange(idx, val)}
+                            inputRef={productRefs.current[idx]}
+                            onEnterPress={() => {
+                              if (!item.productId) {
+                                notesRef.current?.focus();
+                                notesRef.current?.select();
+                                return;
+                              }
+                              locationRefs.current[idx]?.current?.focus();
+                              locationRefs.current[idx]?.current?.select();
+                            }}
+                            placeholder="Select paper item..."
+                            className="text-xs h-8"
+                          />
+                        </div>
+
+                        {/* Line Location Selector */}
+                        <div>
+                          <SearchCombobox
+                            options={locations.map((loc) => ({
+                              id: loc.id,
+                              label: `${loc.name} ${loc.type === "WAREHOUSE" ? "[Warehouse]" : "[Shop]"}`,
+                              badge: loc.type === "SHOP" ? "Shop" : "Warehouse",
+                              badgeColor: loc.type === "SHOP" ? "sky" : "amber",
+                            }))}
+                            value={item.locationId || locationId || ""}
+                            onChange={(val) => handleItemLocationChange(idx, val)}
+                            inputRef={locationRefs.current[idx]}
+                            onEnterPress={() => {
+                              if (lineLots.length > 0) {
+                                lotRefs.current[idx]?.current?.focus();
+                                lotRefs.current[idx]?.current?.select();
+                              } else {
+                                qtyRefs.current[idx]?.current?.focus();
+                                qtyRefs.current[idx]?.current?.select();
+                              }
+                            }}
+                            placeholder="Location"
+                            className="text-xs h-8"
+                          />
+                        </div>
+
+                        {/* Line Lot Selector */}
                         <div className="flex items-center gap-1">
                           <div className="flex-1">
                             <SearchCombobox
-                              options={sourceLocationLots.map((lot) => ({
-                                id: lot.id,
-                                label: `#${lot.lotNumber}`,
-                                sublabel: lot.description || undefined,
-                              }))}
+                              options={[
+                                { id: "", label: "No Lot" },
+                                ...lineLots.map((lot) => ({
+                                  id: lot.id,
+                                  label: `#${lot.lotNumber}`,
+                                  sublabel: lot.description || undefined,
+                                })),
+                              ]}
                               value={item.warehouseLotId || ""}
                               onChange={(val) => handleLotChange(idx, val)}
                               inputRef={lotRefs.current[idx]}
@@ -1313,18 +1349,15 @@ export default function DeliveryOrdersPage() {
                                 qtyRefs.current[idx]?.current?.focus();
                                 qtyRefs.current[idx]?.current?.select();
                               }}
-                              placeholder="Select Lot *"
-                              className={cn(
-                                "text-xs h-8 font-mono",
-                                !item.warehouseLotId && "border-rose-300"
-                              )}
+                              placeholder="Lot (Optional)"
+                              className="text-xs h-8 font-mono"
                             />
                           </div>
                           <Button
                             type="button"
                             variant="ghost"
                             size="sm"
-                            title="Quick create new lot for this warehouse"
+                            title="Quick create new lot for this location"
                             onClick={() => {
                               setQuickLotLineIndex(idx);
                               setQuickLotModalOpen(true);
@@ -1334,96 +1367,89 @@ export default function DeliveryOrdersPage() {
                             <Plus className="h-3.5 w-3.5" />
                           </Button>
                         </div>
-                      )}
 
-                      <div>
-                        <Input
-                          ref={qtyRefs.current[idx]}
-                          type="number"
-                          min="0.0001"
-                          step="any"
-                          value={item.quantity}
-                          onChange={(e) => handleQuantityChange(idx, parseFloat(e.target.value) || 0)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              if (idx === items.length - 1) {
-                                addItem();
-                                setTimeout(() => {
+                        {/* Quantity */}
+                        <div>
+                          <Input
+                            ref={qtyRefs.current[idx]}
+                            type="number"
+                            min="0.0001"
+                            step="any"
+                            value={item.quantity}
+                            onChange={(e) => handleQuantityChange(idx, parseFloat(e.target.value) || 0)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                unitRefs.current[idx]?.current?.focus();
+                              }
+                            }}
+                            className="h-8 text-xs text-right font-mono"
+                            placeholder="Qty"
+                            required
+                          />
+                        </div>
+
+                        {/* Unit */}
+                        <div>
+                          <select
+                            ref={unitRefs.current[idx]}
+                            value={item.unit}
+                            onChange={(e) => handleUnitChange(idx, e.target.value as Unit)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && e.shiftKey) {
+                                e.preventDefault();
+                                notesRef.current?.focus();
+                                notesRef.current?.select();
+                                return;
+                              }
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                if (idx === items.length - 1) {
+                                  if (!item.productId || item.quantity <= 0) {
+                                    notesRef.current?.focus();
+                                    notesRef.current?.select();
+                                  } else {
+                                    addItem();
+                                    setTimeout(() => {
+                                      productRefs.current[idx + 1]?.current?.focus();
+                                      productRefs.current[idx + 1]?.current?.select();
+                                    }, 50);
+                                  }
+                                } else {
                                   productRefs.current[idx + 1]?.current?.focus();
                                   productRefs.current[idx + 1]?.current?.select();
-                                }, 50);
-                              } else {
-                                productRefs.current[idx + 1]?.current?.focus();
-                                productRefs.current[idx + 1]?.current?.select();
-                              }
-                            }
-                          }}
-                          className="h-8 text-xs text-right font-mono"
-                          placeholder="Qty"
-                          required
-                        />
-                      </div>
-
-                      <div>
-                        <select
-                          ref={unitRefs.current[idx]}
-                          value={item.unit}
-                          onChange={(e) => handleUnitChange(idx, e.target.value as Unit)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && e.shiftKey) {
-                              e.preventDefault();
-                              notesRef.current?.focus();
-                              notesRef.current?.select();
-                              return;
-                            }
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              if (idx === items.length - 1) {
-                                if (!item.productId || item.quantity <= 0) {
-                                  notesRef.current?.focus();
-                                  notesRef.current?.select();
-                                } else {
-                                  addItem();
-                                  setTimeout(() => {
-                                    productRefs.current[idx + 1]?.current?.focus();
-                                    productRefs.current[idx + 1]?.current?.select();
-                                  }, 50);
                                 }
-                              } else {
-                                productRefs.current[idx + 1]?.current?.focus();
-                                productRefs.current[idx + 1]?.current?.select();
+                              } else if (e.key === "ArrowDown" && idx === items.length - 1) {
+                                e.preventDefault();
+                                notesRef.current?.focus();
+                                notesRef.current?.select();
                               }
-                            } else if (e.key === "ArrowDown" && idx === items.length - 1) {
-                              e.preventDefault();
-                              notesRef.current?.focus();
-                              notesRef.current?.select();
-                            }
-                          }}
-                          className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
-                        >
-                          <option value={Unit.PACKET}>PACKET (100 sheets)</option>
-                          <option value={Unit.REAM}>REAM (500 sheets)</option>
-                          {Object.values(Unit).filter((u) => u !== Unit.PACKET && u !== Unit.REAM).map((u) => (
-                            <option key={u} value={u}>
-                              {u}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                            }}
+                            className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+                          >
+                            <option value={Unit.PACKET}>PACKET (100 sheets)</option>
+                            <option value={Unit.REAM}>REAM (500 sheets)</option>
+                            {Object.values(Unit).filter((u) => u !== Unit.PACKET && u !== Unit.REAM).map((u) => (
+                              <option key={u} value={u}>
+                                {u}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
 
-                      <button
-                        type="button"
-                        onClick={() => removeItem(idx)}
-                        disabled={items.length <= 1}
-                        className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:text-rose-600 disabled:opacity-30"
-                      >
+                        <button
+                          type="button"
+                          onClick={() => removeItem(idx)}
+                          disabled={items.length <= 1}
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:text-rose-600 disabled:opacity-30"
+                        >
                         <Trash2 className="h-4 w-4" />
                       </button>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
+            </div>
 
               {/* Notes */}
               <div className="border-t border-slate-100 pt-3">

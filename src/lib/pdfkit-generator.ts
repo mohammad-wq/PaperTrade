@@ -4,6 +4,7 @@ export interface PdfDocumentItem {
   name: string;
   specs?: string | null;
   lot?: string | null;
+  locationName?: string | null;
   quantity: number;
   unit: string;
   unitPrice?: number | null;
@@ -266,8 +267,57 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
       tableY += rowHeight + 3;
 
       // Table Rows
+      const isDeliveryDoc = data.docType.toLowerCase().includes("delivery") || data.docType.toLowerCase().includes("transfer");
+      let itemsToRender = [...data.items];
+
+      if (isDeliveryDoc) {
+        // Group rows by Location, then by Lot
+        itemsToRender.sort((a, b) => {
+          const locA = (a.locationName || data.locationName || "").toLowerCase();
+          const locB = (b.locationName || data.locationName || "").toLowerCase();
+          if (locA !== locB) return locA.localeCompare(locB);
+          const lotA = (a.lot || "").toLowerCase();
+          const lotB = (b.lot || "").toLowerCase();
+          return lotA.localeCompare(lotB);
+        });
+      }
+
       let rowIdx = 0;
-      for (const it of data.items) {
+      let lastLoc: string | null = null;
+      let lastLot: string | null = null;
+
+      for (const it of itemsToRender) {
+        if (isDeliveryDoc) {
+          const currentItemLoc = it.locationName || data.locationName || "Default Location";
+          const currentItemLot = it.lot || null;
+
+          if (currentItemLoc !== lastLoc) {
+            lastLoc = currentItemLoc;
+            lastLot = null; // Reset lot tracking when location changes
+
+            if (tableY > 730) {
+              doc.addPage();
+              tableY = 24;
+            }
+            doc.rect(leftMargin, tableY, contentWidth, 13).fill("#e0f2fe");
+            doc.font("Helvetica-Bold").fontSize(6.8).fillColor("#0369a1")
+              .text(`PICKING LOCATION: ${currentItemLoc.toUpperCase()}`, leftMargin + 4, tableY + 3, { lineBreak: false });
+            tableY += 14;
+          }
+
+          if (currentItemLot !== lastLot) {
+            lastLot = currentItemLot;
+            if (tableY > 735) {
+              doc.addPage();
+              tableY = 24;
+            }
+            doc.rect(leftMargin, tableY, contentWidth, 11).fill("#f1f5f9");
+            doc.font("Helvetica-Bold").fontSize(6.2).fillColor("#475569")
+              .text(`LOT BATCH: ${currentItemLot ? `#${currentItemLot}` : "UNASSIGNED LOT / STANDARD STOCK"}`, leftMargin + 10, tableY + 2.5, { lineBreak: false });
+            tableY += 12;
+          }
+        }
+
         // Page overflow check (only if really overflowing page boundary)
         if (tableY > 740) {
           doc.addPage();

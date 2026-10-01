@@ -132,6 +132,9 @@ export async function listInventoryAction() {
           warehouseLots: {
             where: { isActive: true, deletedAt: null },
             orderBy: { lotNumber: "asc" },
+            include: {
+              partner: { select: { id: true, name: true, isBeneficiary: true } },
+            },
           },
         },
       }),
@@ -176,49 +179,88 @@ export async function listInventoryAction() {
     }
 
     const rows = locations.flatMap((location) =>
-      products.map((product) => {
-        const available = locStockMap.get(`${product.id}:${location.id}`) ?? 0;
-        let lots: Array<{
-          id: string | null;
-          lotNumber: string;
-          description: string | null;
-          available: number;
-        }> = [];
+      products.flatMap((product) => {
+        const partnerLots = location.warehouseLots.filter(
+          (lot) => lot.partnerId || lot.partner?.isBeneficiary
+        );
+        const nonPartnerLots = location.warehouseLots.filter(
+          (lot) => !lot.partnerId && !lot.partner?.isBeneficiary
+        );
 
-        if (location.warehouseLots.length > 0) {
-          const lotStocks: Array<{
-            id: string | null;
-            lotNumber: string;
-            description: string | null;
-            available: number;
-          }> = location.warehouseLots.map((lot) => ({
+        const unassignedStock = lotStockMap.get(`${product.id}:${location.id}:`) ?? 0;
+        const nonPartnerLotsStock = nonPartnerLots.reduce(
+          (sum, lot) => sum + (lotStockMap.get(`${product.id}:${location.id}:${lot.id}`) ?? 0),
+          0
+        );
+        const regularAvailable = unassignedStock + nonPartnerLotsStock;
+
+        const resultRows: Array<any> = [];
+
+        // Regular Stock Row
+        const allRegularLots = [
+          ...nonPartnerLots.map((lot) => ({
             id: lot.id,
             lotNumber: lot.lotNumber,
             description: lot.description,
             available: lotStockMap.get(`${product.id}:${location.id}:${lot.id}`) ?? 0,
-          }));
+          })),
+          ...(unassignedStock !== 0
+            ? [
+                {
+                  id: null,
+                  lotNumber: "Unassigned",
+                  description: "Stock without lot assignment",
+                  available: unassignedStock,
+                },
+              ]
+            : []),
+        ];
 
-          const unassigned = lotStockMap.get(`${product.id}:${location.id}:`) ?? 0;
-          if (unassigned !== 0) {
-            lotStocks.push({
-              id: null,
-              lotNumber: "Unassigned",
-              description: "Stock without lot assignment",
-              available: unassigned,
-            });
-          }
+        resultRows.push({
+          productId: product.id,
+          productNo: product.productNo,
+          productName: partnerLots.length > 0 ? `${product.name} [Regular Stock]` : product.name,
+          baseProductName: product.name,
+          stockCategory: "REGULAR",
+          beneficiaryName: null,
+          beneficiaryId: null,
+          lotId: null,
+          lotNumber: null,
+          unitCost: Number(product.costPrice),
+          locationId: location.id,
+          locationName: location.name,
+          locationType: location.type,
+          available: regularAvailable,
+          unit: product.unit,
+          reorderLevel: product.reorderLevel ? Number(product.reorderLevel) : null,
+          gsm: Number(product.gsm),
+          length: Number(product.length),
+          breadth: Number(product.breadth),
+          packetWeight: Number(product.packetWeight),
+          reamWeight: Number(product.reamWeight),
+          isActive: product.isActive,
+          lots: allRegularLots,
+        });
 
-          lots = lotStocks;
-        }
-
-          return {
+        // Separate row for each Partner / Beneficiary lot
+        for (const pLot of partnerLots) {
+          const lotStock = lotStockMap.get(`${product.id}:${location.id}:${pLot.id}`) ?? 0;
+          // Only create partner row if stock exists or if lots are configured
+          resultRows.push({
             productId: product.id,
             productNo: product.productNo,
-            productName: product.name,
+            productName: `${product.name} [Beneficiary: ${pLot.partner?.name || "Person B"} - Lot ${pLot.lotNumber}]`,
+            baseProductName: product.name,
+            stockCategory: "BENEFICIARY",
+            beneficiaryName: pLot.partner?.name || "Person B",
+            beneficiaryId: pLot.partnerId,
+            lotId: pLot.id,
+            lotNumber: pLot.lotNumber,
+            unitCost: pLot.unitCost != null ? Number(pLot.unitCost) : Number(product.costPrice),
             locationId: location.id,
             locationName: location.name,
             locationType: location.type,
-            available,
+            available: lotStock,
             unit: product.unit,
             reorderLevel: product.reorderLevel ? Number(product.reorderLevel) : null,
             gsm: Number(product.gsm),
@@ -227,13 +269,23 @@ export async function listInventoryAction() {
             packetWeight: Number(product.packetWeight),
             reamWeight: Number(product.reamWeight),
             isActive: product.isActive,
-            lots,
-          };
-        })
-      );
+            lots: [
+              {
+                id: pLot.id,
+                lotNumber: pLot.lotNumber,
+                description: pLot.description,
+                available: lotStock,
+              },
+            ],
+          });
+        }
 
-      return rows;
-    });
+        return resultRows;
+      })
+    );
+
+    return rows;
+  });
 }
 
 export async function upsertPartyAction(raw: unknown) {
@@ -261,6 +313,8 @@ export async function upsertPartyAction(raw: unknown) {
         data: {
           name: input.name.trim(),
           type: input.type,
+          isBeneficiary: Boolean(input.isBeneficiary),
+          partnerWarehouseId: input.partnerWarehouseId || null,
           phone,
           email,
           address,
@@ -274,6 +328,8 @@ export async function upsertPartyAction(raw: unknown) {
         data: {
           name: input.name.trim(),
           type: input.type,
+          isBeneficiary: Boolean(input.isBeneficiary),
+          partnerWarehouseId: input.partnerWarehouseId || null,
           phone,
           email,
           address,

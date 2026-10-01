@@ -214,6 +214,7 @@ export default function PurchasesPage() {
             setItems(
               parsed.items.map((item: any) => ({
                 productId: item.productId || "",
+                locationId: item.locationId || parsed.locationId || "",
                 quantity: Number(item.quantity) || 1,
                 unitCost: Number(item.unitCost) || 0,
                 warehouseLotId: item.warehouseLotId || "",
@@ -223,6 +224,34 @@ export default function PurchasesPage() {
         }
       } catch (e) {
         console.error("Failed to load draft_from_invoice in purchases", e);
+      }
+    }
+
+    if (searchParams.get("fromPO") === "1") {
+      try {
+        const stored = sessionStorage.getItem("draft_from_po");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.supplierId) {
+            setSupplierType("REGISTERED");
+            setSupplierId(parsed.supplierId);
+          }
+          if (parsed.locationId) setLocationId(parsed.locationId);
+          if (parsed.purchaseOrderId) setPurchaseOrderId(parsed.purchaseOrderId);
+          if (Array.isArray(parsed.items) && parsed.items.length > 0) {
+            setItems(
+              parsed.items.map((item: any) => ({
+                productId: item.productId || "",
+                locationId: item.destinationLocationId || parsed.locationId || "",
+                warehouseLotId: item.warehouseLotId || "",
+                quantity: Number(item.quantity) || 1,
+                unitCost: Number(item.unitCost) || 0,
+              }))
+            );
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load draft_from_po in purchases", e);
       }
     }
   }, [searchParams]);

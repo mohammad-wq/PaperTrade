@@ -15,6 +15,8 @@ export const partySchema = z.object({
     .or(z.literal("")),
   address: z.string().trim().max(500).optional().nullable().or(z.literal("")),
   creditLimit: z.coerce.number().min(0).optional().nullable(),
+  isBeneficiary: z.boolean().default(false),
+  partnerWarehouseId: z.string().trim().optional().nullable().or(z.literal("")),
   isActive: z.boolean().default(true),
 });
 

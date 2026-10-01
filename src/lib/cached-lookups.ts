@@ -87,6 +87,9 @@ export const getCachedWarehouseLots = unstable_cache(
         location: {
           select: { id: true, name: true, type: true },
         },
+        partner: {
+          select: { id: true, name: true },
+        },
       },
       orderBy: [{ isActive: "desc" }, { lotNumber: "asc" }],
     });
@@ -128,6 +131,9 @@ export const getCachedWarehouseLots = unstable_cache(
       locationType: lot.location.type,
       lotNumber: lot.lotNumber,
       description: lot.description,
+      partnerId: lot.partnerId,
+      unitCost: lot.unitCost ? Number(lot.unitCost) : null,
+      partnerName: lot.partner?.name ?? null,
       isActive: lot.isActive,
       deletedAt: lot.deletedAt ? lot.deletedAt.toISOString() : null,
       createdAt: lot.createdAt.toISOString(),

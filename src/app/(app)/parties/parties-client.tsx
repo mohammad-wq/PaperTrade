@@ -48,6 +48,8 @@ type PartyRecord = {
   creditLimit: number | null;
   isActive: boolean;
   balance: number;
+  isBeneficiary?: boolean;
+  partnerWarehouseId?: string | null;
 };
 
 type PartyFormData = {
@@ -59,6 +61,8 @@ type PartyFormData = {
   address: string;
   creditLimit: string;
   isActive: boolean;
+  isBeneficiary: boolean;
+  partnerWarehouseId: string;
 };
 
 const EMPTY_PARTY_FORM: PartyFormData = {
@@ -69,6 +73,8 @@ const EMPTY_PARTY_FORM: PartyFormData = {
   address: "",
   creditLimit: "",
   isActive: true,
+  isBeneficiary: false,
+  partnerWarehouseId: "",
 };
 
 export default function PartiesClient({
@@ -224,6 +230,8 @@ export default function PartiesClient({
       address: party.address || "",
       creditLimit: party.creditLimit !== null ? String(party.creditLimit) : "",
       isActive: party.isActive,
+      isBeneficiary: party.isBeneficiary || false,
+      partnerWarehouseId: party.partnerWarehouseId || "",
     });
     setIsWindowOpen(true);
 
@@ -246,37 +254,22 @@ export default function PartiesClient({
 
   // Keyboard navigation within the Party Entry Form
   function handleNavKeyDown(e: React.KeyboardEvent, currentIndex: number) {
-    if (e.key === "Enter" || e.key === "ArrowDown") {
-      if (e.key === "ArrowDown" && (e.currentTarget as HTMLElement).tagName === "SELECT" && !e.altKey) {
-        return; // Allow native select option navigation
-      }
+    if ((e.target as HTMLElement)?.tagName?.toLowerCase() === "textarea" && e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
+      return; // Allow regular newline entry inside <textarea> fields
+    }
+    if (e.key === "Enter") {
       e.preventDefault();
       let nextIndex = currentIndex + 1;
       let next = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${nextIndex}"]`);
-      while (!next && nextIndex <= 10) {
+      while (!next && nextIndex <= 12) {
         nextIndex++;
         next = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${nextIndex}"]`);
       }
       if (next) {
         next.focus();
         if (next instanceof HTMLInputElement) next.select();
-      } else if (e.key === "Enter") {
+      } else {
         void handleSaveParty();
-      }
-    } else if (e.key === "ArrowUp" || (e.shiftKey && e.key === "Enter")) {
-      if ((e.currentTarget as HTMLElement).tagName === "SELECT" && !e.altKey && e.key === "ArrowUp") {
-        return; // Allow native select option navigation
-      }
-      e.preventDefault();
-      let prevIndex = currentIndex - 1;
-      let prev = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${prevIndex}"]`);
-      while (!prev && prevIndex >= 0) {
-        prevIndex--;
-        prev = formModalRef.current?.querySelector<HTMLElement>(`[data-nav-index="${prevIndex}"]`);
-      }
-      if (prev) {
-        prev.focus();
-        if (prev instanceof HTMLInputElement) prev.select();
       }
     }
   }
@@ -303,6 +296,8 @@ export default function PartiesClient({
         address: formData.address.trim() || null,
         creditLimit: formData.type === PartyType.CUSTOMER && formData.creditLimit ? parseFloat(formData.creditLimit) || 0 : null,
         isActive: formData.isActive,
+        isBeneficiary: formData.type === PartyType.SUPPLIER && formData.isBeneficiary,
+        partnerWarehouseId: formData.type === PartyType.SUPPLIER && formData.partnerWarehouseId ? formData.partnerWarehouseId : null,
       };
 
       const res = await upsertPartyAction(payload);
@@ -1133,7 +1128,32 @@ export default function PartiesClient({
                 </div>
               )}
 
-              {/* Row 6: Active Status Toggle */}
+              {/* Row 6: Beneficiary Partner Toggle (for Suppliers / Person B) */}
+              {formData.type === PartyType.SUPPLIER && (
+                <div className="grid grid-cols-12 gap-3 items-center py-2 border-b border-slate-200/60 dark:border-slate-800 bg-amber-50/40 dark:bg-amber-950/20 px-2 rounded-md">
+                  <label className="col-span-4 text-right font-bold text-amber-900 dark:text-amber-200 pr-2">
+                    Beneficiary Partner (Person B):
+                  </label>
+                  <div className="col-span-8 space-y-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.isBeneficiary}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, isBeneficiary: e.target.checked }))}
+                        className="h-4 w-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                      />
+                      <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                        Designate as Co-Owner / Beneficiary (Person B)
+                      </span>
+                    </label>
+                    <p className="text-[11px] text-slate-500">
+                      Purchases from this party create distinct partner lot batches (e.g. LOT-B-XXXX) with isolated profit and margin tracking.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Row 7: Active Status Toggle */}
               <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
                 <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
                   Directory Status:

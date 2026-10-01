@@ -21,6 +21,7 @@ const EMPTY_VALUES: PartyInput = {
   address: "",
   creditLimit: 0,
   isActive: true,
+  isBeneficiary: false,
 };
 
 type PartyFormProps = {

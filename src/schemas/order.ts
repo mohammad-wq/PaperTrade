@@ -3,6 +3,8 @@ import { PurchaseOrderStatus, DeliveryOrderStatus, Unit } from "@prisma/client";
 
 export const purchaseOrderItemSchema = z.object({
   productId: z.string().min(1, "Product is required"),
+  destinationLocationId: z.string().trim().optional().nullable().or(z.literal("")),
+  warehouseLotId: z.string().trim().optional().nullable().or(z.literal("")),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unitCost: z.coerce.number().min(0, "Unit cost must be 0 or greater"),
 });
@@ -38,7 +40,8 @@ export type PurchaseOrderInput = z.infer<typeof purchaseOrderSchema>;
 
 export const deliveryOrderItemSchema = z.object({
   productId: z.string().min(1, "Product is required"),
-  warehouseLotId: z.string().trim().min(1, "Warehouse lot must be specified for each delivery order item"),
+  locationId: z.string().trim().optional().nullable().or(z.literal("")),
+  warehouseLotId: z.string().trim().optional().nullable().or(z.literal("")),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unit: z.nativeEnum(Unit).default(Unit.PACKET),
 });
@@ -48,7 +51,7 @@ export const deliveryOrderSchema = z
     id: z.string().optional(),
     orderType: z.enum(["CUSTOMER", "INTERNAL_TRANSFER"]).default("CUSTOMER"),
     customerId: z.string().optional().nullable().or(z.literal("")),
-    locationId: z.string().min(1, "Source / Dispatch Location is required"),
+    locationId: z.string().optional().nullable().or(z.literal("")),
     destinationLocationId: z.string().optional().nullable().or(z.literal("")),
     saleInvoiceId: z.string().optional().nullable(),
     date: z.coerce.date(),

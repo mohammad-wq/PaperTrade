@@ -57,6 +57,9 @@ type WarehouseLotOption = {
   locationId: string;
   lotNumber: string;
   description?: string | null;
+  partnerId?: string | null;
+  unitCost?: number | null;
+  partnerName?: string | null;
 };
 
 type SaleInvoiceRow = {
@@ -123,6 +126,7 @@ type CommittedLineItem = {
   unit: string;
   quantity: number;
   unitPrice: number;
+  unitCost?: number | null;
   availableStock: number;
   locationId: string;
   locationName: string;
@@ -828,42 +832,12 @@ export default function SalesClient({
 
   // Create Delivery Order directly from an already posted Sale Invoice in table
   async function handleCreateDOFromInvoice(inv: SaleInvoiceRow) {
-    // Filter out shop items - DO must be for warehouse items only!
-    const warehouseItems = inv.items.filter((item: any) => {
-      const locType = item.location?.type || dbLocations.find((l) => l.id === item.locationId)?.type;
-      const locName = item.location?.name || dbLocations.find((l) => l.id === item.locationId)?.name || "";
-      if (locType) return locType === "WAREHOUSE";
-      return !locName.toLowerCase().includes("shop");
-    });
-
-    if (warehouseItems.length === 0) {
-      await confirm.alert(
-        "No warehouse products to dispatch. All products on this invoice are from the Shop. Delivery Orders are only issued for warehouse dispatches.",
-        { title: "No Warehouse Products", variant: "default" }
-      );
+    if (!inv.items || inv.items.length === 0) {
+      await confirm.alert("This invoice has no items to dispatch.", { title: "No Items" });
       return;
     }
 
-    // DO must be for ONE location only
-    const targetLocationId =
-      warehouseItems[0].location?.id ||
-      warehouseItems[0].locationId ||
-      inv.location?.id ||
-      "";
-    const targetLocationName =
-      warehouseItems[0].location?.name ||
-      dbLocations.find((l) => l.id === targetLocationId)?.name ||
-      "Warehouse";
-    const singleLocWarehouseItems = warehouseItems.filter(
-      (it: any) => (it.location?.id || it.locationId || inv.location?.id) === targetLocationId
-    );
-
-    if (singleLocWarehouseItems.length < warehouseItems.length) {
-      await confirm.alert(
-        `This invoice contains items from multiple warehouses. Forwarding ${singleLocWarehouseItems.length} items for ${targetLocationName}. Please create a separate Delivery Order for the remaining warehouse items.`,
-        { title: "Multiple Warehouses Detected" }
-      );
-    }
+    const targetLocationId = inv.location?.id || (inv as any).locationId || "";
 
     const payload = {
       saleInvoiceId: inv.id,
@@ -871,8 +845,9 @@ export default function SalesClient({
       customerName: inv.customer?.name || "",
       recipientName: inv.walkInName || inv.customer?.name || "",
       locationId: targetLocationId,
-      items: singleLocWarehouseItems.map((item: any) => ({
-        productId: item.product?.id || "",
+      items: inv.items.map((item: any) => ({
+        productId: item.product?.id || item.productId || "",
+        locationId: item.location?.id || item.locationId || targetLocationId || undefined,
         warehouseLotId: item.warehouseLot?.id || item.warehouseLotId || undefined,
         quantity: item.quantity,
         unit: item.product?.unit || "",
@@ -1028,12 +1003,13 @@ export default function SalesClient({
         unit: matchedProduct.unit,
         quantity: qtyNum,
         unitPrice: rateNum,
+        unitCost: matchedLot?.unitCost != null ? Number(matchedLot.unitCost) : null,
         availableStock: available,
         locationId: finalLocId,
         locationName: finalLoc?.name || "Location",
         locationType: finalLoc?.type || "SHOP",
-        warehouseLotId: finalLoc?.type === "WAREHOUSE" ? (activeLotId || null) : null,
-        lotNumber: finalLoc?.type === "WAREHOUSE" && matchedLot ? matchedLot.lotNumber : null,
+        warehouseLotId: activeLotId || null,
+        lotNumber: matchedLot ? matchedLot.lotNumber : null,
       },
     ]);
 
@@ -1125,6 +1101,7 @@ export default function SalesClient({
           warehouseLotId: item.warehouseLotId || undefined,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          unitCost: item.unitCost ?? undefined,
         })),
       };
 
@@ -1970,7 +1947,7 @@ export default function SalesClient({
                               const chosenLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
                               const chosenLoc = dbLocations.find((l) => l.id === chosenLocId);
                               const chosenLots = warehouseLots.filter((l) => l.locationId === chosenLocId);
-                              if (chosenLoc?.type === "WAREHOUSE" && chosenLots.length > 0 && lotComboboxInputRef.current) {
+                              if (chosenLots.length > 0 && lotComboboxInputRef.current) {
                                 lotComboboxInputRef.current.focus();
                                 lotComboboxInputRef.current.select();
                               } else {
@@ -1983,15 +1960,17 @@ export default function SalesClient({
                           />
                         </td>
 
-                        {/* Lot Selector (if location is warehouse) */}
+                        {/* Lot Selector */}
                         <td className="py-1 px-1 border-r border-slate-200 dark:border-slate-700 min-w-[120px]">
-                          {isItemLocationWarehouse ? (
+                          {locationLots.length > 0 ? (
                             <SearchCombobox
                               options={[
-                                { id: "", label: "No Lot" },
+                                { id: "", label: "Regular Stock" },
                                 ...locationLots.map((lot) => ({
                                   id: lot.id,
-                                  label: `#${lot.lotNumber}${lot.description ? ` (${lot.description})` : ""}`,
+                                  label: `${lot.partnerName ? `[${lot.partnerName}] ` : ""}#${lot.lotNumber}${lot.unitCost != null ? ` (Cost: ${lot.unitCost})` : ""}`,
+                                  badge: lot.partnerName ? "Partner" : undefined,
+                                  badgeColor: "amber" as const,
                                 })),
                               ]}
                               value={activeLotId}
@@ -2001,11 +1980,11 @@ export default function SalesClient({
                                 qtyInputRef.current?.focus();
                                 qtyInputRef.current?.select();
                               }}
-                              placeholder="Lot #"
+                              placeholder="Regular Stock"
                               inputClassName="h-7 text-xs font-mono"
                             />
                           ) : (
-                            <span className="text-[10px] text-slate-400 font-sans italic px-1 block text-center">N/A (Shop)</span>
+                            <span className="text-[10px] text-slate-400 font-sans italic px-1 block text-center">Regular Stock</span>
                           )}
                         </td>
 

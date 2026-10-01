@@ -164,6 +164,9 @@ model Location {
   purchaseReturns         PurchaseReturn[]
   warehouseStorageCharges WarehouseStorageCharge[]
   warehouseLots           WarehouseLot[]
+  deliveryOrderItems      DeliveryOrderItem[]
+  purchaseOrderItems      PurchaseOrderItem[]
+  beneficiaryParties      Party[]                  @relation("PartnerWarehouseLocation")
 
   @@unique([name, type])
   @@index([type, isActive])
@@ -172,6 +175,8 @@ model Location {
 model WarehouseLot {
   id          String    @id @default(cuid())
   locationId  String
+  partnerId   String?
+  unitCost    Decimal?  @db.Decimal(14, 4)
   lotNumber   String
   description String?
   isActive    Boolean   @default(true)
@@ -180,13 +185,16 @@ model WarehouseLot {
   updatedAt   DateTime  @updatedAt
 
   location             Location              @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  partner              Party?                @relation("PartnerLots", fields: [partnerId], references: [id])
   stockMovements       StockMovement[]
   purchaseInvoiceItems PurchaseInvoiceItem[]
+  purchaseOrderItems   PurchaseOrderItem[]
   deliveryOrderItems   DeliveryOrderItem[]
   saleInvoiceItems     SaleInvoiceItem[]
 
   @@unique([locationId, lotNumber])
   @@index([locationId, isActive])
+  @@index([partnerId])
   @@index([deletedAt])
   @@index([isActive, deletedAt])
 }
@@ -293,17 +301,21 @@ model StockMovement {
 }
 
 model Party {
-  id          String    @id @default(cuid())
-  name        String
-  type        PartyType
-  phone       String?
-  email       String?
-  address     String?
-  creditLimit Decimal?  @db.Decimal(14, 4)
-  isActive    Boolean   @default(true)
-  deletedAt   DateTime?
-  createdAt   DateTime  @default(now())
+  id                 String    @id @default(cuid())
+  name               String
+  type               PartyType
+  isBeneficiary      Boolean   @default(false)
+  partnerWarehouseId String?
+  phone              String?
+  email              String?
+  address            String?
+  creditLimit        Decimal?  @db.Decimal(14, 4)
+  isActive           Boolean   @default(true)
+  deletedAt          DateTime?
+  createdAt          DateTime  @default(now())
 
+  partnerWarehouse  Location?         @relation("PartnerWarehouseLocation", fields: [partnerWarehouseId], references: [id])
+  partnerLots       WarehouseLot[]    @relation("PartnerLots")
   purchaseOrders    PurchaseOrder[]
   purchaseInvoices  PurchaseInvoice[]
   deliveryOrders    DeliveryOrder[]
@@ -314,6 +326,7 @@ model Party {
   payments          Payment[]
 
   @@index([type, isActive])
+  @@index([isBeneficiary])
   @@index([name])
   @@index([createdAt])
   @@index([deletedAt])
@@ -349,18 +362,24 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  id        String  @id @default(cuid())
-  orderId   String
-  productId String
-  quantity  Decimal @db.Decimal(14, 4)
-  unitCost  Decimal @db.Decimal(14, 4)
-  lineTotal Decimal @db.Decimal(14, 4)
+  id                    String        @id @default(cuid())
+  orderId               String
+  productId             String
+  destinationLocationId String?
+  warehouseLotId        String?
+  quantity              Decimal       @db.Decimal(14, 4)
+  unitCost              Decimal       @db.Decimal(14, 4)
+  lineTotal             Decimal       @db.Decimal(14, 4)
 
-  order   PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product       @relation(fields: [productId], references: [id])
+  order               PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product             Product       @relation(fields: [productId], references: [id])
+  destinationLocation Location?     @relation(fields: [destinationLocationId], references: [id])
+  warehouseLot        WarehouseLot? @relation(fields: [warehouseLotId], references: [id])
 
   @@index([orderId])
   @@index([productId])
+  @@index([destinationLocationId])
+  @@index([warehouseLotId])
 }
 
 model PurchaseInvoice {
@@ -459,16 +478,19 @@ model DeliveryOrderItem {
   id             String        @id @default(cuid())
   doId           String
   productId      String
+  locationId     String?
   warehouseLotId String?
   quantity       Decimal       @db.Decimal(14, 4)
   unit           Unit
 
   deliveryOrder DeliveryOrder @relation(fields: [doId], references: [id], onDelete: Cascade)
   product       Product       @relation(fields: [productId], references: [id])
+  location      Location?     @relation(fields: [locationId], references: [id])
   warehouseLot  WarehouseLot? @relation(fields: [warehouseLotId], references: [id])
 
   @@index([doId])
   @@index([productId])
+  @@index([locationId])
   @@index([warehouseLotId])
 }
 
@@ -516,6 +538,7 @@ model SaleInvoiceItem {
   warehouseLotId String?
   quantity       Decimal       @db.Decimal(14, 4)
   unitPrice      Decimal       @db.Decimal(14, 4)
+  unitCost       Decimal?      @db.Decimal(14, 4)
   lineTotal      Decimal       @db.Decimal(14, 4)
 
   invoice      SaleInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
