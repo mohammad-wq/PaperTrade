@@ -26,6 +26,8 @@ export const saleInvoiceBaseSchema = z.object({
   locationId: z.string().optional().nullable(),
   deliveryOrderId: z.string().optional().nullable(),
   date: z.coerce.date(),
+  isPartnership: z.boolean().default(false),
+  partnershipId: z.string().optional().nullable(),
   notes: z.string().trim().max(1000).optional().or(z.literal("")),
   items: z.array(lineItem).min(1, "Add at least one line item"),
 });

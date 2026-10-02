@@ -48,6 +48,9 @@ type PartyRecord = {
   creditLimit: number | null;
   isActive: boolean;
   balance: number;
+  isCustomer?: boolean;
+  isSupplier?: boolean;
+  isPartner?: boolean;
   isBeneficiary?: boolean;
   partnerWarehouseId?: string | null;
 };
@@ -61,6 +64,9 @@ type PartyFormData = {
   address: string;
   creditLimit: string;
   isActive: boolean;
+  isCustomer: boolean;
+  isSupplier: boolean;
+  isPartner: boolean;
   isBeneficiary: boolean;
   partnerWarehouseId: string;
 };
@@ -73,6 +79,9 @@ const EMPTY_PARTY_FORM: PartyFormData = {
   address: "",
   creditLimit: "",
   isActive: true,
+  isCustomer: true,
+  isSupplier: true,
+  isPartner: false,
   isBeneficiary: false,
   partnerWarehouseId: "",
 };
@@ -114,7 +123,7 @@ export default function PartiesClient({
   }, [searchQuery]);
 
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
-  const [filterType, setFilterType] = useState<"ALL" | PartyType>("ALL");
+  const [filterType, setFilterType] = useState<"ALL" | PartyType | "PARTNER">("ALL");
   const [filterStatus, setFilterStatus] = useState<"ALL" | "ACTIVE" | "INACTIVE">("ALL");
   const [filterBalance, setFilterBalance] = useState<"ALL" | "RECEIVABLE" | "PAYABLE" | "ZERO">("ALL");
   const [viewMode, setViewMode] = useState<"table" | "cards">("table");
@@ -230,7 +239,10 @@ export default function PartiesClient({
       address: party.address || "",
       creditLimit: party.creditLimit !== null ? String(party.creditLimit) : "",
       isActive: party.isActive,
-      isBeneficiary: party.isBeneficiary || false,
+      isCustomer: true,
+      isSupplier: true,
+      isPartner: Boolean(party.isPartner || party.isBeneficiary),
+      isBeneficiary: Boolean(party.isPartner || party.isBeneficiary),
       partnerWarehouseId: party.partnerWarehouseId || "",
     });
     setIsWindowOpen(true);
@@ -287,6 +299,7 @@ export default function PartiesClient({
     setFormError(null);
 
     try {
+      const isPartnerRole = Boolean(formData.isPartner || formData.isBeneficiary);
       const payload = {
         id: selectedPartyId || undefined,
         name: formData.name.trim(),
@@ -294,10 +307,13 @@ export default function PartiesClient({
         phone: formData.phone.trim() || null,
         email: formData.email.trim() || null,
         address: formData.address.trim() || null,
-        creditLimit: formData.type === PartyType.CUSTOMER && formData.creditLimit ? parseFloat(formData.creditLimit) || 0 : null,
+        creditLimit: formData.creditLimit ? parseFloat(formData.creditLimit) || 0 : null,
         isActive: formData.isActive,
-        isBeneficiary: formData.type === PartyType.SUPPLIER && formData.isBeneficiary,
-        partnerWarehouseId: formData.type === PartyType.SUPPLIER && formData.partnerWarehouseId ? formData.partnerWarehouseId : null,
+        isCustomer: true,
+        isSupplier: true,
+        isPartner: isPartnerRole,
+        isBeneficiary: isPartnerRole,
+        partnerWarehouseId: isPartnerRole && formData.partnerWarehouseId ? formData.partnerWarehouseId : null,
       };
 
       const res = await upsertPartyAction(payload);
@@ -370,7 +386,13 @@ export default function PartiesClient({
     let result = parties;
 
     if (filterType !== "ALL") {
-      result = result.filter((p) => p.type === filterType);
+      if (filterType === "PARTNER") {
+        result = result.filter((p) => p.isPartner || p.isBeneficiary);
+      } else if (filterType === PartyType.CUSTOMER) {
+        result = result.filter((p) => p.type === PartyType.CUSTOMER || p.isCustomer);
+      } else if (filterType === PartyType.SUPPLIER) {
+        result = result.filter((p) => p.type === PartyType.SUPPLIER || p.isSupplier);
+      }
     }
     if (filterStatus === "ACTIVE") {
       result = result.filter((p) => p.isActive);
@@ -379,9 +401,9 @@ export default function PartiesClient({
     }
 
     if (filterBalance === "RECEIVABLE") {
-      result = result.filter((p) => p.balance > 0 && p.type === PartyType.CUSTOMER);
+      result = result.filter((p) => p.balance > 0 && (p.type === PartyType.CUSTOMER || p.isCustomer));
     } else if (filterBalance === "PAYABLE") {
-      result = result.filter((p) => p.balance > 0 && p.type === PartyType.SUPPLIER);
+      result = result.filter((p) => p.balance > 0 && (p.type === PartyType.SUPPLIER || p.isSupplier));
     } else if (filterBalance === "ZERO") {
       result = result.filter((p) => p.balance === 0);
     }
@@ -401,7 +423,8 @@ export default function PartiesClient({
         phone.includes(q) ||
         email.includes(q) ||
         address.includes(q) ||
-        type.includes(q)
+        type.includes(q) ||
+        ((p.isPartner || p.isBeneficiary) && "partner person b equity".includes(q))
       );
     });
   }, [parties, debouncedSearchQuery, filterType, filterStatus, filterBalance]);
@@ -627,15 +650,16 @@ export default function PartiesClient({
         {showAdvancedFilters && (
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
             <div>
-              <Label className="text-[10px] uppercase font-bold text-slate-500">Party Type</Label>
+              <Label className="text-[10px] uppercase font-bold text-slate-500">Party Type / Role</Label>
               <select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value as any)}
                 className="w-full mt-1 h-7 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 text-xs font-medium"
               >
-                <option value="ALL">All Types</option>
-                <option value={PartyType.CUSTOMER}>Customers Only</option>
-                <option value={PartyType.SUPPLIER}>Suppliers Only</option>
+                <option value="ALL">All Types & Roles</option>
+                <option value={PartyType.CUSTOMER}>Customers (Buyers)</option>
+                <option value={PartyType.SUPPLIER}>Suppliers (Vendors)</option>
+                <option value="PARTNER">Equity Partners (Person B)</option>
               </select>
             </div>
 
@@ -692,7 +716,7 @@ export default function PartiesClient({
             <table className="w-full text-left text-xs border-collapse print:text-[8pt] print:table-auto">
               <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider print:static print:bg-slate-200 print:text-black">
                 <tr>
-                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Type</th>
+                  <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Roles</th>
                   <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 min-w-[180px] print:min-w-0 print:border-black print:px-1.5">Party Name</th>
                   <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Phone / Contact</th>
                   <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap print:border-black print:px-1.5">Email</th>
@@ -718,8 +742,8 @@ export default function PartiesClient({
                   </tr>
                 ) : (
                   paginatedParties.map((p) => {
-                    const isReceivable = p.type === PartyType.CUSTOMER && p.balance > 0;
-                    const isPayable = p.type === PartyType.SUPPLIER && p.balance > 0;
+                    const isReceivable = (p.type === PartyType.CUSTOMER || p.isCustomer) && p.balance > 0;
+                    const isPayable = (p.type === PartyType.SUPPLIER || p.isSupplier) && p.balance > 0;
 
                     return (
                       <tr
@@ -727,17 +751,19 @@ export default function PartiesClient({
                         onClick={() => openEditWindow(p)}
                         className="hover:bg-amber-50/60 dark:hover:bg-slate-800/60 cursor-pointer transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40"
                       >
-                        {/* Type Badge */}
+                        {/* Type & Role Badges */}
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
-                              p.type === PartyType.CUSTOMER
-                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                                : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                            }`}
-                          >
-                            {p.type}
-                          </span>
+                          <div className="flex flex-wrap gap-1 items-center">
+                            {(p.isPartner || p.isBeneficiary) ? (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
+                                Partner B
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                                Party
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         {/* Name */}
@@ -855,16 +881,18 @@ export default function PartiesClient({
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
-                        p.type === PartyType.CUSTOMER
-                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                          : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                      }`}
-                    >
-                      {p.type}
-                    </span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className="flex flex-wrap gap-1 items-center">
+                      {(p.isPartner || p.isBeneficiary) ? (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
+                          Partner B
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                          Party
+                        </span>
+                      )}
+                    </div>
                     <h3 className="font-bold text-xs text-slate-900 dark:text-slate-100">{p.name}</h3>
                   </div>
                   {p.address && <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{p.address}</p>}
@@ -1002,41 +1030,6 @@ export default function PartiesClient({
                 </div>
               )}
 
-              {/* Row 0: Party Type Selection */}
-              <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
-                <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
-                  Party Type <span className="text-rose-500">*</span>:
-                </label>
-                <div className="col-span-8 flex items-center gap-2">
-                  <div className="inline-flex rounded-md border border-slate-300 dark:border-slate-700 p-0.5 bg-white dark:bg-slate-900 w-full">
-                    <button
-                      type="button"
-                      data-nav-index="0"
-                      onClick={() => setFormData((prev) => ({ ...prev, type: PartyType.CUSTOMER }))}
-                      onKeyDown={(e) => handleNavKeyDown(e, 0)}
-                      className={`flex-1 py-1 text-center rounded text-xs font-semibold transition-all ${
-                        formData.type === PartyType.CUSTOMER
-                          ? "bg-emerald-600 text-white shadow-xs"
-                          : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
-                      }`}
-                    >
-                      Customer
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setFormData((prev) => ({ ...prev, type: PartyType.SUPPLIER }))}
-                      className={`flex-1 py-1 text-center rounded text-xs font-semibold transition-all ${
-                        formData.type === PartyType.SUPPLIER
-                          ? "bg-amber-600 text-white shadow-xs"
-                          : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
-                      }`}
-                    >
-                      Supplier
-                    </button>
-                  </div>
-                </div>
-              </div>
-
               {/* Row 1: Party Name */}
               <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
                 <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
@@ -1044,15 +1037,39 @@ export default function PartiesClient({
                 </label>
                 <div className="col-span-8">
                   <Input
-                    data-nav-index="1"
+                    data-nav-index="0"
                     value={formData.name}
                     onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
-                    onKeyDown={(e) => handleNavKeyDown(e, 1)}
+                    onKeyDown={(e) => handleNavKeyDown(e, 0)}
                     placeholder="e.g. Al-Madina Packages or Bilal Traders"
                     className="h-8 text-xs bg-white dark:bg-slate-900 font-medium"
                     required
                   />
                 </div>
+              </div>
+
+              {/* Partner Option: One clear checkbox */}
+              <div className="py-2 border-b border-slate-200/60 dark:border-slate-800">
+                <label className={`flex items-center gap-2.5 p-2.5 rounded-md border cursor-pointer transition-colors ${formData.isPartner ? 'bg-indigo-50/70 border-indigo-300 text-indigo-950 dark:bg-indigo-950/40 dark:border-indigo-700 dark:text-indigo-200' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'}`}>
+                  <input
+                    type="checkbox"
+                    checked={formData.isPartner}
+                    onChange={(e) => setFormData((prev) => ({
+                      ...prev,
+                      isPartner: e.target.checked,
+                      isBeneficiary: e.target.checked,
+                    }))}
+                    className="h-4 w-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-indigo-900 dark:text-indigo-300 block">
+                      Acts as Partner (Person B / Equity Partner)
+                    </span>
+                    <span className="text-[10px] text-slate-500 block leading-tight">
+                      Check if this party is an equity partner for shared warehouse lots and capital tracking
+                    </span>
+                  </div>
+                </label>
               </div>
 
               {/* Row 2: Phone */}
@@ -1107,47 +1124,39 @@ export default function PartiesClient({
                 </div>
               </div>
 
-              {/* Row 5: Credit Limit (Customers only) */}
-              {formData.type === PartyType.CUSTOMER && (
-                <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
-                  <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
-                    Credit Limit (PKR):
-                  </label>
-                  <div className="col-span-8">
-                    <Input
-                      data-nav-index="5"
-                      type="number"
-                      step="1000"
-                      value={formData.creditLimit}
-                      onChange={(e) => setFormData((prev) => ({ ...prev, creditLimit: e.target.value }))}
-                      onKeyDown={(e) => handleNavKeyDown(e, 5)}
-                      placeholder="e.g. 500000 (Leave empty for unrestricted)"
-                      className="h-8 text-xs bg-white dark:bg-slate-900 font-mono"
-                    />
-                  </div>
+              {/* Row 5: Credit Limit */}
+              <div className="grid grid-cols-12 gap-3 items-center py-1 border-b border-slate-200/60 dark:border-slate-800">
+                <label className="col-span-4 text-right font-bold text-slate-700 dark:text-slate-300 pr-2">
+                  Credit Limit (PKR):
+                </label>
+                <div className="col-span-8">
+                  <Input
+                    data-nav-index="5"
+                    type="number"
+                    step="1000"
+                    value={formData.creditLimit}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, creditLimit: e.target.value }))}
+                    onKeyDown={(e) => handleNavKeyDown(e, 5)}
+                    placeholder="e.g. 500000 (Leave empty for unrestricted)"
+                    className="h-8 text-xs bg-white dark:bg-slate-900 font-mono"
+                  />
                 </div>
-              )}
+              </div>
 
-              {/* Row 6: Beneficiary Partner Toggle (for Suppliers / Person B) */}
-              {formData.type === PartyType.SUPPLIER && (
-                <div className="grid grid-cols-12 gap-3 items-center py-2 border-b border-slate-200/60 dark:border-slate-800 bg-amber-50/40 dark:bg-amber-950/20 px-2 rounded-md">
-                  <label className="col-span-4 text-right font-bold text-amber-900 dark:text-amber-200 pr-2">
-                    Beneficiary Partner (Person B):
+              {/* Row 6: Equity Partner Info Notice */}
+              {(formData.isPartner || formData.isBeneficiary) && (
+                <div className="grid grid-cols-12 gap-3 items-center py-2 border-b border-slate-200/60 dark:border-slate-800 bg-indigo-50/40 dark:bg-indigo-950/20 px-2 rounded-md">
+                  <label className="col-span-4 text-right font-bold text-indigo-900 dark:text-indigo-200 pr-2">
+                    Partnership Mode:
                   </label>
                   <div className="col-span-8 space-y-1">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={formData.isBeneficiary}
-                        onChange={(e) => setFormData((prev) => ({ ...prev, isBeneficiary: e.target.checked }))}
-                        className="h-4 w-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
-                      />
-                      <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                        Designate as Co-Owner / Beneficiary (Person B)
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200">
+                        Equity Partner (Person B) Active
                       </span>
-                    </label>
+                    </div>
                     <p className="text-[11px] text-slate-500">
-                      Purchases from this party create distinct partner lot batches (e.g. LOT-B-XXXX) with isolated profit and margin tracking.
+                      Standard purchases/sales are ledger-isolated. Dedicated intakes create shared warehouse lots with capital split tracking.
                     </p>
                   </div>
                 </div>

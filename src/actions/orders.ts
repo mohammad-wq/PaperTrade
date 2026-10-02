@@ -8,7 +8,7 @@ import { getStockOnHand } from "@/lib/stock";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { purchaseOrderSchema, purchaseOrderItemSchema, deliveryOrderSchema, deliveryOrderItemSchema } from "@/schemas/order";
-import { DeliveryOrderStatus, PartyType, PurchaseOrderStatus, StockMovementType, Unit } from "@prisma/client";
+import { DeliveryOrderStatus, PartyType, PurchaseOrderStatus, StockMovementType, Unit, Prisma } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { getActiveFinancialYear, getNextAtomicSequence } from "@/lib/financial-year";
 import { z } from "zod";
@@ -58,7 +58,7 @@ async function createDeliveryOrderStockMovements(
     saleInvoiceId?: string | null;
     items: Array<{
       productId: string;
-      quantity: number;
+      quantity: number | Prisma.Decimal | any;
       locationId?: string | null;
       warehouseLotId?: string | null;
     }>;
@@ -224,21 +224,33 @@ export async function createPurchaseOrderAction(raw: unknown) {
         activeFy.id,
         "PURCHASE_ORDER"
       );
+
+      let effectiveLocationId = input.locationId;
+      if (!effectiveLocationId) {
+        effectiveLocationId = input.items.find((i) => i.destinationLocationId)?.destinationLocationId || "";
+      }
+      if (!effectiveLocationId) {
+        const defaultLoc = await tx.location.findFirst({ where: { isActive: true } });
+        effectiveLocationId = defaultLoc?.id || "";
+      }
+
       const order = await tx.purchaseOrder.create({
         data: {
           orderNo,
           financialYearId: activeFy.id,
           sequenceNo,
           supplierId: targetSupplierId!,
-          locationId: input.locationId,
+          locationId: effectiveLocationId,
           date: input.date,
           status: input.status,
+          isPartnership: input.isPartnership ?? false,
+          partnershipId: input.partnershipId ?? null,
           notes: input.notes || null,
           createdById: session.user.id,
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
-              destinationLocationId: item.destinationLocationId || input.locationId || null,
+              destinationLocationId: item.destinationLocationId || effectiveLocationId || null,
               warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
               unitCost: item.unitCost,
@@ -286,9 +298,11 @@ const updatePurchaseOrderSchema = z.object({
   oneTimeSupplierName: z.string().trim().max(200).optional().nullable(),
   oneTimeSupplierPhone: z.string().trim().max(50).optional().nullable(),
   saveSupplier: z.boolean().default(false),
-  locationId: z.string().min(1, "Location is required"),
+  locationId: z.string().optional().nullable().or(z.literal("")),
   date: z.coerce.date(),
   status: z.nativeEnum(PurchaseOrderStatus).default(PurchaseOrderStatus.DRAFT),
+  isPartnership: z.boolean().optional(),
+  partnershipId: z.string().optional().nullable(),
   notes: z.string().trim().max(1000).optional().or(z.literal("")),
   items: z.array(purchaseOrderItemSchema).min(1, "At least one item is required"),
 }).refine(
@@ -336,19 +350,26 @@ export async function updatePurchaseOrderAction(raw: unknown) {
       }
       if (!targetSupplierId) throw userError("Please select a supplier.");
 
+      let effectiveLocationId = input.locationId;
+      if (!effectiveLocationId) {
+        effectiveLocationId = input.items.find((i) => i.destinationLocationId)?.destinationLocationId || existing.locationId;
+      }
+
       await tx.purchaseOrderItem.deleteMany({ where: { orderId: existing.id } });
       const updated = await tx.purchaseOrder.update({
         where: { id: existing.id },
         data: {
           supplierId: targetSupplierId,
-          locationId: input.locationId,
+          locationId: effectiveLocationId,
           date: input.date,
           status: input.status,
+          isPartnership: input.isPartnership !== undefined ? input.isPartnership : existing.isPartnership,
+          partnershipId: input.partnershipId !== undefined ? input.partnershipId : existing.partnershipId,
           notes: input.notes || null,
           items: {
             create: input.items.map((item) => ({
               productId: item.productId,
-              destinationLocationId: item.destinationLocationId || input.locationId || null,
+              destinationLocationId: item.destinationLocationId || effectiveLocationId || null,
               warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
               unitCost: item.unitCost,

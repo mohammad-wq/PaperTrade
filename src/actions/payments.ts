@@ -16,6 +16,12 @@ import {
   getNextAtomicSequence,
   updateInvoiceSettlementStatus,
 } from "@/lib/financial-year";
+import {
+  executePaymentAllocation,
+  reversePaymentAllocations,
+  simulateFifoAllocation,
+  getOpenInvoicesForParty,
+} from "@/lib/payment-allocation";
 
 export async function listPaymentsAction() {
   return runAction("payments.list", async () => {
@@ -30,6 +36,12 @@ export async function listPaymentsAction() {
         party: { select: { id: true, name: true, type: true, phone: true } },
         saleInvoice: { select: { id: true, invoiceNo: true, sequenceNo: true, totalAmount: true } },
         purchaseInvoice: { select: { id: true, invoiceNo: true, sequenceNo: true, totalAmount: true } },
+        allocations: {
+          include: {
+            saleInvoice: { select: { id: true, invoiceNo: true, sequenceNo: true, totalAmount: true } },
+            purchaseInvoice: { select: { id: true, invoiceNo: true, sequenceNo: true, totalAmount: true } },
+          },
+        },
         splits: true,
       },
     });
@@ -44,11 +56,43 @@ export async function listPaymentsAction() {
       purchaseInvoice: p.purchaseInvoice
         ? { ...p.purchaseInvoice, totalAmount: Number(p.purchaseInvoice.totalAmount ?? 0) }
         : null,
+      allocations: p.allocations.map((a) => ({
+        id: a.id,
+        amount: Number(a.amount),
+        saleInvoice: a.saleInvoice
+          ? { ...a.saleInvoice, totalAmount: Number(a.saleInvoice.totalAmount ?? 0) }
+          : null,
+        purchaseInvoice: a.purchaseInvoice
+          ? { ...a.purchaseInvoice, totalAmount: Number(a.purchaseInvoice.totalAmount ?? 0) }
+          : null,
+      })),
       splits: p.splits.map((s) => ({
         ...s,
         amount: Number(s.amount),
       })),
     }));
+  });
+}
+
+export async function previewPaymentAllocationAction(params: {
+  partyId: string;
+  amount: number;
+  direction: "IN" | "OUT";
+  targetInvoiceId?: string | null;
+  manualAllocations?: Array<{ invoiceId: string; amount: number }>;
+}) {
+  return runAction("payments.previewAllocation", async () => {
+    await requireSession();
+    if (!params.partyId) {
+      return { allocations: [], totalAllocated: 0, unallocatedCredit: params.amount || 0 };
+    }
+    const openInvoices = await getOpenInvoicesForParty(params.partyId, params.direction);
+    return simulateFifoAllocation(
+      openInvoices,
+      params.amount,
+      params.targetInvoiceId,
+      params.manualAllocations,
+    );
   });
 }
 
@@ -118,6 +162,17 @@ const updatePaymentSchema = z.object({
   amount: z.coerce.number().gt(0, "Amount must be greater than 0"),
   method: z.nativeEnum(PaymentMethod).default(PaymentMethod.CASH),
   splits: z.array(paymentSplitItemSchema).optional(),
+  isPartnership: z.boolean().default(false),
+  partnershipId: z.string().optional().nullable(),
+  autoAllocate: z.boolean().default(true).optional(),
+  manualAllocations: z
+    .array(
+      z.object({
+        invoiceId: z.string().min(1),
+        amount: z.coerce.number().min(0),
+      })
+    )
+    .optional(),
   date: z.coerce.date(),
   notes: z.string().trim().max(500).optional().or(z.literal("")),
 }).refine((value) => !(value.saleInvoiceId && value.purchaseInvoiceId), {
@@ -146,11 +201,6 @@ export async function updatePaymentAction(raw: unknown) {
         throw userError("Payment record not found.");
       }
 
-      const oldAmount = Number(existing.amount);
-      const oldPartyId = existing.partyId;
-      const oldSaleInvoiceId = existing.saleInvoiceId;
-      const oldPurchaseInvoiceId = existing.purchaseInvoiceId;
-
       await tx.ledgerEntry.deleteMany({
         where: { referenceType: "PAYMENT", referenceId: existing.id },
       });
@@ -158,21 +208,8 @@ export async function updatePaymentAction(raw: unknown) {
         where: { paymentId: existing.id },
       });
 
-      if (oldSaleInvoiceId) {
-        await tx.saleInvoice.update({
-          where: { id: oldSaleInvoiceId },
-          data: { amountPaid: { decrement: oldAmount } },
-        });
-        await updateInvoiceSettlementStatus(tx, oldSaleInvoiceId, "SALE");
-      }
-
-      if (oldPurchaseInvoiceId) {
-        await tx.purchaseInvoice.update({
-          where: { id: oldPurchaseInvoiceId },
-          data: { amountPaid: { decrement: oldAmount } },
-        });
-        await updateInvoiceSettlementStatus(tx, oldPurchaseInvoiceId, "PURCHASE");
-      }
+      // Reverse previous allocations cleanly
+      await reversePaymentAllocations(tx, existing.id);
 
       const totalAmount =
         input.splits && input.splits.length > 0
@@ -183,6 +220,29 @@ export async function updatePaymentAction(raw: unknown) {
         input.splits && input.splits.length > 0 ? input.splits[0].method : input.method;
       const direction = input.direction || "IN";
 
+      let isPartnership = input.isPartnership ?? existing.isPartnership;
+      let partnershipId = input.partnershipId ?? existing.partnershipId;
+
+      if (!isPartnership && input.saleInvoiceId) {
+        const inv = await tx.saleInvoice.findUnique({
+          where: { id: input.saleInvoiceId },
+          select: { isPartnership: true, partnershipId: true },
+        });
+        if (inv?.isPartnership) {
+          isPartnership = true;
+          partnershipId = inv.partnershipId || partnershipId;
+        }
+      } else if (!isPartnership && input.purchaseInvoiceId) {
+        const inv = await tx.purchaseInvoice.findUnique({
+          where: { id: input.purchaseInvoiceId },
+          select: { isPartnership: true, partnershipId: true },
+        });
+        if (inv?.isPartnership) {
+          isPartnership = true;
+          partnershipId = inv.partnershipId || partnershipId;
+        }
+      }
+
       const updatedPayment = await tx.payment.update({
         where: { id: input.id },
         data: {
@@ -190,6 +250,8 @@ export async function updatePaymentAction(raw: unknown) {
           direction,
           saleInvoiceId: input.saleInvoiceId || null,
           purchaseInvoiceId: input.purchaseInvoiceId || null,
+          isPartnership,
+          partnershipId,
           amount: totalAmount,
           method: primaryMethod,
           date: input.date,
@@ -225,6 +287,8 @@ export async function updatePaymentAction(raw: unknown) {
               accountType: AccountType.CASH,
               debit: split.amount,
               credit: 0,
+              isPartnership,
+              partnershipId,
               referenceType: "PAYMENT",
               referenceId: updatedPayment.id,
               date: input.date,
@@ -240,6 +304,8 @@ export async function updatePaymentAction(raw: unknown) {
             accountType: AccountType.RECEIVABLE,
             debit: 0,
             credit: totalAmount,
+            isPartnership,
+            partnershipId,
             referenceType: "PAYMENT",
             referenceId: updatedPayment.id,
             date: input.date,
@@ -248,13 +314,6 @@ export async function updatePaymentAction(raw: unknown) {
           },
         });
 
-        if (input.saleInvoiceId) {
-          await tx.saleInvoice.update({
-            where: { id: input.saleInvoiceId },
-            data: { amountPaid: { increment: totalAmount } },
-          });
-          await updateInvoiceSettlementStatus(tx, input.saleInvoiceId, "SALE");
-        }
       } else {
         const party = await tx.party.findUnique({ where: { id: input.partyId } });
         if (!party) throw userError("Party not found.");
@@ -265,6 +324,8 @@ export async function updatePaymentAction(raw: unknown) {
             accountType: AccountType.PAYABLE,
             debit: totalAmount,
             credit: 0,
+            isPartnership,
+            partnershipId,
             referenceType: "PAYMENT",
             referenceId: updatedPayment.id,
             date: input.date,
@@ -281,6 +342,8 @@ export async function updatePaymentAction(raw: unknown) {
               accountType: AccountType.CASH,
               debit: 0,
               credit: split.amount,
+              isPartnership,
+              partnershipId,
               referenceType: "PAYMENT",
               referenceId: updatedPayment.id,
               date: input.date,
@@ -289,14 +352,40 @@ export async function updatePaymentAction(raw: unknown) {
             },
           });
         }
+      }
 
-        if (input.purchaseInvoiceId) {
-          await tx.purchaseInvoice.update({
-            where: { id: input.purchaseInvoiceId },
-            data: { amountPaid: { increment: totalAmount } },
-          });
-          await updateInvoiceSettlementStatus(tx, input.purchaseInvoiceId, "PURCHASE");
-        }
+      // Re-allocate settlement
+      const shouldAllocate =
+        input.autoAllocate !== false ||
+        (input.manualAllocations && input.manualAllocations.length > 0);
+
+      if (shouldAllocate) {
+        await executePaymentAllocation(tx, {
+          paymentId: updatedPayment.id,
+          partyId: input.partyId,
+          amount: totalAmount,
+          direction,
+          targetInvoiceId: input.saleInvoiceId || input.purchaseInvoiceId || null,
+          manualAllocations: input.manualAllocations,
+        });
+      } else if (input.saleInvoiceId) {
+        await tx.saleInvoice.update({
+          where: { id: input.saleInvoiceId },
+          data: {
+            paidAmount: { increment: totalAmount },
+            amountPaid: { increment: totalAmount },
+          },
+        });
+        await updateInvoiceSettlementStatus(tx, input.saleInvoiceId, "SALE");
+      } else if (input.purchaseInvoiceId) {
+        await tx.purchaseInvoice.update({
+          where: { id: input.purchaseInvoiceId },
+          data: {
+            paidAmount: { increment: totalAmount },
+            amountPaid: { increment: totalAmount },
+          },
+        });
+        await updateInvoiceSettlementStatus(tx, input.purchaseInvoiceId, "PURCHASE");
       }
 
       const postBalance = await getPartyBalance(input.partyId, tx);
@@ -343,20 +432,8 @@ export async function deletePaymentAction(raw: unknown) {
         throw userError("Payment record not found.");
       }
 
-      if (existing.saleInvoiceId) {
-        await tx.saleInvoice.update({
-          where: { id: existing.saleInvoiceId },
-          data: { amountPaid: { decrement: Number(existing.amount) } },
-        });
-        await updateInvoiceSettlementStatus(tx, existing.saleInvoiceId, "SALE");
-      }
-      if (existing.purchaseInvoiceId) {
-        await tx.purchaseInvoice.update({
-          where: { id: existing.purchaseInvoiceId },
-          data: { amountPaid: { decrement: Number(existing.amount) } },
-        });
-        await updateInvoiceSettlementStatus(tx, existing.purchaseInvoiceId, "PURCHASE");
-      }
+      // Reverse all allocations for this payment and restore invoice balances
+      await reversePaymentAllocations(tx, id);
 
       await tx.ledgerEntry.deleteMany({
         where: { referenceType: "PAYMENT", referenceId: id },
@@ -422,6 +499,29 @@ export async function createPaymentAction(raw: unknown) {
 
       const direction = input.direction || (party.type === PartyType.CUSTOMER ? "IN" : "OUT");
 
+      let isPartnership = input.isPartnership ?? false;
+      let partnershipId = input.partnershipId ?? null;
+
+      if (!isPartnership && input.saleInvoiceId) {
+        const inv = await tx.saleInvoice.findUnique({
+          where: { id: input.saleInvoiceId },
+          select: { isPartnership: true, partnershipId: true },
+        });
+        if (inv?.isPartnership) {
+          isPartnership = true;
+          partnershipId = inv.partnershipId || partnershipId;
+        }
+      } else if (!isPartnership && input.purchaseInvoiceId) {
+        const inv = await tx.purchaseInvoice.findUnique({
+          where: { id: input.purchaseInvoiceId },
+          select: { isPartnership: true, partnershipId: true },
+        });
+        if (inv?.isPartnership) {
+          isPartnership = true;
+          partnershipId = inv.partnershipId || partnershipId;
+        }
+      }
+
       const payment = await tx.payment.create({
         data: {
           receiptNo,
@@ -431,6 +531,8 @@ export async function createPaymentAction(raw: unknown) {
           direction,
           saleInvoiceId: input.saleInvoiceId || null,
           purchaseInvoiceId: input.purchaseInvoiceId || null,
+          isPartnership,
+          partnershipId,
           amount: totalAmount,
           method: primaryMethod,
           date: input.date,
@@ -465,6 +567,8 @@ export async function createPaymentAction(raw: unknown) {
               accountType: AccountType.CASH,
               debit: split.amount,
               credit: 0,
+              isPartnership,
+              partnershipId,
               referenceType: "PAYMENT",
               referenceId: payment.id,
               date: input.date,
@@ -480,35 +584,12 @@ export async function createPaymentAction(raw: unknown) {
             accountType: AccountType.RECEIVABLE,
             debit: 0,
             credit: totalAmount,
+            isPartnership,
+            partnershipId,
             referenceType: "PAYMENT",
             referenceId: payment.id,
             date: input.date,
             description: `Payment received from customer against Voucher #${receiptNo}`,
-            createdById: session.user.id,
-          },
-        });
-
-        if (input.saleInvoiceId) {
-          await tx.saleInvoice.update({
-            where: { id: input.saleInvoiceId },
-            data: {
-              amountPaid: { increment: totalAmount },
-            },
-          });
-          await updateInvoiceSettlementStatus(tx, input.saleInvoiceId, "SALE");
-        }
-      } else {
-        // Supplier Payment Voucher: decreases Payable (Debit), decreases Cash/Bank (Credit)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: party.id,
-            accountType: AccountType.PAYABLE,
-            debit: totalAmount,
-            credit: 0,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Payment to supplier against Voucher #${receiptNo}`,
             createdById: session.user.id,
           },
         });
@@ -521,6 +602,8 @@ export async function createPaymentAction(raw: unknown) {
               accountType: AccountType.CASH,
               debit: 0,
               credit: split.amount,
+              isPartnership,
+              partnershipId,
               referenceType: "PAYMENT",
               referenceId: payment.id,
               date: input.date,
@@ -529,16 +612,40 @@ export async function createPaymentAction(raw: unknown) {
             },
           });
         }
+      }
 
-        if (input.purchaseInvoiceId) {
-          await tx.purchaseInvoice.update({
-            where: { id: input.purchaseInvoiceId },
-            data: {
-              amountPaid: { increment: totalAmount },
-            },
-          });
-          await updateInvoiceSettlementStatus(tx, input.purchaseInvoiceId, "PURCHASE");
-        }
+      // Automated FIFO Payment Allocation Against Open Invoices
+      const shouldAllocate =
+        input.autoAllocate !== false ||
+        (input.manualAllocations && input.manualAllocations.length > 0);
+
+      if (shouldAllocate) {
+        await executePaymentAllocation(tx, {
+          paymentId: payment.id,
+          partyId: input.partyId,
+          amount: totalAmount,
+          direction,
+          targetInvoiceId: input.saleInvoiceId || input.purchaseInvoiceId || null,
+          manualAllocations: input.manualAllocations,
+        });
+      } else if (input.saleInvoiceId) {
+        await tx.saleInvoice.update({
+          where: { id: input.saleInvoiceId },
+          data: {
+            paidAmount: { increment: totalAmount },
+            amountPaid: { increment: totalAmount },
+          },
+        });
+        await updateInvoiceSettlementStatus(tx, input.saleInvoiceId, "SALE");
+      } else if (input.purchaseInvoiceId) {
+        await tx.purchaseInvoice.update({
+          where: { id: input.purchaseInvoiceId },
+          data: {
+            paidAmount: { increment: totalAmount },
+            amountPaid: { increment: totalAmount },
+          },
+        });
+        await updateInvoiceSettlementStatus(tx, input.purchaseInvoiceId, "PURCHASE");
       }
 
       // Calculate running party balance and update remainingBalance on payment record

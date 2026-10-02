@@ -1,104 +1,59 @@
-const { PrismaClient, Role, LocationType, PartyType, Unit } = require("@prisma/client");
+const { PrismaClient, Role } = require("@prisma/client");
 const { hash } = require("bcryptjs");
 
 const prisma = new PrismaClient();
 
 async function main() {
-  const passwordHash = await hash(process.env.SEED_OWNER_PASSWORD || "ChangeMe123!", 12);
+  console.log("Starting database clean wipe...");
 
-  await prisma.user.upsert({
-    where: { email: process.env.SEED_OWNER_EMAIL || "owner@example.com" },
-    update: {},
-    create: {
+  // Delete all records in foreign-key safe order
+  await prisma.paymentSplit.deleteMany({});
+  await prisma.payment.deleteMany({});
+  await prisma.ledgerEntry.deleteMany({});
+  await prisma.saleReturnItem.deleteMany({});
+  await prisma.saleReturn.deleteMany({});
+  await prisma.purchaseReturnItem.deleteMany({});
+  await prisma.purchaseReturn.deleteMany({});
+  await prisma.saleInvoiceItem.deleteMany({});
+  await prisma.saleInvoice.deleteMany({});
+  await prisma.deliveryOrderItem.deleteMany({});
+  await prisma.deliveryOrder.deleteMany({});
+  await prisma.purchaseInvoiceItem.deleteMany({});
+  await prisma.purchaseInvoice.deleteMany({});
+  await prisma.purchaseOrderItem.deleteMany({});
+  await prisma.purchaseOrder.deleteMany({});
+  await prisma.stockMovement.deleteMany({});
+  await prisma.warehouseStorageCharge.deleteMany({});
+  await prisma.expense.deleteMany({});
+  await prisma.productPriceHistory.deleteMany({});
+  await prisma.warehouseLot.deleteMany({});
+  await prisma.product.deleteMany({});
+  await prisma.category.deleteMany({});
+  await prisma.quality.deleteMany({});
+  await prisma.party.deleteMany({});
+  await prisma.location.deleteMany({});
+  await prisma.documentSequence.deleteMany({});
+  await prisma.financialYear.deleteMany({});
+  await prisma.appSetting.deleteMany({});
+  await prisma.user.deleteMany({});
+
+  console.log("All data cleared successfully. Seeding ONLY admin credentials...");
+
+  const adminEmail = process.env.SEED_OWNER_EMAIL || "admin@admin.com";
+  const adminPassword = process.env.SEED_OWNER_PASSWORD || "admin123!";
+  const passwordHash = await hash(adminPassword, 12);
+
+  const adminUser = await prisma.user.create({
+    data: {
       name: "Business Owner",
-      email: process.env.SEED_OWNER_EMAIL || "owner@example.com",
+      email: adminEmail,
       passwordHash,
       role: Role.OWNER,
     },
   });
 
-  await prisma.location.upsert({
-    where: { name_type: { name: "Shop", type: LocationType.SHOP } },
-    update: {},
-    create: {
-      name: "Shop",
-      type: LocationType.SHOP,
-      address: "Shop floor",
-    },
-  });
-
-  await prisma.location.upsert({
-    where: { name_type: { name: "Warehouse", type: LocationType.WAREHOUSE } },
-    update: {},
-    create: {
-      name: "Warehouse",
-      type: LocationType.WAREHOUSE,
-      address: "Warehouse",
-    },
-  });
-
-  const categories = ["Writing Paper", "Board", "Newsprint", "Copier"];
-  for (const name of categories) {
-    await prisma.category.upsert({
-      where: { name },
-      update: {},
-      create: { name },
-    });
-  }
-
-  const qualities = ["A Grade", "B Grade", "C Grade"];
-  for (const name of qualities) {
-    await prisma.quality.upsert({
-      where: { name },
-      update: {},
-      create: { name },
-    });
-  }
-
-  await prisma.appSetting.upsert({
-    where: { key: "overdueDays" },
-    update: {},
-    create: { key: "overdueDays", value: process.env.OVERDUE_DAYS || "14" },
-  });
-
-  const existingWalkIn = await prisma.party.findFirst({
-    where: { name: "Walk-in Customer", type: PartyType.CUSTOMER },
-  });
-
-  if (!existingWalkIn) {
-    await prisma.party.create({
-      data: {
-        name: "Walk-in Customer",
-        type: PartyType.CUSTOMER,
-        email: "walkin@internal.local",
-      },
-    });
-  }
-
-  const writing = await prisma.category.findUniqueOrThrow({ where: { name: "Writing Paper" } });
-  const aGrade = await prisma.quality.findUniqueOrThrow({ where: { name: "A Grade" } });
-
-  await prisma.product.upsert({
-    where: { productNo: "P-0001" },
-    update: {},
-    create: {
-      productNo: "P-0001",
-      name: "Sample A4 70 GSM",
-      categoryId: writing.id,
-      qualityId: aGrade.id,
-      unit: Unit.PACKET,
-      length: 21,
-      breadth: 29.7,
-      gsm: 70,
-      packetWeight: (21 * 29.7 * 70) / 15499,
-      reamWeight: (21 * 29.7 * 70) / 3100,
-      costPrice: 100,
-      retailPrice: 140,
-      wholesalePrice: 120,
-      labourCharges: 0,
-      reorderLevel: 10,
-    },
-  });
+  console.log(`Admin user created: ${adminUser.email} (Role: ${adminUser.role})`);
+  console.log("Database reset complete. System is ready for clean testing from scratch.");
 }
 
 main()

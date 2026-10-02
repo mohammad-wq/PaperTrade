@@ -54,7 +54,7 @@ export async function listPartiesAction() {
   });
 }
 
-export async function getPartyDetailsAction(partyId: string) {
+export async function getPartyDetailsAction(partyId: string, filterMode: "REGULAR" | "PARTNERSHIP" | "ALL" = "REGULAR") {
   return runAction("parties.getDetails", async () => {
     await requireSession();
     const party = await prisma.party.findUnique({
@@ -64,18 +64,33 @@ export async function getPartyDetailsAction(partyId: string) {
       throw userError("Party not found.");
     }
 
-    const [balance, entries, payments] = await Promise.all([
-      getPartyBalance(party.id),
+    const ledgerWhere: any = { partyId: party.id };
+    const paymentWhere: any = { partyId: party.id };
+
+    if (filterMode === "REGULAR") {
+      ledgerWhere.isPartnership = false;
+      ledgerWhere.partnershipId = null;
+      paymentWhere.isPartnership = false;
+      paymentWhere.partnershipId = null;
+    } else if (filterMode === "PARTNERSHIP") {
+      ledgerWhere.OR = [{ isPartnership: true }, { partnershipId: { not: null } }];
+      paymentWhere.OR = [{ isPartnership: true }, { partnershipId: { not: null } }];
+    }
+
+    const [regularBalance, partnershipBalance, consolidatedBalance, entries, payments] = await Promise.all([
+      getPartyBalance(party.id, undefined, undefined, "REGULAR"),
+      getPartyBalance(party.id, undefined, undefined, "PARTNERSHIP"),
+      getPartyBalance(party.id, undefined, undefined, "ALL"),
       prisma.ledgerEntry.findMany({
-        where: { partyId: party.id },
+        where: ledgerWhere,
         orderBy: { date: "desc" },
         include: {
           sourceFinancialYear: { select: { label: true } },
         },
-        take: 200,
+        take: 300,
       }),
       prisma.payment.findMany({
-        where: { partyId: party.id },
+        where: paymentWhere,
         orderBy: { date: "desc" },
         include: {
           financialYear: { select: { label: true } },
@@ -86,12 +101,23 @@ export async function getPartyDetailsAction(partyId: string) {
       }),
     ]);
 
+    const activeBalance =
+      filterMode === "REGULAR"
+        ? regularBalance
+        : filterMode === "PARTNERSHIP"
+        ? partnershipBalance
+        : consolidatedBalance;
+
     return {
       party: {
         ...party,
         creditLimit: party.creditLimit ? Number(party.creditLimit) : null,
-        balance,
+        balance: activeBalance,
+        regularBalance,
+        partnershipBalance,
+        consolidatedBalance,
       },
+      filterMode,
       ledgerEntries: entries.map((e) => ({
         id: e.id,
         date: e.date.toISOString(),
@@ -102,6 +128,8 @@ export async function getPartyDetailsAction(partyId: string) {
         referenceId: e.referenceId,
         description: e.description,
         sourceYear: e.sourceFinancialYear?.label || null,
+        isPartnership: Boolean(e.isPartnership || e.partnershipId),
+        partnershipId: e.partnershipId || null,
       })),
       payments: payments.map((p) => ({
         id: p.id,
@@ -112,6 +140,8 @@ export async function getPartyDetailsAction(partyId: string) {
         notes: p.notes,
         financialYearLabel: p.financialYear?.label || null,
         invoiceNo: p.saleInvoice?.invoiceNo || p.purchaseInvoice?.invoiceNo || null,
+        isPartnership: Boolean(p.isPartnership || p.partnershipId),
+        partnershipId: p.partnershipId || null,
       })),
     };
   });
@@ -301,42 +331,47 @@ export async function upsertPartyAction(raw: unknown) {
     const email = input.email?.trim() ? input.email.trim() : null;
     const phone = input.phone?.trim() ? input.phone.trim() : null;
     const address = input.address?.trim() ? input.address.trim() : null;
-    const creditLimit =
-      input.type === PartyType.CUSTOMER && input.creditLimit != null
-        ? Number(input.creditLimit)
-        : null;
+    const isPartner = Boolean(input.isPartner || input.isBeneficiary);
+    let isCustomer = Boolean(input.isCustomer);
+    let isSupplier = Boolean(input.isSupplier);
+
+    // If neither role was set, deduce from type
+    if (!isCustomer && !isSupplier) {
+      if (input.type === PartyType.CUSTOMER) isCustomer = true;
+      if (input.type === PartyType.SUPPLIER) isSupplier = true;
+      if (isPartner) {
+        isCustomer = true;
+        isSupplier = true;
+      }
+    }
+
+    const type = isSupplier && !isCustomer ? PartyType.SUPPLIER : isCustomer && !isSupplier ? PartyType.CUSTOMER : input.type;
+
+    const partyData = {
+      name: input.name.trim(),
+      type,
+      isCustomer,
+      isSupplier,
+      isPartner,
+      isBeneficiary: isPartner,
+      partnerWarehouseId: input.partnerWarehouseId || null,
+      phone,
+      email,
+      address,
+      creditLimit: (isCustomer || type === PartyType.CUSTOMER) && input.creditLimit != null ? Number(input.creditLimit) : null,
+      isActive: Boolean(input.isActive),
+      deletedAt: null,
+    };
 
     let party;
     if (input.id) {
       party = await prisma.party.update({
         where: { id: input.id },
-        data: {
-          name: input.name.trim(),
-          type: input.type,
-          isBeneficiary: Boolean(input.isBeneficiary),
-          partnerWarehouseId: input.partnerWarehouseId || null,
-          phone,
-          email,
-          address,
-          creditLimit,
-          isActive: Boolean(input.isActive),
-          deletedAt: null,
-        },
+        data: partyData,
       });
     } else {
       party = await prisma.party.create({
-        data: {
-          name: input.name.trim(),
-          type: input.type,
-          isBeneficiary: Boolean(input.isBeneficiary),
-          partnerWarehouseId: input.partnerWarehouseId || null,
-          phone,
-          email,
-          address,
-          creditLimit,
-          isActive: Boolean(input.isActive),
-          deletedAt: null,
-        },
+        data: partyData,
       });
     }
 

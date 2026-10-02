@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useMemo, Suspense } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import {
@@ -42,6 +42,13 @@ type PartyData = {
   creditLimit: number | null;
   isActive: boolean;
   balance: number;
+  regularBalance?: number;
+  partnershipBalance?: number;
+  consolidatedBalance?: number;
+  isCustomer?: boolean;
+  isSupplier?: boolean;
+  isPartner?: boolean;
+  isBeneficiary?: boolean;
 };
 
 type LedgerItem = {
@@ -54,6 +61,8 @@ type LedgerItem = {
   referenceId: string;
   description: string;
   sourceYear: string | null;
+  isPartnership?: boolean;
+  partnershipId?: string | null;
 };
 
 type PaymentItem = {
@@ -65,11 +74,28 @@ type PaymentItem = {
   notes: string | null;
   financialYearLabel: string | null;
   invoiceNo: string | null;
+  isPartnership?: boolean;
 };
 
 export default function PartyDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-8 text-center text-xs text-slate-500">
+          <RefreshCw className="h-5 w-5 animate-spin mx-auto mb-2 text-slate-400" />
+          Loading party account details...
+        </div>
+      }
+    >
+      <PartyDetailContent />
+    </Suspense>
+  );
+}
+
+function PartyDetailContent() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
   const partyId = params.id as string;
   const isOwner = session?.user?.role === Role.OWNER;
@@ -79,7 +105,19 @@ export default function PartyDetailPage() {
   const [payments, setPayments] = useState<PaymentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"LEDGER" | "PAYMENTS">("LEDGER");
+  const [filterMode, setFilterMode] = useState<"REGULAR" | "PARTNERSHIP" | "ALL">("REGULAR");
   const [statusMessage, setStatusMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // View mode for party ledger (detailed vs summary)
+  const initialView = searchParams.get("view") === "summary" ? "summary" : "detailed";
+  const [viewMode, setViewMode] = useState<"detailed" | "summary">(initialView);
+
+  const handleToggleView = (mode: "detailed" | "summary") => {
+    setViewMode(mode);
+    const sp = new URLSearchParams(window.location.search);
+    sp.set("view", mode);
+    router.replace(`${window.location.pathname}?${sp.toString()}`);
+  };
 
   // Adjust Balance Modal state
   const [showAdjustModal, setShowAdjustModal] = useState(false);
@@ -91,11 +129,11 @@ export default function PartyDetailPage() {
   const loadData = useCallback(async (isSilent = false) => {
     if (!isSilent) setLoading(true);
     try {
-      const res = await getPartyDetailsAction(partyId);
+      const res = await getPartyDetailsAction(partyId, filterMode);
       if (res.success) {
         setParty(res.data.party as PartyData);
-        setLedgerEntries(res.data.ledgerEntries);
-        setPayments(res.data.payments);
+        setLedgerEntries(res.data.ledgerEntries as LedgerItem[]);
+        setPayments(res.data.payments as PaymentItem[]);
       } else {
         setStatusMessage({ type: "error", text: res.error || "Failed to load party details." });
       }
@@ -104,7 +142,7 @@ export default function PartyDetailPage() {
     } finally {
       if (!isSilent) setLoading(false);
     }
-  }, [partyId]);
+  }, [partyId, filterMode]);
 
   useEffect(() => {
     void loadData();
@@ -152,6 +190,97 @@ export default function PartyDetailPage() {
       return { ...entry, runningBalance: current };
     });
     // Return newest first for display
+    return computed.reverse();
+  }, [ledgerEntries]);
+
+  // Summary Ledger Aggregation: Roll up all line items for an invoice into a single record
+  const summaryVouchersWithBalance = useMemo(() => {
+    const voucherMap = new Map<
+      string,
+      {
+        id: string;
+        date: Date;
+        referenceType: string;
+        referenceId: string;
+        docNo: string;
+        description: string;
+        debit: number;
+        credit: number;
+      }
+    >();
+
+    for (const e of ledgerEntries) {
+      const key = e.referenceId ? `${e.referenceType}:${e.referenceId}` : e.id;
+      const parsedDate = new Date(e.date);
+
+      if (!voucherMap.has(key)) {
+        let tranNo = e.referenceId || "—";
+        if (e.referenceType === "SALE_INVOICE") {
+          const raw = tranNo.replace(/^#/, "");
+          tranNo = raw.startsWith("SV") ? raw : `SV ${raw}`;
+        } else if (e.referenceType === "PURCHASE_INVOICE") {
+          const raw = tranNo.replace(/^#/, "");
+          tranNo = raw.startsWith("PI") || raw.startsWith("PV") ? raw : `PI ${raw}`;
+        }
+
+        let description = "Voucher Transaction";
+        if (e.referenceType === "SALE_INVOICE") {
+          description = "Total Bill Amount";
+        } else if (e.referenceType === "PURCHASE_INVOICE") {
+          description = "Total Purchase Amount";
+        } else if (e.referenceType === "PAYMENT") {
+          const lower = (e.description || "").toLowerCase();
+          if (lower.includes("cheque")) {
+            description = e.debit > 0 ? "Cheque Paid - Invoices Chq" : "Cheque Rcvd - Invoices Chq Rec";
+          } else if (lower.includes("bank")) {
+            description = e.debit > 0 ? "Bank Paid - Invoices Bank" : "Bank Rcvd - Invoices Bank Rec";
+          } else {
+            description = e.debit > 0 ? "Cash Paid - Invoices" : "Cash Rcvd - Invoices Cash Rec";
+          }
+        } else if (e.referenceType === "SALE_RETURN") {
+          description = "Total Bill Return";
+        } else if (e.referenceType === "PURCHASE_RETURN") {
+          description = "Total Purchase Return";
+        } else if (e.description) {
+          description = e.description.split(" • ")[0] || e.description;
+        }
+
+        voucherMap.set(key, {
+          id: e.id,
+          date: parsedDate,
+          referenceType: e.referenceType,
+          referenceId: e.referenceId,
+          docNo: tranNo,
+          description,
+          debit: Number(e.debit) || 0,
+          credit: Number(e.credit) || 0,
+        });
+      } else {
+        const item = voucherMap.get(key)!;
+        item.debit += Number(e.debit) || 0;
+        item.credit += Number(e.credit) || 0;
+      }
+    }
+
+    const sorted = Array.from(voucherMap.values()).sort(
+      (a, b) => a.date.getTime() - b.date.getTime(),
+    );
+
+    let current = 0;
+    const computed = sorted.map((v) => {
+      current += v.debit - v.credit;
+      const drCr = current >= 0 ? "Dr" : "Cr";
+      return {
+        ...v,
+        dateFormatted: formatDate(v.date),
+        runningBalance: current,
+        balanceFormatted: `${Math.abs(current).toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })} ${drCr}`,
+      };
+    });
+
     return computed.reverse();
   }, [ledgerEntries]);
 
@@ -220,15 +349,25 @@ export default function PartyDetailPage() {
           </Link>
 
           <a
-            href={`/api/pdf/reports/party-statement?download=true&partyId=${party.id}`}
+            href={`/api/pdf/reports/party-statement?download=true&partyId=${party.id}&view=${viewMode}`}
             target="_blank"
             rel="noreferrer"
           >
-            <Button variant="outline" size="sm" className="text-xs h-8 border-slate-300 text-rose-700 hover:bg-rose-50">
+            <Button variant="outline" size="sm" className="text-xs h-8 border-slate-300 text-rose-700 hover:bg-rose-50 font-medium">
               <FileText className="h-3.5 w-3.5 mr-1" />
               PDF Statement
             </Button>
           </a>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.print()}
+            className="text-xs h-8 border-slate-300 text-slate-800 hover:bg-slate-50 font-medium"
+          >
+            <Printer className="h-3.5 w-3.5 mr-1" />
+            Print Statement
+          </Button>
 
           <a href={`/api/excel/reports/party-statement?partyId=${party.id}`} download>
             <Button variant="outline" size="sm" className="text-xs h-8 border-slate-300 text-emerald-700 hover:bg-emerald-50">
@@ -262,6 +401,34 @@ export default function PartyDetailPage() {
         </div>
       )}
 
+      {/* Equity Partner Notice & Link */}
+      {(party.isPartner || party.isBeneficiary) && (
+        <div className="bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/40 dark:border-indigo-800 rounded-lg p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded bg-indigo-600 text-white shrink-0">
+              <Building2 className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="font-bold text-indigo-950 dark:text-indigo-200 flex items-center gap-2">
+                <span>Co-Owner & Equity Partner (Person B)</span>
+                <span className="bg-indigo-200/80 text-indigo-900 dark:bg-indigo-900 dark:text-indigo-200 text-[10px] px-1.5 py-0.5 rounded font-mono">
+                  Dual-Role Supported
+                </span>
+              </div>
+              <p className="text-slate-600 dark:text-slate-400 mt-0.5">
+                Standard invoices/bills are ledger-isolated below. Dedicated intakes, stock pulls, and profit distributions are managed in the Partnership Hub.
+              </p>
+            </div>
+          </div>
+          <Link href={`/partnerships?partnerId=${party.id}`}>
+            <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs whitespace-nowrap h-8">
+              Open Partnership Hub
+              <ArrowLeft className="h-3.5 w-3.5 ml-1.5 rotate-180" />
+            </Button>
+          </Link>
+        </div>
+      )}
+
       {/* Profile Overview Card */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Left: Contact Info */}
@@ -271,15 +438,23 @@ export default function PartyDetailPage() {
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-bold text-slate-900">{party.name}</h1>
-                  <span
-                    className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                      isCustomer
-                        ? "bg-purple-100 text-purple-800 border border-purple-200"
-                        : "bg-blue-100 text-blue-800 border border-blue-200"
-                    }`}
-                  >
-                    {party.type}
-                  </span>
+                  <div className="flex flex-wrap gap-1 items-center">
+                    {(party.isPartner || party.isBeneficiary) && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                        Equity Partner (Person B)
+                      </span>
+                    )}
+                    {(party.isCustomer || party.type === PartyType.CUSTOMER) && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        Customer
+                      </span>
+                    )}
+                    {(party.isSupplier || party.type === PartyType.SUPPLIER) && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                        Supplier
+                      </span>
+                    )}
+                  </div>
                   {!party.isActive && (
                     <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px] font-bold">
                       INACTIVE
@@ -322,7 +497,11 @@ export default function PartyDetailPage() {
           <CardContent className="p-4 flex flex-col justify-between h-full">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                Current Ledger Balance
+                {filterMode === "REGULAR"
+                  ? "Regular Ledger Balance (Isolated)"
+                  : filterMode === "PARTNERSHIP"
+                  ? "Partnership Ledger Balance"
+                  : "Consolidated Ledger Balance"}
               </p>
               <div className="mt-1">
                 <span className="text-2xl font-bold font-mono text-slate-900">
@@ -352,6 +531,15 @@ export default function PartyDetailPage() {
                     : "(Debit Balance)"}
                 </span>
               </div>
+
+              {(party.isPartner || party.isBeneficiary) && (
+                <div className="mt-2 pt-2 border-t border-slate-200/60 grid grid-cols-2 gap-1 text-[11px] font-mono">
+                  <div className="text-slate-500">Regular Balance:</div>
+                  <div className="text-right font-bold text-slate-800">PKR {(party.regularBalance ?? 0).toLocaleString()}</div>
+                  <div className="text-slate-500">Partnership Balance:</div>
+                  <div className="text-right font-bold text-indigo-600">PKR {(party.partnershipBalance ?? 0).toLocaleString()}</div>
+                </div>
+              )}
             </div>
 
             {isCustomer && (
@@ -366,39 +554,220 @@ export default function PartyDetailPage() {
         </Card>
       </div>
 
-      {/* Tabs */}
-      <div className="flex items-center border-b border-slate-200 gap-6">
-        <button
-          onClick={() => setActiveTab("LEDGER")}
-          className={`pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 ${
-            activeTab === "LEDGER"
-              ? "border-slate-900 text-slate-900"
-              : "border-transparent text-slate-500 hover:text-slate-800"
-          }`}
-        >
-          <span className="flex items-center gap-2">
-            <FileText className="h-4 w-4" />
-            Ledger & Transactions ({ledgerEntries.length})
+      {/* 3-Way Isolation Filter Tabs (Particularly essential for Person B / Dual-Role) */}
+      {(party.isPartner || party.isBeneficiary) && activeTab === "LEDGER" && (
+        <div className="bg-slate-100 dark:bg-slate-800/60 p-2 rounded-lg border border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 px-2 uppercase tracking-tight">
+              Ledger Isolation:
+            </span>
+            <button
+              type="button"
+              onClick={() => setFilterMode("REGULAR")}
+              className={`px-3 py-1 rounded text-xs font-bold transition-all ${
+                filterMode === "REGULAR"
+                  ? "bg-white text-emerald-800 dark:bg-slate-900 dark:text-emerald-300 shadow-xs border border-emerald-300 dark:border-emerald-700"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 hover:bg-white/50"
+              }`}
+            >
+              Regular Transactions (Default)
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterMode("PARTNERSHIP")}
+              className={`px-3 py-1 rounded text-xs font-bold transition-all ${
+                filterMode === "PARTNERSHIP"
+                  ? "bg-white text-indigo-800 dark:bg-slate-900 dark:text-indigo-300 shadow-xs border border-indigo-300 dark:border-indigo-700"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 hover:bg-white/50"
+              }`}
+            >
+              Partnership Transactions
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterMode("ALL")}
+              className={`px-3 py-1 rounded text-xs font-bold transition-all ${
+                filterMode === "ALL"
+                  ? "bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 shadow-xs border border-slate-300 dark:border-slate-600"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 hover:bg-white/50"
+              }`}
+            >
+              All (Consolidated)
+            </button>
+          </div>
+          <span className="text-[10px] text-slate-500 font-sans italic pr-2">
+            Default view isolates regular transactions from partnership capital accounts
           </span>
-        </button>
+        </div>
+      )}
 
-        <button
-          onClick={() => setActiveTab("PAYMENTS")}
-          className={`pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 ${
-            activeTab === "PAYMENTS"
-              ? "border-blue-700 text-blue-700"
-              : "border-transparent text-slate-500 hover:text-slate-800"
-          }`}
-        >
-          <span className="flex items-center gap-2">
-            <Receipt className="h-4 w-4" />
-            Payments & Receipts ({payments.length})
-          </span>
-        </button>
+      {/* Tabs & View Mode Switch */}
+      <div className="flex flex-wrap items-center justify-between border-b border-slate-200 gap-3 pb-0">
+        <div className="flex items-center gap-6">
+          <button
+            onClick={() => setActiveTab("LEDGER")}
+            className={`pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 ${
+              activeTab === "LEDGER"
+                ? "border-slate-900 text-slate-900"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Ledger & Transactions ({ledgerEntries.length})
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("PAYMENTS")}
+            className={`pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 ${
+              activeTab === "PAYMENTS"
+                ? "border-blue-700 text-blue-700"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Receipt className="h-4 w-4" />
+              Payments & Receipts ({payments.length})
+            </span>
+          </button>
+        </div>
+
+        {activeTab === "LEDGER" && (
+          <div className="flex items-center p-0.5 mb-2 bg-slate-100 dark:bg-slate-800 rounded-md border border-slate-200 dark:border-slate-700 print:hidden">
+            <button
+              type="button"
+              onClick={() => handleToggleView("detailed")}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded transition-all ${
+                viewMode === "detailed"
+                  ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+              }`}
+            >
+              <FileText className="h-3 w-3" />
+              Detailed (Audit)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleToggleView("summary")}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded transition-all ${
+                viewMode === "summary"
+                  ? "bg-indigo-600 text-white shadow-xs font-bold"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+              }`}
+            >
+              <FileSpreadsheet className="h-3 w-3" />
+              Summary (Statement)
+            </button>
+          </div>
+        )}
       </div>
 
       {/* TAB 1: LEDGER ENTRIES */}
-      {activeTab === "LEDGER" && (
+      {activeTab === "LEDGER" && viewMode === "summary" && (
+        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-xs print:border-none print:shadow-none">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs print:text-[9pt]">
+              <thead>
+                <tr className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300 print:bg-slate-100 print:border-black">
+                  <th className="py-2.5 px-3 border-r border-slate-200 w-28 print:border-black">Date</th>
+                  <th className="py-2.5 px-3 border-r border-slate-200 w-36 print:border-black">Tran. No.</th>
+                  <th className="py-2.5 px-3 border-r border-slate-200 min-w-[240px] print:border-black">Description</th>
+                  <th className="py-2.5 px-3 border-r border-slate-200 text-right w-32 font-bold text-emerald-800 print:border-black print:text-black">
+                    Debit (PKR)
+                  </th>
+                  <th className="py-2.5 px-3 border-r border-slate-200 text-right w-32 font-bold text-amber-800 print:border-black print:text-black">
+                    Credit (PKR)
+                  </th>
+                  <th className="py-2.5 px-3 text-right w-36 font-bold text-slate-900 print:text-black">
+                    Balance (PKR)
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-mono">
+                {/* Row 1: Balance Brought Forward */}
+                <tr className="bg-amber-50/50 font-semibold border-b border-slate-200 print:bg-slate-50">
+                  <td className="py-2.5 px-3 border-r border-slate-200 text-slate-500 print:border-black">—</td>
+                  <td className="py-2.5 px-3 border-r border-slate-200 font-bold text-slate-700 print:border-black">B/F</td>
+                  <td className="py-2.5 px-3 border-r border-slate-200 font-sans font-bold text-slate-900 print:border-black">
+                    Balance Brought Forward ...
+                  </td>
+                  <td className="py-2.5 px-3 border-r border-slate-200 text-right print:border-black">—</td>
+                  <td className="py-2.5 px-3 border-r border-slate-200 text-right print:border-black">—</td>
+                  <td className="py-2.5 px-3 text-right font-bold text-slate-900 print:text-black">
+                    PKR 0.00
+                  </td>
+                </tr>
+
+                {summaryVouchersWithBalance.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-slate-400 font-sans">
+                      No voucher transactions recorded for this account.
+                    </td>
+                  </tr>
+                ) : (
+                  summaryVouchersWithBalance.map((row) => (
+                    <tr key={row.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-2 px-3 border-r border-slate-200 whitespace-nowrap text-slate-700 print:border-black text-[11px]">
+                        {row.dateFormatted}
+                      </td>
+                      <td className="py-2 px-3 border-r border-slate-200 whitespace-nowrap font-bold text-slate-800 print:border-black text-[11px]">
+                        {row.docNo}
+                      </td>
+                      <td className="py-2 px-3 border-r border-slate-200 font-sans font-medium text-slate-800 print:border-black">
+                        {row.description}
+                      </td>
+                      <td className="py-2 px-3 border-r border-slate-200 text-right whitespace-nowrap font-bold text-emerald-700 print:border-black print:text-black">
+                        {row.debit > 0
+                          ? row.debit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                          : "—"}
+                      </td>
+                      <td className="py-2 px-3 border-r border-slate-200 text-right whitespace-nowrap font-bold text-amber-700 print:border-black print:text-black">
+                        {row.credit > 0
+                          ? row.credit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                          : "—"}
+                      </td>
+                      <td className="py-2 px-3 text-right whitespace-nowrap font-bold text-slate-900 print:text-black">
+                        {row.balanceFormatted}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+              <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-300 font-mono text-xs print:bg-slate-100 print:border-black">
+                <tr className="border-b border-black">
+                  <td colSpan={3} className="py-2.5 px-3 text-right font-sans uppercase font-bold print:border-black">
+                    Totals PKR:
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-emerald-800 print:text-black print:border-black">
+                    PKR{" "}
+                    {summaryVouchersWithBalance
+                      .reduce((s, r) => s + r.debit, 0)
+                      .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-amber-800 print:text-black print:border-black">
+                    PKR{" "}
+                    {summaryVouchersWithBalance
+                      .reduce((s, r) => s + r.credit, 0)
+                      .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-slate-900 print:text-black font-extrabold">
+                    PKR{" "}
+                    {Math.abs(party.balance).toLocaleString(undefined, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}{" "}
+                    {party.balance >= 0 ? "Dr" : "Cr"}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 1: LEDGER ENTRIES (DETAILED VIEW) */}
+      {activeTab === "LEDGER" && viewMode === "detailed" && (
         <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-xs">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
@@ -427,9 +796,16 @@ export default function PartyDetailPage() {
                         {formatDate(row.date)}
                       </td>
                       <td className="py-2.5 px-3">
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-100 text-slate-800 border border-slate-200">
-                          {row.referenceType}
-                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-100 text-slate-800 border border-slate-200">
+                            {row.referenceType}
+                          </span>
+                          {row.isPartnership && (
+                            <span className="inline-flex items-center px-1 py-0.2 rounded text-[9px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                              Partnership
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-2.5 px-3 font-mono text-slate-700">
                         {row.referenceId}

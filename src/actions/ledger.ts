@@ -10,6 +10,7 @@ export async function listLedgerEntriesAction(filters?: {
   partyId?: string;
   accountType?: AccountType | "ALL";
   referenceType?: string | "ALL";
+  partnershipFilter?: "REGULAR" | "PARTNERSHIP" | "ALL";
   startDate?: string;
   endDate?: string;
   limit?: number;
@@ -28,6 +29,12 @@ export async function listLedgerEntriesAction(filters?: {
     }
     if (filters?.referenceType && filters.referenceType !== "ALL") {
       where.referenceType = filters.referenceType;
+    }
+    if (filters?.partnershipFilter === "REGULAR") {
+      where.isPartnership = false;
+      where.partnershipId = null;
+    } else if (filters?.partnershipFilter === "PARTNERSHIP") {
+      where.OR = [{ isPartnership: true }, { partnershipId: { not: null } }];
     }
 
     // 1. Calculate opening balance prior to startDate if startDate is supplied

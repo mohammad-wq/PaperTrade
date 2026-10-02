@@ -3,6 +3,8 @@ import { getCachedCategories, getCachedQualities } from "@/lib/cached-lookups";
 import ProductsClient from "./products-client";
 import { Suspense } from "react";
 
+import { serializeDecimals } from "@/lib/serialization";
+
 export const dynamic = "force-dynamic";
 
 export default async function ProductsPage() {
@@ -17,9 +19,9 @@ export default async function ProductsPage() {
   return (
     <Suspense fallback={<div className="p-8 text-center text-xs text-slate-500 font-mono">Loading Products Catalog...</div>}>
       <ProductsClient
-        initialProducts={products as any}
-        initialCategories={categories}
-        initialQualities={qualities}
+        initialProducts={serializeDecimals(products) as any}
+        initialCategories={serializeDecimals(categories) as any}
+        initialQualities={serializeDecimals(qualities) as any}
       />
     </Suspense>
   );

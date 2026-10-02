@@ -58,3 +58,22 @@ export async function updateSettingsAction(raw: unknown) {
     return { success: true };
   });
 }
+
+export async function getBusinessInfoAction() {
+  return runAction("settings.getBusinessInfo", async () => {
+    await requireSession();
+    const settings = await prisma.appSetting.findMany({
+      where: {
+        key: { in: ["businessName", "businessAddress", "businessPhone", "businessEmail"] },
+      },
+    });
+    const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
+
+    return {
+      businessName: map.businessName || process.env.BUSINESS_NAME || "Sughra Trader",
+      businessAddress: map.businessAddress || process.env.BUSINESS_ADDRESS || "",
+      businessPhone: map.businessPhone || process.env.BUSINESS_PHONE || "",
+      businessEmail: map.businessEmail || process.env.BUSINESS_EMAIL || "",
+    };
+  });
+}

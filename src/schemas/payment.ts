@@ -16,6 +16,17 @@ export const paymentSchema = z
     amount: z.coerce.number().gt(0, "Amount must be greater than 0"),
     method: z.nativeEnum(PaymentMethod).default(PaymentMethod.CASH),
     splits: z.array(paymentSplitItemSchema).optional(),
+    isPartnership: z.boolean().default(false),
+    partnershipId: z.string().optional().nullable(),
+    autoAllocate: z.boolean().default(true).optional(),
+    manualAllocations: z
+      .array(
+        z.object({
+          invoiceId: z.string().min(1),
+          amount: z.coerce.number().min(0),
+        })
+      )
+      .optional(),
     date: z.coerce.date(),
     notes: z.string().trim().max(500).optional().or(z.literal("")),
   })

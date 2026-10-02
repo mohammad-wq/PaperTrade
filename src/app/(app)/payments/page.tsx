@@ -36,6 +36,7 @@ import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf } from "@/lib/print-pdf";
 import { handleFormEnterKeyDown } from "@/lib/keyboard-nav";
+import { simulateFifoAllocation, InvoiceAllocationItem } from "@/lib/payment-allocation-calc";
 
 type PaymentSplitRow = {
   id: string;
@@ -59,6 +60,12 @@ type PaymentRow = {
   purchaseInvoice?: { id: string; invoiceNo: string; sequenceNo?: number | null; totalAmount?: number } | null;
   financialYear?: { id: string; label: string; isActive?: boolean } | null;
   splits: PaymentSplitRow[];
+  allocations?: Array<{
+    id: string;
+    amount: number;
+    saleInvoice?: { id: string; invoiceNo: string; sequenceNo?: number | null; totalAmount?: number; paymentStatus?: string } | null;
+    purchaseInvoice?: { id: string; invoiceNo: string; sequenceNo?: number | null; totalAmount?: number; paymentStatus?: string } | null;
+  }>;
 };
 
 type PartyOption = {
@@ -67,6 +74,9 @@ type PartyOption = {
   type: PartyType;
   balance: number;
   phone?: string | null;
+  isPartner?: boolean;
+  isCustomer?: boolean;
+  isSupplier?: boolean;
 };
 
 type InvoiceOption = {
@@ -77,7 +87,12 @@ type InvoiceOption = {
   supplierId?: string;
   totalAmount: number;
   amountPaid?: number;
+  paidAmount?: number;
+  balanceAmount?: number;
   balanceDue?: number;
+  paymentStatus?: string;
+  date?: string | Date;
+  createdAt?: string | Date;
 };
 
 type SplitEntry = {
@@ -135,6 +150,22 @@ export default function PaymentsPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isDialogOpen]);
 
+  // Support URL search parameters ?direction=IN/OUT and ?action=new
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const dir = params.get("direction");
+      const act = params.get("action");
+      if (dir === "IN" || dir === "OUT") {
+        setDirectionFilter(dir);
+        setDirection(dir);
+      }
+      if (act === "new") {
+        setIsDialogOpen(true);
+      }
+    }
+  }, []);
+
   // Form state
   const [direction, setDirection] = useState<"IN" | "OUT">("IN");
   const [partyId, setPartyId] = useState("");
@@ -145,9 +176,14 @@ export default function PaymentsPage() {
     return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
   });
   const [notes, setNotes] = useState("");
+  const [isPartnership, setIsPartnership] = useState(false);
   const [splits, setSplits] = useState<SplitEntry[]>([
     { method: PaymentMethod.CASH, amount: "", reference: "" },
   ]);
+
+  // Auto-allocation state
+  const [autoAllocate, setAutoAllocate] = useState(true);
+  const [manualAllocations, setManualAllocations] = useState<Record<string, number | "">>({});
 
   // Expense dialog state
   const [expenseDescription, setExpenseDescription] = useState("");
@@ -204,10 +240,10 @@ export default function PaymentsPage() {
   const candidateInvoices = useMemo(() => {
     if (!selectedParty) return [];
     const sales = saleInvoices
-      .filter((i) => i.customerId === selectedParty.id)
+      .filter((i) => i.customerId === selectedParty.id && (i.balanceDue == null || i.balanceDue > 0))
       .map((i) => ({ ...i, invType: "SALE" as const }));
     const purchases = purchaseInvoices
-      .filter((i) => i.supplierId === selectedParty.id)
+      .filter((i) => i.supplierId === selectedParty.id && (i.balanceDue == null || i.balanceDue > 0))
       .map((i) => ({ ...i, invType: "PURCHASE" as const }));
 
     if (direction === "IN") {
@@ -222,6 +258,68 @@ export default function PaymentsPage() {
   const totalSplitAmount = useMemo(() => {
     return splits.reduce((sum, s) => sum + (typeof s.amount === "number" ? s.amount : 0), 0);
   }, [splits]);
+
+  const partyCandidateInvoices = useMemo<InvoiceAllocationItem[]>(() => {
+    if (!selectedParty) return [];
+    const relevantInvoices = candidateInvoices.filter((inv) =>
+      direction === "IN" ? inv.invType === "SALE" : inv.invType === "PURCHASE"
+    );
+
+    const mapped: InvoiceAllocationItem[] = relevantInvoices.map((inv: any) => {
+      const total = Number(inv.totalAmount);
+      const paid = Number(inv.paidAmount ?? inv.amountPaid ?? 0);
+      const rawDue =
+        inv.balanceAmount != null && Number(inv.balanceAmount) > 0
+          ? Number(inv.balanceAmount)
+          : inv.balanceDue != null && inv.balanceDue > 0
+          ? Number(inv.balanceDue)
+          : Math.max(0, total - paid);
+
+      return {
+        invoiceId: inv.id,
+        invoiceNo: inv.invoiceNo,
+        sequenceNo: inv.sequenceNo,
+        date: inv.date || new Date(),
+        invType: inv.invType,
+        totalAmount: total,
+        currentPaid: paid,
+        totalDue: Math.max(0, rawDue),
+        allocatedNow: 0,
+        newBalance: Math.max(0, rawDue),
+        newStatus: rawDue <= 0.001 ? "PAID" : paid > 0 ? "PARTIAL" : "UNPAID",
+      };
+    }).filter((inv) => inv.totalDue > 0.001);
+
+    // FIFO order: oldest date first
+    mapped.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    return mapped;
+  }, [candidateInvoices, selectedParty, direction]);
+
+  const allocationPreview = useMemo(() => {
+    if (partyCandidateInvoices.length === 0 || totalSplitAmount <= 0) {
+      return {
+        allocations: [],
+        totalAllocated: 0,
+        unallocatedCredit: totalSplitAmount,
+      };
+    }
+
+    if (!autoAllocate) {
+      const manualList = Object.entries(manualAllocations)
+        .filter(([_, amt]) => typeof amt === "number" && amt > 0)
+        .map(([invId, amt]) => ({ invoiceId: invId, amount: Number(amt) }));
+      return simulateFifoAllocation(partyCandidateInvoices, totalSplitAmount, invoiceId || null, manualList);
+    }
+
+    return simulateFifoAllocation(partyCandidateInvoices, totalSplitAmount, invoiceId || null);
+  }, [partyCandidateInvoices, totalSplitAmount, autoAllocate, manualAllocations, invoiceId]);
+
+  function handleManualAllocChange(invId: string, val: string | number) {
+    setManualAllocations((prev) => ({
+      ...prev,
+      [invId]: val === "" ? "" : Number(val),
+    }));
+  }
 
   function handleInvoiceSelect(invId: string) {
     setInvoiceId(invId);
@@ -253,6 +351,11 @@ export default function PaymentsPage() {
   const filteredPayments = useMemo(() => {
     const q = query.trim().toLowerCase();
     return payments.filter((p) => {
+      // Hide automatic payments created at purchase invoice creation time
+      if (p.purchaseInvoice && p.notes && p.notes.toLowerCase().includes("payment for purchase invoice")) {
+        return false;
+      }
+
       // Financial year filter
       if (yearFilter === "CURRENT" && p.financialYear && p.financialYear.isActive === false) {
         return false;
@@ -298,6 +401,7 @@ export default function PaymentsPage() {
     setEditingPaymentId(payment.id);
     setDirection((payment.direction || (payment.party.type === PartyType.CUSTOMER ? "IN" : "OUT")) as "IN" | "OUT");
     setPartyId(payment.party.id);
+    setIsPartnership(Boolean((payment as any).isPartnership));
     setInvoiceId(
       payment.saleInvoice?.id || payment.purchaseInvoice?.id || ""
     );
@@ -312,6 +416,22 @@ export default function PaymentsPage() {
           }))
         : [{ method: PaymentMethod.CASH, amount: payment.amount, reference: "" }],
     );
+
+    if (payment.allocations && payment.allocations.length > 0) {
+      const initialManual: Record<string, number> = {};
+      payment.allocations.forEach((a) => {
+        const invId = a.saleInvoice?.id || a.purchaseInvoice?.id;
+        if (invId) {
+          initialManual[invId] = Number(a.amount);
+        }
+      });
+      setManualAllocations(initialManual);
+      setAutoAllocate(false);
+    } else {
+      setManualAllocations({});
+      setAutoAllocate(true);
+    }
+
     setIsDialogOpen(true);
     setFormError(null);
   }
@@ -376,8 +496,16 @@ export default function PaymentsPage() {
         direction,
         saleInvoiceId: isSaleInv ? invoiceId : null,
         purchaseInvoiceId: isPurchaseInv ? invoiceId : null,
+        isPartnership,
+        partnershipId: isPartnership ? partyId : undefined,
         amount: totalSplitAmount,
         method: splits[0].method,
+        autoAllocate,
+        manualAllocations: !autoAllocate
+          ? Object.entries(manualAllocations)
+              .filter(([_, amt]) => typeof amt === "number" && amt > 0)
+              .map(([invId, amt]) => ({ invoiceId: invId, amount: Number(amt) }))
+          : undefined,
         splits: splits.map((s) => ({
           method: s.method,
           amount: Number(s.amount),
@@ -397,6 +525,9 @@ export default function PaymentsPage() {
         setEditingPaymentId(null);
         setPartyId("");
         setInvoiceId("");
+        setIsPartnership(false);
+        setAutoAllocate(true);
+        setManualAllocations({});
         const now = new Date();
         const pad = (n: number) => String(n).padStart(2, "0");
         setPaymentDate(`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`);
@@ -665,7 +796,14 @@ export default function PaymentsPage() {
                       </div>
                     </td>
                     <td className="py-2 px-3">
-                      <div className="font-semibold text-slate-900 dark:text-slate-100">{p.party.name}</div>
+                      <div className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                        <span>{p.party.name}</span>
+                        {(p as any).isPartnership && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
+                            Partnership
+                          </span>
+                        )}
+                      </div>
                       <div className="text-[10px] text-slate-400">{p.party.type}</div>
                     </td>
                     <td className="py-2 px-3 text-center whitespace-nowrap">
@@ -679,8 +817,32 @@ export default function PaymentsPage() {
                         </span>
                       )}
                     </td>
-                    <td className="py-2 px-3 max-w-[200px]">
-                      {p.saleInvoice ? (
+                    <td className="py-2 px-3 max-w-[240px]">
+                      {p.allocations && p.allocations.length > 0 ? (
+                        <div className="flex flex-col gap-1">
+                          <div className="flex flex-wrap gap-1">
+                            {p.allocations.map((a) => {
+                              const inv = a.saleInvoice || a.purchaseInvoice;
+                              const prefix = a.saleInvoice ? "Est" : "Bill";
+                              const no = inv ? formatSequenceDisplay(inv.sequenceNo, inv.invoiceNo) : "";
+                              return (
+                                <span
+                                  key={a.id}
+                                  className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
+                                  title={`Allocated PKR ${Number(a.amount).toLocaleString()} against ${prefix} #${no}`}
+                                >
+                                  <strong>{prefix} #{no}</strong>: {Number(a.amount).toLocaleString()}
+                                </span>
+                              );
+                            })}
+                          </div>
+                          {p.notes && (
+                            <div className="text-[10px] text-slate-500 truncate" title={p.notes}>
+                              &quot;{p.notes}&quot;
+                            </div>
+                          )}
+                        </div>
+                      ) : p.saleInvoice ? (
                         <span className="text-emerald-800 font-medium">
                           Estimate #{formatSequenceDisplay(p.saleInvoice.sequenceNo, p.saleInvoice.invoiceNo)}
                         </span>
@@ -691,7 +853,7 @@ export default function PaymentsPage() {
                       ) : (
                         <span className="text-slate-400 italic">On Account Settlement</span>
                       )}
-                      {p.notes && (
+                      {(!p.allocations || p.allocations.length === 0) && p.notes && (
                         <div className="text-[10px] text-slate-500 truncate" title={p.notes}>
                           &quot;{p.notes}&quot;
                         </div>
@@ -871,8 +1033,8 @@ export default function PaymentsPage() {
                       id: p.id,
                       label: p.name,
                       sublabel: `${p.type} • Bal: PKR ${Math.abs(p.balance).toLocaleString()} (${balLabel})`,
-                      badge: p.type === PartyType.CUSTOMER ? "Customer" : "Supplier",
-                      badgeColor: p.type === PartyType.CUSTOMER ? "green" : "amber",
+                      badge: p.isPartner ? "Partner" : p.type === PartyType.CUSTOMER ? "Customer" : "Supplier",
+                      badgeColor: p.isPartner ? "sky" : p.type === PartyType.CUSTOMER ? "green" : "amber",
                     };
                   })}
                   value={partyId}
@@ -925,13 +1087,34 @@ export default function PaymentsPage() {
                     )}
                   </div>
                 )}
+
+                {/* Partnership toggle if party is a partner */}
+                {selectedParty?.isPartner && (
+                  <div className="p-2.5 rounded-lg border border-purple-200 bg-purple-50 dark:bg-purple-950/30 flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="isPartnershipPay" className="text-xs font-semibold text-purple-900 dark:text-purple-300 cursor-pointer">
+                        Partnership Transaction
+                      </Label>
+                      <p className="text-[10px] text-purple-700 dark:text-purple-400">
+                        Isolate this voucher to Person B&apos;s Partnership Capital & Settlements
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      id="isPartnershipPay"
+                      checked={isPartnership}
+                      onChange={(e) => setIsPartnership(e.target.checked)}
+                      className="h-4 w-4 rounded text-purple-600 focus:ring-purple-500 cursor-pointer"
+                    />
+                  </div>
+                )}
               </div>
 
-              {/* Optional Linked Invoice */}
+              {/* Optional Linked Invoice / Priority Target */}
               {candidateInvoices.length > 0 && (
                 <div className="space-y-1">
                   <Label htmlFor="payinvoice" className="text-xs font-semibold">
-                    Link to Specific Invoice / Bill <span className="text-slate-400 font-normal text-xs">(Optional)</span>
+                    Target Specific Invoice <span className="text-slate-400 font-normal text-xs">(Optional — Priority Settle)</span>
                   </Label>
                   <select
                     id="payinvoice"
@@ -939,13 +1122,18 @@ export default function PaymentsPage() {
                     onChange={(e) => handleInvoiceSelect(e.target.value)}
                     className="w-full rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs"
                   >
-                    <option value="">General account payment (no invoice)</option>
+                    <option value="">General account payment (FIFO auto-settlement across all open invoices)</option>
                     {candidateInvoices.map((inv) => (
                       <option key={inv.id} value={inv.id}>
                         [{inv.invType === "SALE" ? "Estimate" : "Purchase Bill"}] #{formatSequenceDisplay(inv.sequenceNo, inv.invoiceNo)} — Total: PKR {inv.totalAmount.toLocaleString()} {inv.balanceDue != null ? `(Bal: PKR ${inv.balanceDue.toLocaleString()})` : ""}
                       </option>
                     ))}
                   </select>
+                  {invoiceId && (
+                    <p className="text-[11px] text-sky-600 dark:text-sky-400">
+                      Targeted settlement: This invoice will be settled first up to its due amount. Any remaining payment will overflow to the next oldest open invoices via FIFO.
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -1071,6 +1259,162 @@ export default function PaymentsPage() {
                   </span>
                 </div>
               </div>
+
+              {/* Automated FIFO Settlement & Allocation Preview */}
+              {partyCandidateInvoices.length > 0 && (
+                <div className="space-y-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/60 p-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="autoAllocateToggle"
+                        checked={autoAllocate}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setAutoAllocate(checked);
+                          if (checked) {
+                            setManualAllocations({});
+                          }
+                        }}
+                        className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                      />
+                      <label htmlFor="autoAllocateToggle" className="text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer select-none">
+                        Auto-allocate via FIFO (Settles oldest open invoices first)
+                      </label>
+                    </div>
+                    <span className={cn(
+                      "text-[10px] font-semibold px-2 py-0.5 rounded-full border",
+                      autoAllocate
+                        ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800"
+                        : "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800"
+                    )}>
+                      {autoAllocate ? "FIFO Auto-Settlement Active" : "Manual Override Mode"}
+                    </span>
+                  </div>
+
+                  {totalSplitAmount <= 0 ? (
+                    <div className="rounded-lg border border-dashed border-slate-200 dark:border-slate-800 p-3 text-center text-xs text-slate-500">
+                      Enter payment amount above to view real-time invoice settlement preview
+                    </div>
+                  ) : (
+                    <>
+                      <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-750 bg-white dark:bg-slate-900 shadow-xs">
+                        <table className="w-full text-xs text-left border-collapse">
+                          <thead>
+                            <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/60 text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+                              <th className="py-2 px-2.5">Invoice #</th>
+                              <th className="py-2 px-2.5">Date</th>
+                              <th className="py-2 px-2.5 text-right">Total Due</th>
+                              <th className="py-2 px-2.5 text-right">Allocated Now</th>
+                              <th className="py-2 px-2.5 text-center">New Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                            {partyCandidateInvoices.map((inv) => {
+                              const previewItem = allocationPreview.allocations.find((a) => a.invoiceId === inv.invoiceId);
+                              const allocatedAmt = previewItem ? previewItem.allocatedNow : 0;
+                              const isPaid = previewItem?.newStatus === "PAID";
+                              const isPartial = previewItem?.newStatus === "PARTIAL";
+
+                              return (
+                                <tr key={inv.invoiceId} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
+                                  <td className="py-2 px-2.5 font-mono font-medium text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                                    {inv.invType === "SALE" ? "Estimate" : "Bill"} #{formatSequenceDisplay(inv.sequenceNo, inv.invoiceNo)}
+                                    {invoiceId === inv.invoiceId && (
+                                      <span className="ml-1.5 text-[9px] px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 font-sans font-bold">
+                                        Targeted
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-2 px-2.5 text-slate-500 font-mono text-[11px] whitespace-nowrap">
+                                    {new Date(inv.date).toLocaleDateString()}
+                                  </td>
+                                  <td className="py-2 px-2.5 text-right font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                                    PKR {inv.totalDue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </td>
+                                  <td className="py-1.5 px-2.5 text-right whitespace-nowrap">
+                                    {autoAllocate ? (
+                                      <span className={cn(
+                                        "font-mono font-bold text-xs",
+                                        allocatedAmt > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-slate-400"
+                                      )}>
+                                        {allocatedAmt > 0
+                                          ? `PKR ${allocatedAmt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                          : "0.00"}
+                                      </span>
+                                    ) : (
+                                      <div className="flex items-center justify-end gap-1">
+                                        <Input
+                                          type="number"
+                                          min="0"
+                                          max={inv.totalDue}
+                                          step="any"
+                                          value={manualAllocations[inv.invoiceId] ?? ""}
+                                          onChange={(e) => handleManualAllocChange(inv.invoiceId, e.target.value)}
+                                          placeholder="0.00"
+                                          className="h-7 w-28 text-right text-xs font-mono"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => handleManualAllocChange(inv.invoiceId, inv.totalDue)}
+                                          className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium"
+                                          title="Allocate full due amount"
+                                        >
+                                          Full
+                                        </button>
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="py-2 px-2.5 text-center whitespace-nowrap">
+                                    {isPaid ? (
+                                      <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                                        <CheckCircle2 className="h-2.5 w-2.5" /> PAID
+                                      </span>
+                                    ) : isPartial ? (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                                        PARTIAL
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-medium bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                                        UNPAID
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {/* Allocation Summary Bar */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs pt-1 border-t border-slate-200/80 dark:border-slate-800">
+                        <div className="flex items-center gap-3">
+                          <span className="text-slate-600 dark:text-slate-400">
+                            Total Allocated:{" "}
+                            <strong className="text-emerald-700 dark:text-emerald-400 font-mono">
+                              PKR {allocationPreview.totalAllocated.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </strong>
+                          </span>
+                          {allocationPreview.unallocatedCredit > 0 && (
+                            <span className="text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 rounded border border-amber-200 dark:border-amber-800">
+                              Unallocated Credit:{" "}
+                              <strong className="font-mono">
+                                PKR {allocationPreview.unallocatedCredit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </strong>
+                            </span>
+                          )}
+                        </div>
+                        {selectedParty && (
+                          <div className="text-[11px] text-slate-400 font-mono">
+                            Live Party Balance: PKR {Math.abs(selectedParty.balance).toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
 
               {/* Notes */}
               <div className="space-y-1">

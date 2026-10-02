@@ -738,6 +738,8 @@ export default function SalesClient({
     const res = await deleteSaleInvoiceAction({ id: inv.id });
     if (!res.success) {
       await confirm.alert(res.error || "Failed to delete invoice.", { variant: "destructive" });
+    } else {
+      setInvoices((prev) => prev.filter((i) => i.id !== inv.id));
     }
   }
 
@@ -1031,6 +1033,18 @@ export default function SalesClient({
   // Remove committed row
   function removeCommittedItem(index: number) {
     setCommittedItems((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function updateCommittedItemQuantity(index: number, quantity: number) {
+    setCommittedItems((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, quantity: Math.max(0, quantity) } : item))
+    );
+  }
+
+  function updateCommittedItemRate(index: number, unitPrice: number) {
+    setCommittedItems((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, unitPrice: Math.max(0, unitPrice) } : item))
+    );
   }
 
   // Save Full Sale Invoice
@@ -1813,11 +1827,25 @@ export default function SalesClient({
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-center text-slate-600 text-[10px]">
                               {item.unit}
                             </td>
-                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right font-bold text-slate-900 dark:text-slate-100">
-                              {Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                            <td className="py-1 px-1 border-r border-slate-100 dark:border-slate-800 text-right font-bold text-slate-900 dark:text-slate-100">
+                              <Input
+                                type="number"
+                                step="any"
+                                min="0.0001"
+                                value={item.quantity}
+                                onChange={(e) => updateCommittedItemQuantity(idx, parseFloat(e.target.value) || 0)}
+                                className="h-6 w-20 text-right px-1.5 py-0 text-xs font-mono font-bold bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 inline-block"
+                              />
                             </td>
-                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right text-slate-700 dark:text-slate-300">
-                              {item.unitPrice.toFixed(2)}
+                            <td className="py-1 px-1 border-r border-slate-100 dark:border-slate-800 text-right text-slate-700 dark:text-slate-300">
+                              <Input
+                                type="number"
+                                step="any"
+                                min="0"
+                                value={item.unitPrice}
+                                onChange={(e) => updateCommittedItemRate(idx, parseFloat(e.target.value) || 0)}
+                                className="h-6 w-24 text-right px-1.5 py-0 text-xs font-mono bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 inline-block"
+                              />
                             </td>
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right font-bold text-emerald-700 dark:text-emerald-400">
                               {lineTotal.toFixed(2)}

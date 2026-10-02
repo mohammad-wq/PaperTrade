@@ -30,13 +30,13 @@ async function main() {
   const shopLoc = await prisma.location.findFirst({
     where: { type: "SHOP", isActive: true, deletedAt: null },
   }) || await prisma.location.create({
-    data: { name: "Test Shop Location", type: "SHOP", isDefault: false },
+    data: { name: "Test Shop Location", type: "SHOP" },
   });
 
   const whLoc = await prisma.location.findFirst({
     where: { type: "WAREHOUSE", isActive: true, deletedAt: null },
   }) || await prisma.location.create({
-    data: { name: "Test Central Warehouse", type: "WAREHOUSE", isDefault: false },
+    data: { name: "Test Central Warehouse", type: "WAREHOUSE" },
   });
 
   const customer = await prisma.party.findFirst({

@@ -3,6 +3,8 @@ import { getCachedLocations, getCachedWarehouseLots } from "@/lib/cached-lookups
 import InventoryClient from "./inventory-client";
 import { Suspense } from "react";
 
+import { serializeDecimals } from "@/lib/serialization";
+
 export const dynamic = "force-dynamic";
 
 export default async function InventoryPage() {
@@ -17,9 +19,9 @@ export default async function InventoryPage() {
   return (
     <Suspense fallback={<div className="p-8 text-center text-xs text-slate-500 font-mono">Loading Inventory Hub...</div>}>
       <InventoryClient
-        initialInventory={inventory as any}
-        initialLots={lots as any}
-        initialLocations={locs as any}
+        initialInventory={serializeDecimals(inventory) as any}
+        initialLots={serializeDecimals(lots) as any}
+        initialLocations={serializeDecimals(locs) as any}
       />
     </Suspense>
   );

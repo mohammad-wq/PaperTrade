@@ -56,6 +56,12 @@ enum InvoiceStatus {
   POSTED
 }
 
+enum PaymentStatus {
+  UNPAID
+  PARTIAL
+  PAID
+}
+
 enum AccountType {
   SALES
   PURCHASES
@@ -179,6 +185,9 @@ model WarehouseLot {
   unitCost    Decimal?  @db.Decimal(14, 4)
   lotNumber   String
   description String?
+  partnerSharePct Decimal? @default(100) @db.Decimal(5, 2)
+  clientSharePct  Decimal? @default(0) @db.Decimal(5, 2)
+  initialCapital  Decimal? @db.Decimal(14, 4)
   isActive    Boolean   @default(true)
   deletedAt   DateTime?
   createdAt   DateTime  @default(now())
@@ -304,6 +313,9 @@ model Party {
   id                 String    @id @default(cuid())
   name               String
   type               PartyType
+  isCustomer         Boolean   @default(false)
+  isSupplier         Boolean   @default(false)
+  isPartner          Boolean   @default(false)
   isBeneficiary      Boolean   @default(false)
   partnerWarehouseId String?
   phone              String?
@@ -327,6 +339,7 @@ model Party {
 
   @@index([type, isActive])
   @@index([isBeneficiary])
+  @@index([isPartner])
   @@index([name])
   @@index([createdAt])
   @@index([deletedAt])
@@ -342,6 +355,8 @@ model PurchaseOrder {
   locationId      String
   date            DateTime
   status          PurchaseOrderStatus  @default(DRAFT)
+  isPartnership   Boolean              @default(false)
+  partnershipId   String?
   notes           String?
   createdById     String
   createdAt       DateTime             @default(now())
@@ -359,6 +374,8 @@ model PurchaseOrder {
   @@index([locationId])
   @@index([date])
   @@index([status])
+  @@index([partnershipId])
+  @@index([isPartnership])
 }
 
 model PurchaseOrderItem {
@@ -392,8 +409,15 @@ model PurchaseInvoice {
   purchaseOrderId String?
   date            DateTime
   status          InvoiceStatus @default(OPEN)
+  isPartnership   Boolean       @default(false)
+  partnershipId   String?
+  partnerSharePct Decimal?      @db.Decimal(5, 2)
+  clientSharePct  Decimal?      @db.Decimal(5, 2)
   totalAmount     Decimal       @db.Decimal(14, 4)
   amountPaid      Decimal       @default(0) @db.Decimal(14, 4)
+  paidAmount      Decimal       @default(0) @db.Decimal(14, 4)
+  balanceAmount   Decimal       @default(0) @db.Decimal(14, 4)
+  paymentStatus   PaymentStatus @default(UNPAID)
   freightCharges  Decimal       @default(0) @db.Decimal(14, 4)
   notes           String?
   createdById     String
@@ -408,12 +432,15 @@ model PurchaseInvoice {
   items         PurchaseInvoiceItem[]
   returns       PurchaseReturn[]
   payments      Payment[]
+  allocations   InvoicePaymentAllocation[]
 
   @@index([financialYearId])
   @@index([supplierId])
   @@index([locationId])
   @@index([date])
   @@index([status])
+  @@index([partnershipId])
+  @@index([isPartnership])
 }
 
 model PurchaseInvoiceItem {
@@ -504,8 +531,13 @@ model SaleInvoice {
   deliveryOrderId String?       @unique
   date            DateTime
   status          InvoiceStatus @default(OPEN)
+  isPartnership   Boolean       @default(false)
+  partnershipId   String?
   totalAmount     Decimal       @db.Decimal(14, 4)
   amountPaid      Decimal       @default(0) @db.Decimal(14, 4)
+  paidAmount      Decimal       @default(0) @db.Decimal(14, 4)
+  balanceAmount   Decimal       @default(0) @db.Decimal(14, 4)
+  paymentStatus   PaymentStatus @default(UNPAID)
   freightCharges  Decimal       @default(0) @db.Decimal(14, 4)
   walkInName      String?
   notes           String?
@@ -522,12 +554,15 @@ model SaleInvoice {
   items               SaleInvoiceItem[]
   returns             SaleReturn[]
   payments            Payment[]      @relation("SaleInvoicePayments")
+  allocations         InvoicePaymentAllocation[]
 
   @@index([financialYearId])
   @@index([customerId])
   @@index([locationId])
   @@index([date])
   @@index([status])
+  @@index([partnershipId])
+  @@index([isPartnership])
 }
 
 model SaleInvoiceItem {
@@ -643,6 +678,8 @@ model LedgerEntry {
   accountType           AccountType
   debit                 Decimal        @default(0) @db.Decimal(14, 4)
   credit                Decimal        @default(0) @db.Decimal(14, 4)
+  isPartnership         Boolean        @default(false)
+  partnershipId         String?
   referenceType         String
   referenceId           String
   date                  DateTime
@@ -661,6 +698,9 @@ model LedgerEntry {
   @@index([accountType])
   @@index([referenceType, referenceId])
   @@index([date])
+  @@index([partnershipId])
+  @@index([isPartnership])
+  @@index([partyId, isPartnership])
 }
 
 model Payment {
@@ -674,18 +714,21 @@ model Payment {
   amount            Decimal       @db.Decimal(14, 4)
   method            PaymentMethod
   direction         String        @default("IN")
+  isPartnership     Boolean       @default(false)
+  partnershipId     String?
   remainingBalance  Decimal?      @db.Decimal(14, 4)
   date              DateTime
   notes             String?
   createdById       String
   createdAt         DateTime      @default(now())
 
-  financialYear   FinancialYear?   @relation(fields: [financialYearId], references: [id])
-  party           Party            @relation(fields: [partyId], references: [id])
-  saleInvoice     SaleInvoice?     @relation("SaleInvoicePayments", fields: [saleInvoiceId], references: [id])
-  purchaseInvoice PurchaseInvoice? @relation(fields: [purchaseInvoiceId], references: [id])
-  createdBy       User             @relation(fields: [createdById], references: [id])
+  financialYear   FinancialYear?             @relation(fields: [financialYearId], references: [id])
+  party           Party                      @relation(fields: [partyId], references: [id])
+  saleInvoice     SaleInvoice?               @relation("SaleInvoicePayments", fields: [saleInvoiceId], references: [id])
+  purchaseInvoice PurchaseInvoice?           @relation(fields: [purchaseInvoiceId], references: [id])
+  createdBy       User                       @relation(fields: [createdById], references: [id])
   splits          PaymentSplit[]
+  allocations     InvoicePaymentAllocation[]
 
   @@index([financialYearId])
   @@index([partyId])
@@ -693,6 +736,25 @@ model Payment {
   @@index([saleInvoiceId])
   @@index([purchaseInvoiceId])
   @@index([direction])
+  @@index([partnershipId])
+  @@index([isPartnership])
+}
+
+model InvoicePaymentAllocation {
+  id                String           @id @default(cuid())
+  paymentId         String
+  saleInvoiceId     String?
+  purchaseInvoiceId String?
+  amount            Decimal          @db.Decimal(14, 4)
+  createdAt         DateTime         @default(now())
+
+  payment         Payment          @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  saleInvoice     SaleInvoice?     @relation(fields: [saleInvoiceId], references: [id], onDelete: Cascade)
+  purchaseInvoice PurchaseInvoice? @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@index([saleInvoiceId])
+  @@index([purchaseInvoiceId])
 }
 
 model PaymentSplit {

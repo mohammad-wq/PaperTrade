@@ -21,6 +21,9 @@ const EMPTY_VALUES: PartyInput = {
   address: "",
   creditLimit: 0,
   isActive: true,
+  isCustomer: true,
+  isSupplier: false,
+  isPartner: false,
   isBeneficiary: false,
 };
 
@@ -123,17 +126,60 @@ export function PartyForm({
               {errors.name ? <p className="text-sm text-destructive">{errors.name.message}</p> : null}
             </div>
 
+            <div className="space-y-2 md:col-span-2">
+              <Label>
+                Roles & Capabilities <span className="text-rose-500">*</span>
+              </Label>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
+                <label className="flex items-start gap-2.5 p-2 rounded-md hover:bg-white dark:hover:bg-slate-800 cursor-pointer transition-colors border border-transparent hover:border-slate-200 dark:hover:border-slate-700">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                    {...register("isCustomer")}
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">Customer</span>
+                    <span className="text-[11px] text-slate-500 block leading-tight">Can buy goods via Sale Invoices</span>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-2.5 p-2 rounded-md hover:bg-white dark:hover:bg-slate-800 cursor-pointer transition-colors border border-transparent hover:border-slate-200 dark:hover:border-slate-700">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+                    {...register("isSupplier")}
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">Supplier / Vendor</span>
+                    <span className="text-[11px] text-slate-500 block leading-tight">Can supply paper via Purchase Invoices</span>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-2.5 p-2 rounded-md hover:bg-white dark:hover:bg-slate-800 cursor-pointer transition-colors border border-transparent hover:border-slate-200 dark:hover:border-slate-700">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+                    {...register("isPartner")}
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-indigo-700 dark:text-indigo-400 block">Equity Partner</span>
+                    <span className="text-[11px] text-slate-500 block leading-tight">Person B with shared lots & capital tracking</span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="type">
-                Party Type <span className="text-rose-500">*</span>
+                Primary Classification <span className="text-rose-500">*</span>
               </Label>
               <select
                 id="type"
                 className="flex min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-base md:text-sm"
                 {...register("type")}
               >
-                <option value={PartyType.CUSTOMER}>Customer (Buyer)</option>
-                <option value={PartyType.SUPPLIER}>Supplier (Paper Mill / Vendor)</option>
+                <option value={PartyType.CUSTOMER}>Customer (Default Buyer)</option>
+                <option value={PartyType.SUPPLIER}>Supplier (Default Vendor)</option>
               </select>
             </div>
 
@@ -166,15 +212,13 @@ export function PartyForm({
               {errors.email ? <p className="text-sm text-destructive">{errors.email.message}</p> : null}
             </div>
 
-            {type === PartyType.CUSTOMER ? (
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="creditLimit">
-                  Credit Limit in PKR <span className="text-slate-400 font-normal text-xs">(Optional)</span>
-                </Label>
-                <Input id="creditLimit" type="number" step="0.01" placeholder="e.g. 500000 (leave empty for unlimited)" {...register("creditLimit", { valueAsNumber: true })} />
-                {errors.creditLimit ? <p className="text-sm text-destructive">{errors.creditLimit.message}</p> : null}
-              </div>
-            ) : null}
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="creditLimit">
+                Credit Limit in PKR <span className="text-slate-400 font-normal text-xs">(Optional for Customers)</span>
+              </Label>
+              <Input id="creditLimit" type="number" step="0.01" placeholder="e.g. 500000 (leave empty for unlimited)" {...register("creditLimit", { valueAsNumber: true })} />
+              {errors.creditLimit ? <p className="text-sm text-destructive">{errors.creditLimit.message}</p> : null}
+            </div>
 
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="address">

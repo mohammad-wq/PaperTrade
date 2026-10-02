@@ -43,6 +43,11 @@ export const purchaseInvoiceSchema = z
     freightCharges: z.coerce.number().min(0).default(0),
     purchaseOrderId: z.string().optional().nullable(),
     date: z.coerce.date(),
+    isPartnership: z.boolean().default(false),
+    partnershipId: z.string().optional().nullable(),
+    partnerSharePct: z.coerce.number().min(0).max(100).optional().nullable(),
+    clientSharePct: z.coerce.number().min(0).max(100).optional().nullable(),
+    sourceWarehouseLotId: z.string().trim().optional().nullable(),
     notes: z.string().trim().max(1000).optional().or(z.literal("")),
     items: z.array(lineItem).min(1, "Add at least one line item"),
   })
@@ -73,6 +78,11 @@ export const updatePurchaseInvoiceSchema = z
     freightCharges: z.coerce.number().min(0).default(0),
     purchaseOrderId: z.string().optional().nullable(),
     date: z.coerce.date(),
+    isPartnership: z.boolean().default(false),
+    partnershipId: z.string().optional().nullable(),
+    partnerSharePct: z.coerce.number().min(0).max(100).optional().nullable(),
+    clientSharePct: z.coerce.number().min(0).max(100).optional().nullable(),
+    sourceWarehouseLotId: z.string().trim().optional().nullable(),
     notes: z.string().trim().max(1000).optional().or(z.literal("")),
     items: z.array(lineItem).min(1, "Add at least one line item"),
   })

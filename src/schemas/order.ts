@@ -17,9 +17,11 @@ export const purchaseOrderSchema = z
     oneTimeSupplierName: z.string().trim().max(200).optional().nullable(),
     oneTimeSupplierPhone: z.string().trim().max(50).optional().nullable(),
     saveSupplier: z.boolean().default(false),
-    locationId: z.string().min(1, "Location is required"),
+    locationId: z.string().optional().nullable().or(z.literal("")),
     date: z.coerce.date(),
     status: z.nativeEnum(PurchaseOrderStatus).default(PurchaseOrderStatus.DRAFT),
+    isPartnership: z.boolean().default(false),
+    partnershipId: z.string().optional().nullable(),
     notes: z.string().trim().max(1000).optional().or(z.literal("")),
     items: z.array(purchaseOrderItemSchema).min(1, "At least one item is required"),
   })

@@ -2,13 +2,15 @@ import { z } from "zod";
 import { fail, ok, type ActionResult } from "@/lib/action-result";
 import { logServerError, toUserError } from "@/lib/errors";
 
+import { serializeDecimals } from "@/lib/serialization";
+
 export async function handleServerActionError<T>(
   scope: string,
   fn: () => Promise<T>,
 ): Promise<ActionResult<T>> {
   try {
     const data = await fn();
-    return ok(data);
+    return ok(serializeDecimals(data));
   } catch (error) {
     logServerError({ scope, error });
     return toUserError(error);

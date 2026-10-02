@@ -5,14 +5,27 @@ export async function getPartyBalance(
   partyId: string,
   tx?: Prisma.TransactionClient,
   asOfDate?: Date,
+  partnershipMode?: "REGULAR" | "PARTNERSHIP" | "ALL",
 ): Promise<number> {
   const db = tx ?? prisma;
+  const where: Prisma.LedgerEntryWhereInput = {
+    partyId,
+    ...(asOfDate ? { date: { lte: asOfDate } } : {}),
+  };
+
+  if (partnershipMode === "REGULAR") {
+    where.isPartnership = false;
+    where.partnershipId = null;
+  } else if (partnershipMode === "PARTNERSHIP") {
+    where.OR = [
+      { isPartnership: true },
+      { partnershipId: { not: null } },
+    ];
+  }
+
   const entries = await db.ledgerEntry.groupBy({
     by: ["accountType"],
-    where: {
-      partyId,
-      ...(asOfDate ? { date: { lte: asOfDate } } : {}),
-    },
+    where,
     _sum: { debit: true, credit: true },
   });
 

@@ -8,7 +8,19 @@ import { PartyForm } from "@/components/parties/party-form";
 import { Button } from "@/components/ui/button";
 import { type PartyInput } from "@/schemas/party";
 
-const EMPTY_FORM: PartyInput = { name: "", type: "CUSTOMER", phone: "", email: "", address: "", creditLimit: 0, isActive: true, isBeneficiary: false };
+const EMPTY_FORM: PartyInput = {
+  name: "",
+  type: "CUSTOMER",
+  phone: "",
+  email: "",
+  address: "",
+  creditLimit: 0,
+  isActive: true,
+  isCustomer: true,
+  isSupplier: false,
+  isPartner: false,
+  isBeneficiary: false,
+};
 
 type PartyRecord = PartyInput & { id: string; balance: number };
 

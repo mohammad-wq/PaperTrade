@@ -27,12 +27,35 @@ export async function listProductsAction() {
         },
       }),
       prisma.stockMovement.groupBy({
-        by: ["productId"],
+        by: ["productId", "type"],
         _sum: { quantity: true },
       }),
     ]);
 
-    const stockMap = new Map(stockSums.map((s) => [s.productId, Number(s._sum.quantity || 0)]));
+    const INBOUND_TYPES = new Set<StockMovementType>([
+      StockMovementType.PURCHASE_IN,
+      StockMovementType.TRANSFER_IN,
+      StockMovementType.SALE_RETURN,
+    ]);
+    const OUTBOUND_TYPES = new Set<StockMovementType>([
+      StockMovementType.SALE_OUT,
+      StockMovementType.TRANSFER_OUT,
+      StockMovementType.DELIVERY_OUT,
+      StockMovementType.PURCHASE_RETURN,
+    ]);
+
+    const stockMap = new Map<string, number>();
+    for (const row of stockSums) {
+      const current = stockMap.get(row.productId) ?? 0;
+      const qty = Number(row._sum.quantity || 0);
+      let delta = 0;
+      if (row.type === StockMovementType.ADJUSTMENT || INBOUND_TYPES.has(row.type)) {
+        delta = qty;
+      } else if (OUTBOUND_TYPES.has(row.type)) {
+        delta = -qty;
+      }
+      stockMap.set(row.productId, current + delta);
+    }
 
     return products.map((product) => ({
       ...product,

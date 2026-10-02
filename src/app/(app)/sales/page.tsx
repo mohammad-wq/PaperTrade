@@ -4,6 +4,7 @@ import { listProductsAction } from "@/actions/products";
 import { getCachedLocations, getCachedWarehouseLots } from "@/lib/cached-lookups";
 import SalesClient from "./sales-client";
 import { Suspense } from "react";
+import { serializeDecimals } from "@/lib/serialization";
 
 export const dynamic = "force-dynamic";
 
@@ -21,16 +22,15 @@ export default async function SalesPage() {
   const parties = partyRes.success && partyRes.data ? partyRes.data : [];
   const products = prodRes.success && prodRes.data ? prodRes.data : [];
   const inventory = stockRes.success && stockRes.data ? stockRes.data : [];
-
   return (
     <Suspense fallback={<div className="p-8 text-center text-xs text-slate-500 font-mono">Loading Sales Ledger...</div>}>
       <SalesClient
-        initialInvoices={invoices as any}
-        initialParties={parties as any}
-        initialProducts={products as any}
-        initialInventory={inventory as any}
-        initialLocations={locations as any}
-        initialWarehouseLots={lots as any}
+        initialInvoices={serializeDecimals(invoices) as any}
+        initialParties={serializeDecimals(parties) as any}
+        initialProducts={serializeDecimals(products) as any}
+        initialInventory={serializeDecimals(inventory) as any}
+        initialLocations={serializeDecimals(locations) as any}
+        initialWarehouseLots={serializeDecimals(lots) as any}
       />
     </Suspense>
   );

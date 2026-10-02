@@ -48,7 +48,7 @@ async function main() {
   console.log("\n=== 4. PARTY STATEMENT (LEDGER) ===");
   const sampleParty = await prisma.party.findFirst();
   if (sampleParty) {
-    const ps = await calculatePartyStatement(sampleParty.id);
+    const ps = await calculatePartyStatement({ partyId: sampleParty.id });
     console.log({
       partyName: ps.party.name,
       partyType: ps.party.type,

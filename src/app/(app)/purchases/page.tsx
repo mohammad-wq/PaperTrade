@@ -127,7 +127,7 @@ export default function PurchasesPage() {
   const [warehouseLots, setWarehouseLots] = useState<WarehouseLotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("OPEN");
+  const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
@@ -201,7 +201,13 @@ export default function PurchasesPage() {
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    if (searchParams.get("action") === "new") {
+    if (searchParams.get("action") === "new" || searchParams.get("new") === "true") {
+      setIsDialogOpen(true);
+    }
+    const paramSupplier = searchParams.get("supplierId") || searchParams.get("partnerId");
+    if (paramSupplier) {
+      setSupplierId(paramSupplier);
+      setSupplierType("REGISTERED");
       setIsDialogOpen(true);
     }
     if (searchParams.get("fromInvoice") === "1") {
@@ -653,16 +659,20 @@ export default function PurchasesPage() {
     if (!ok) return;
 
     try {
+      // Optimistically remove from state so the row disappears immediately and scroll position is preserved
+      setInvoices((prev) => prev.filter((i) => i.id !== invoice.id));
       const res = await deletePurchaseInvoiceAction({ id: invoice.id });
       if (!res.success) {
         await confirm.alert(res.error || "Failed to delete purchase invoice.", { variant: "destructive" });
+        await loadData(true);
         return;
       }
       setEditingInvoiceId(null);
       setIsDialogOpen(false);
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       await confirm.alert(err?.message || "Failed to delete purchase invoice.", { variant: "destructive" });
+      await loadData(true);
     }
   }
 
@@ -923,7 +933,7 @@ export default function PurchasesPage() {
                   <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap">Paid (PKR)</th>
                   <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-right whitespace-nowrap font-bold">Balance Due</th>
                   <th className="py-2 px-2.5 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Status</th>
-                  <th className="py-2 px-2 text-center whitespace-nowrap">Action</th>
+                  <th className="sticky right-0 z-20 py-2 px-2 text-center whitespace-nowrap bg-slate-100 dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.06)]">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -979,7 +989,7 @@ export default function PurchasesPage() {
                           : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
                       }`}>{inv.status}</span>
                     </td>
-                    <td className="py-1 px-2 text-center whitespace-nowrap">
+                    <td className="sticky right-0 z-10 py-1 px-2 text-center whitespace-nowrap bg-white dark:bg-slate-900 border-l border-slate-200/60 dark:border-slate-800 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.06)]">
                       <div className="flex items-center justify-center gap-1">
                         <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100" title="Print Invoice"
                           onClick={() => {
@@ -997,12 +1007,12 @@ export default function PurchasesPage() {
                             Settle
                           </Button>
                         )}
-                        {canUpdate && inv.status === "OPEN" && (
+                        {canUpdate && (
                           <Button size="sm" variant="ghost" onClick={() => openEditPurchaseInvoice(inv)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
                             Edit
                           </Button>
                         )}
-                        {canDelete && inv.status === "OPEN" && (
+                        {canDelete && (
                           <Button size="sm" variant="ghost" onClick={() => handleDeletePurchaseInvoice(inv)} className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40">
                             Delete
                           </Button>

@@ -272,3 +272,44 @@ export async function reactivateWarehouseLotAction(raw: unknown) {
   });
 }
 
+export async function deleteWarehouseLotAction(raw: unknown) {
+  return runAction("warehouseLots.delete", async () => {
+    const session = await requireSession();
+    if (session.user.role !== Role.OWNER && session.user.role !== Role.MANAGER) {
+      throw userError("Only owners and managers can delete warehouse lots.");
+    }
+    const { id } = parseInput(z.object({ id: z.string().min(1) }), raw);
+
+    const lot = await prisma.warehouseLot.findUnique({
+      where: { id },
+      include: { location: true },
+    });
+    if (!lot) throw userError("Warehouse lot not found.");
+
+    const [movementsCount, piItemCount, siItemCount, doItemCount, poItemCount] = await Promise.all([
+      prisma.stockMovement.count({ where: { warehouseLotId: id } }),
+      prisma.purchaseInvoiceItem.count({ where: { warehouseLotId: id } }),
+      prisma.saleInvoiceItem.count({ where: { warehouseLotId: id } }),
+      prisma.deliveryOrderItem.count({ where: { warehouseLotId: id } }),
+      prisma.purchaseOrderItem.count({ where: { warehouseLotId: id } }),
+    ]);
+
+    if (movementsCount > 0 || piItemCount > 0 || siItemCount > 0 || doItemCount > 0 || poItemCount > 0) {
+      const updated = await prisma.warehouseLot.update({
+        where: { id },
+        data: { isActive: false, deletedAt: new Date() },
+      });
+      emitRealtimeEvent(["warehouse-lots", "inventory"], "delete", "WarehouseLot", { id });
+      revalidateWarehouseLots();
+      revalidatePath("/settings/locations");
+      return { ...updated, softDeleted: true, message: `Lot "${lot.lotNumber}" has transaction records and was deactivated instead of permanently deleted.` };
+    }
+
+    await prisma.warehouseLot.delete({ where: { id } });
+    emitRealtimeEvent(["warehouse-lots", "inventory"], "delete", "WarehouseLot", { id });
+    revalidateWarehouseLots();
+    revalidatePath("/settings/locations");
+    return { id, success: true, softDeleted: false, message: `Lot "${lot.lotNumber}" was deleted successfully.` };
+  });
+}
+

@@ -29,6 +29,7 @@ import {
   updateLocationAction,
   deactivateLocationAction,
   reactivateLocationAction,
+  deleteLocationAction,
 } from "@/actions/locations";
 import {
   listWarehouseLotsAction,
@@ -36,6 +37,7 @@ import {
   updateWarehouseLotAction,
   deactivateWarehouseLotAction,
   reactivateWarehouseLotAction,
+  deleteWarehouseLotAction,
 } from "@/actions/warehouse-lots";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
@@ -154,6 +156,9 @@ export default function LocationsSettingsPage() {
     });
   }, [locations, locationSearch, showInactiveLocations]);
 
+  const activeLocationsCount = useMemo(() => locations.filter((l) => l.isActive).length, [locations]);
+  const activeLotsCount = useMemo(() => lots.filter((l) => l.isActive).length, [lots]);
+
   // Active warehouses for dropdowns
   const activeWarehouses = useMemo(() => {
     return locations.filter((l) => l.isActive && l.type === LocationType.WAREHOUSE);
@@ -256,6 +261,26 @@ export default function LocationsSettingsPage() {
     }
   }
 
+  // Handle Delete Location
+  async function handleDeleteLocation(loc: LocationItem) {
+    setStatusMessage(null);
+    const ok = await confirm({
+      title: "Delete Location",
+      description: `Are you sure you want to delete "${loc.name}"? If it has historical records, it will be deactivated instead.`,
+      confirmText: "Delete Location",
+      variant: "destructive",
+    });
+    if (!ok) return;
+
+    const res = await deleteLocationAction({ id: loc.id });
+    if (res.success) {
+      setStatusMessage({ type: "success", text: (res as any).data?.message || `Location "${loc.name}" deleted.` });
+      void loadData(true);
+    } else {
+      setStatusMessage({ type: "error", text: res.error || "Failed to delete location." });
+    }
+  }
+
   // Handle Add Lot
   async function handleCreateLot(e: React.FormEvent) {
     e.preventDefault();
@@ -334,6 +359,26 @@ export default function LocationsSettingsPage() {
       } else {
         setStatusMessage({ type: "error", text: res.error || "Failed to reactivate lot." });
       }
+    }
+  }
+
+  // Handle Delete Lot
+  async function handleDeleteLot(lot: LotItem) {
+    setStatusMessage(null);
+    const ok = await confirm({
+      title: "Delete Warehouse Lot",
+      description: `Are you sure you want to delete Lot "${lot.lotNumber}"? If it has historical stock movements, it will be deactivated instead.`,
+      confirmText: "Delete Lot",
+      variant: "destructive",
+    });
+    if (!ok) return;
+
+    const res = await deleteWarehouseLotAction({ id: lot.id });
+    if (res.success) {
+      setStatusMessage({ type: "success", text: (res as any).data?.message || `Lot "${lot.lotNumber}" deleted.` });
+      void loadData(true);
+    } else {
+      setStatusMessage({ type: "error", text: res.error || "Failed to delete warehouse lot." });
     }
   }
 
@@ -432,7 +477,7 @@ export default function LocationsSettingsPage() {
         >
           <span className="flex items-center gap-2">
             <Store className="h-4 w-4" />
-            Locations Directory ({locations.length})
+            Locations Directory ({showInactiveLocations ? locations.length : activeLocationsCount})
           </span>
         </button>
 
@@ -446,7 +491,7 @@ export default function LocationsSettingsPage() {
         >
           <span className="flex items-center gap-2">
             <Layers className="h-4 w-4" />
-            Warehouse Lots ({lots.length})
+            Warehouse Lots ({showInactiveLots ? lots.length : activeLotsCount})
           </span>
         </button>
       </div>
@@ -609,6 +654,17 @@ export default function LocationsSettingsPage() {
                                     </>
                                   )}
                                 </Button>
+
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => void handleDeleteLocation(loc)}
+                                  className="h-7 px-2 text-xs text-rose-700 hover:text-rose-900 hover:bg-rose-50"
+                                  title="Delete Location"
+                                >
+                                  <Trash2 className="h-3 w-3 mr-1" />
+                                  Delete
+                                </Button>
                               </div>
                             ) : (
                               <span className="text-[11px] text-slate-400 italic">Owner managed</span>
@@ -769,6 +825,19 @@ export default function LocationsSettingsPage() {
                                     Reactivate
                                   </>
                                 )}
+                              </Button>
+                            )}
+
+                            {canDeactivateLots && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => void handleDeleteLot(lot)}
+                                className="h-7 px-2 text-xs text-rose-700 hover:text-rose-900 hover:bg-rose-50"
+                                title="Delete Lot"
+                              >
+                                <Trash2 className="h-3 w-3 mr-1" />
+                                Delete
                               </Button>
                             )}
                           </div>

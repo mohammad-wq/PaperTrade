@@ -35,7 +35,7 @@ import { listProductsAction } from "@/actions/products";
 import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
 import { PurchaseOrderStatus } from "@prisma/client";
 import { format } from "date-fns";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, getLocalDateTimeInputValue } from "@/lib/utils";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
@@ -143,7 +143,7 @@ export default function PurchaseOrdersPage() {
   const [oneTimeSupplierPhone, setOneTimeSupplierPhone] = useState("");
   const [supplierId, setSupplierId] = useState("");
   const [locationId, setLocationId] = useState("");
-  const [orderDate, setOrderDate] = useState(new Date().toISOString().slice(0, 10));
+  const [orderDate, setOrderDate] = useState(getLocalDateTimeInputValue());
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<LineItem[]>([{ productId: "", quantity: 1, unitCost: 0 }]);
   const [formError, setFormError] = useState<string | null>(null);
@@ -154,6 +154,12 @@ export default function PurchaseOrdersPage() {
 
   useEffect(() => {
     if (searchParams.get("action") === "new") {
+      setIsDialogOpen(true);
+    }
+    const paramSupplier = searchParams.get("supplierId") || searchParams.get("partnerId");
+    if (paramSupplier) {
+      setSupplierId(paramSupplier);
+      setSupplierType("REGISTERED");
       setIsDialogOpen(true);
     }
     if (searchParams.get("fromInvoice") === "1") {
@@ -392,7 +398,7 @@ export default function PurchaseOrdersPage() {
     setOneTimeSupplierPhone("");
     setSupplierId("");
     setLocationId("");
-    setOrderDate(new Date().toISOString().slice(0, 10));
+    setOrderDate(getLocalDateTimeInputValue());
     setNotes("");
     setItems([{ productId: "", quantity: 1, unitCost: 0, destinationLocationId: "", warehouseLotId: "" }]);
     setFormError(null);
@@ -405,7 +411,7 @@ export default function PurchaseOrdersPage() {
     setOneTimeSupplierName("");
     setOneTimeSupplierPhone("");
     setLocationId(order.location.id);
-    setOrderDate(new Date(order.date).toISOString().slice(0, 16));
+    setOrderDate(getLocalDateTimeInputValue(order.date));
     setNotes(order.notes || "");
     setItems(
       order.items.map((item) => ({
@@ -498,7 +504,8 @@ export default function PurchaseOrdersPage() {
     if (supplierType === "ONE_TIME" && !oneTimeSupplierName.trim()) {
       setOneTimeSupplierName("Market Vendor");
     }
-    if (!locationId) {
+    const effectiveLoc = locationId || items.find((i) => i.destinationLocationId)?.destinationLocationId || locations[0]?.id;
+    if (!effectiveLoc) {
       setFormError("Please select a destination location.");
       return;
     }
@@ -526,13 +533,13 @@ export default function PurchaseOrdersPage() {
         supplierId: supplierType === "REGISTERED" ? supplierId : undefined,
         oneTimeSupplierName: supplierType === "ONE_TIME" ? (oneTimeSupplierName.trim() || "Market Vendor") : undefined,
         oneTimeSupplierPhone: supplierType === "ONE_TIME" ? (oneTimeSupplierPhone.trim() || null) : undefined,
-        locationId,
+        locationId: locationId || effectiveLoc,
         date: new Date(orderDate),
         status: isEditing ? (orders.find((o) => o.id === editingOrderId)?.status ?? PurchaseOrderStatus.DRAFT) : PurchaseOrderStatus.DRAFT,
         notes,
         items: items.map((i) => ({
           productId: i.productId,
-          destinationLocationId: i.destinationLocationId || locationId || undefined,
+          destinationLocationId: i.destinationLocationId || locationId || effectiveLoc || undefined,
           warehouseLotId: i.warehouseLotId || undefined,
           quantity: i.quantity,
           unitCost: i.unitCost,
@@ -720,7 +727,17 @@ export default function PurchaseOrdersPage() {
                         {order.supplier.name}
                       </td>
                       <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-600 dark:text-slate-400">
-                        {order.location.name}
+                        {(() => {
+                          const itemLocs = Array.from(new Set(order.items.map((i) => i.destinationLocation?.name).filter(Boolean)));
+                          if (itemLocs.length > 1) {
+                            return (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 border border-indigo-200">
+                                Multi ({itemLocs.length} locs)
+                              </span>
+                            );
+                          }
+                          return itemLocs[0] || order.location?.name || "—";
+                        })()}
                       </td>
                       <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center font-mono whitespace-nowrap text-slate-600">
                         {order.items.length}
@@ -959,7 +976,7 @@ export default function PurchaseOrdersPage() {
 
                 <div className="space-y-1">
                   <Label htmlFor="polocation" className="text-xs font-semibold">
-                    Destination Location <span className="text-rose-500">*</span>
+                    Default Destination Location <span className="text-slate-400 font-normal">(Optional / Multi-Location)</span>
                   </Label>
                   <SearchCombobox
                     options={locations.map((loc) => ({
@@ -972,9 +989,8 @@ export default function PurchaseOrdersPage() {
                     onEnterPress={() => {
                       orderDateRef.current?.focus();
                     }}
-                    placeholder="Select destination location"
+                    placeholder="Select default location (or specify per item below)"
                     className="w-full text-xs"
-                    required
                   />
                 </div>
 

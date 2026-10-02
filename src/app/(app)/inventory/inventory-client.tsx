@@ -110,7 +110,7 @@ export default function InventoryClient({
 
   const [selectedLocationId, setSelectedLocationId] = useState("all");
   const [selectedLotId, setSelectedLotId] = useState("all");
-  const [stockFilter, setStockFilter] = useState<"NON_ZERO" | "ZERO" | "ALL">("NON_ZERO");
+  const [stockFilter, setStockFilter] = useState<"NON_ZERO" | "ZERO" | "ALL">("ALL");
   const [partnerStockFilter, setPartnerStockFilter] = useState<"ALL" | "REGULAR" | "BENEFICIARY">("ALL");
   const [activeTab, setActiveTab] = useState<"ALL" | "LOW">("ALL");
   const [viewMode, setViewMode] = useState<"table" | "cards">("table");
@@ -672,6 +672,12 @@ export default function InventoryClient({
     rowIndex: number,
     field: "prod" | "loc" | "lot" | "qty" | "dir" | "notes",
   ) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      const fakeEv = { preventDefault: () => {} } as React.FormEvent;
+      void handleBulkAdjustment(fakeEv);
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       const sequence: Array<"prod" | "loc" | "lot" | "qty" | "dir" | "notes"> = ["prod", "loc", "lot", "qty", "dir", "notes"];
@@ -680,20 +686,31 @@ export default function InventoryClient({
         const nextField = sequence[currentIdx + 1];
         const nextEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${rowIndex}-${nextField}"]`);
         if (nextEl) {
-          nextEl.focus();
-          if (nextEl instanceof HTMLInputElement) nextEl.select();
-          return;
+          const target = nextEl.tagName === "INPUT" || nextEl.tagName === "SELECT" 
+            ? nextEl 
+            : nextEl.querySelector<HTMLElement>("input, select");
+          if (target) {
+            target.focus();
+            if (target instanceof HTMLInputElement) target.select();
+            return;
+          }
         }
       } else {
         if (rowIndex === bulkAdjItems.length - 1) {
           addBulkAdjItem();
           setTimeout(() => {
-            const nextRowFirstEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${rowIndex + 1}-prod"]`);
-            if (nextRowFirstEl) nextRowFirstEl.focus();
-          }, 50);
+            const nextRowInput = document.querySelector<HTMLInputElement>(`[data-bulk-adj="${rowIndex + 1}-prod"] input`);
+            if (nextRowInput) {
+              nextRowInput.focus();
+              nextRowInput.select();
+            }
+          }, 60);
         } else {
-          const nextRowFirstEl = document.querySelector<HTMLElement>(`[data-bulk-adj="${rowIndex + 1}-prod"]`);
-          if (nextRowFirstEl) nextRowFirstEl.focus();
+          const nextRowInput = document.querySelector<HTMLInputElement>(`[data-bulk-adj="${rowIndex + 1}-prod"] input`);
+          if (nextRowInput) {
+            nextRowInput.focus();
+            nextRowInput.select();
+          }
         }
       }
     } else if (e.key === "ArrowDown" && (field === "qty" || field === "notes")) {
@@ -2006,7 +2023,14 @@ export default function InventoryClient({
 
             <form
               onSubmit={handleBulkAdjustment}
-              onKeyDown={handleFormEnterKeyDown}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  void handleBulkAdjustment(e);
+                  return;
+                }
+                handleFormEnterKeyDown(e);
+              }}
               className="mt-4 space-y-4"
             >
               {bulkAdjError && (

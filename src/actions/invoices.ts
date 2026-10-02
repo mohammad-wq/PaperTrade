@@ -50,6 +50,12 @@ export async function listSaleInvoicesAction() {
         unitPrice: Number(item.unitPrice),
         unitCost: item.unitCost != null ? Number(item.unitCost) : 0,
         lineTotal: Number(item.lineTotal),
+        warehouseLot: item.warehouseLot
+          ? {
+              ...item.warehouseLot,
+              unitCost: item.warehouseLot.unitCost != null ? Number(item.warehouseLot.unitCost) : null,
+            }
+          : null,
       })),
     }));
   });
@@ -216,6 +222,24 @@ export async function createSaleInvoiceAction(raw: unknown) {
         })
       );
 
+      // Determine if this sale invoice is a partnership transaction
+      let isPartnershipTx = Boolean(input.isPartnership || input.partnershipId);
+      let partnershipId = input.partnershipId || null;
+
+      if (!isPartnershipTx) {
+        const itemLotIds = input.items.map((i) => i.warehouseLotId).filter(Boolean) as string[];
+        if (itemLotIds.length > 0) {
+          const partLot = await tx.warehouseLot.findFirst({
+            where: { id: { in: itemLotIds }, partnerId: { not: null } },
+            select: { partnerId: true },
+          });
+          if (partLot?.partnerId) {
+            isPartnershipTx = true;
+            partnershipId = partLot.partnerId;
+          }
+        }
+      }
+
       const invoice = await tx.saleInvoice.create({
         data: {
           invoiceNo: formattedNumber,
@@ -226,6 +250,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
           deliveryOrderId: input.deliveryOrderId || null,
           date: input.date,
           status: isSettled ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
+          isPartnership: isPartnershipTx,
+          partnershipId,
           totalAmount,
           amountPaid: paidAmount,
           freightCharges: freight,
@@ -297,6 +323,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.RECEIVABLE,
             debit: lineTotal,
             credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: invoice.id,
             date: input.date,
@@ -312,6 +340,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.SALES,
             debit: 0,
             credit: lineTotal,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: invoice.id,
             date: input.date,
@@ -329,6 +359,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.RECEIVABLE,
             debit: freight,
             credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: invoice.id,
             date: input.date,
@@ -343,6 +375,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.SALES,
             debit: 0,
             credit: freight,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: invoice.id,
             date: input.date,
@@ -374,6 +408,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
             sequenceNo: paymentSeq,
             partyId: targetCustomerId,
             saleInvoiceId: invoice.id,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             amount: paidAmount,
             method: primaryMethod,
             direction: "IN",
@@ -403,6 +439,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
               accountType: AccountType.CASH,
               debit: split.amount,
               credit: 0,
+              isPartnership: isPartnershipTx,
+              partnershipId,
               referenceType: "PAYMENT",
               referenceId: payment.id,
               date: input.date,
@@ -419,6 +457,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.RECEIVABLE,
             debit: 0,
             credit: paidAmount,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "PAYMENT",
             referenceId: payment.id,
             date: input.date,
@@ -471,8 +511,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         throw userError("Sale invoice not found.");
       }
 
-      if (existing.status !== InvoiceStatus.OPEN) {
-        throw userError(`Only OPEN invoices can be edited. This invoice is currently ${existing.status}.`);
+      if (existing.status === InvoiceStatus.CANCELLED) {
+        throw userError(`Cancelled invoices cannot be edited.`);
       }
 
       // 2. Resolve Customer (Walk-in vs Registered Party)
@@ -637,6 +677,24 @@ export async function updateSaleInvoiceAction(raw: unknown) {
       const finalNotes = [input.notes?.trim(), walkInContactDetails].filter(Boolean).join(" — ");
       const isSettled = paidAmount >= totalAmount - 0.001;
 
+      // Determine if this sale invoice is a partnership transaction
+      let isPartnershipTx = input.isPartnership !== undefined ? input.isPartnership : existing.isPartnership;
+      let partnershipId = input.partnershipId !== undefined ? input.partnershipId : existing.partnershipId;
+
+      if (!isPartnershipTx) {
+        const itemLotIds = input.items.map((i) => i.warehouseLotId).filter(Boolean) as string[];
+        if (itemLotIds.length > 0) {
+          const partLot = await tx.warehouseLot.findFirst({
+            where: { id: { in: itemLotIds }, partnerId: { not: null } },
+            select: { partnerId: true },
+          });
+          if (partLot?.partnerId) {
+            isPartnershipTx = true;
+            partnershipId = partLot.partnerId;
+          }
+        }
+      }
+
       // Update invoice record
       const updatedInvoice = await tx.saleInvoice.update({
         where: { id: existing.id },
@@ -645,6 +703,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           locationId: fallbackLocationId,
           date: input.date,
           status: isSettled ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
+          isPartnership: isPartnershipTx,
+          partnershipId,
           totalAmount,
           amountPaid: paidAmount,
           freightCharges: freight,
@@ -749,6 +809,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.RECEIVABLE,
             debit: lineTotal,
             credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: existing.id,
             date: input.date,
@@ -764,6 +826,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.SALES,
             debit: 0,
             credit: lineTotal,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: existing.id,
             date: input.date,
@@ -781,6 +845,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.RECEIVABLE,
             debit: freight,
             credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: existing.id,
             date: input.date,
@@ -795,6 +861,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.SALES,
             debit: 0,
             credit: freight,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: existing.id,
             date: input.date,
@@ -828,6 +896,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             sequenceNo: paymentSeq,
             partyId: targetCustomerId,
             saleInvoiceId: existing.id,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             amount: paidAmount,
             method: primaryMethod,
             direction: "IN",
@@ -856,6 +926,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
               accountType: AccountType.CASH,
               debit: split.amount,
               credit: 0,
+              isPartnership: isPartnershipTx,
+              partnershipId,
               referenceType: "PAYMENT",
               referenceId: payment.id,
               date: input.date,
@@ -871,6 +943,8 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             accountType: AccountType.RECEIVABLE,
             debit: 0,
             credit: paidAmount,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "PAYMENT",
             referenceId: payment.id,
             date: input.date,
@@ -926,6 +1000,8 @@ export async function listPurchaseInvoicesAction() {
       amountPaid: Number(inv.amountPaid || 0),
       balanceDue: Math.max(0, Number(inv.totalAmount) - Number(inv.amountPaid || 0)),
       freightCharges: Number(inv.freightCharges || 0),
+      partnerSharePct: inv.partnerSharePct != null ? Number(inv.partnerSharePct) : null,
+      clientSharePct: inv.clientSharePct != null ? Number(inv.clientSharePct) : null,
       items: inv.items.map((item) => ({
         ...item,
         quantity: Number(item.quantity),
@@ -1011,6 +1087,42 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
       const activeYear = await getActiveFinancialYear(tx);
       const { sequenceNo, formattedNumber } = await getNextAtomicSequence(tx, activeYear.id, "PURCHASE_INVOICE");
 
+      const supplierParty = targetSupplierId
+        ? await tx.party.findUnique({
+            where: { id: targetSupplierId },
+            select: { id: true, name: true, isPartner: true, isBeneficiary: true, partnerWarehouseId: true },
+          })
+        : null;
+
+      const isPartnershipTx = Boolean(
+        input.isPartnership ||
+        input.partnershipId
+      );
+      const partnershipId = input.partnershipId || (isPartnershipTx && supplierParty?.isPartner ? supplierParty.id : null);
+
+      // Fetch any referenced warehouse lots to determine equity splits
+      const referencedLotIds = input.items.map((i) => i.warehouseLotId || (i as any).sourceWarehouseLotId).filter(Boolean) as string[];
+      const referencedLots = referencedLotIds.length > 0
+        ? await tx.warehouseLot.findMany({
+            where: { id: { in: referencedLotIds } },
+            include: { location: { select: { id: true, name: true, type: true } } },
+          })
+        : [];
+      const lotMap = new Map(referencedLots.map((l) => [l.id, l]));
+
+      // Check primary lot equity split
+      const primaryLot = referencedLots[0];
+      const defaultPartnerSharePct = primaryLot?.partnerSharePct != null
+        ? Number(primaryLot.partnerSharePct)
+        : input.partnerSharePct != null
+        ? Number(input.partnerSharePct)
+        : (isPartnershipTx ? 100 : 100);
+      const defaultClientSharePct = primaryLot?.clientSharePct != null
+        ? Number(primaryLot.clientSharePct)
+        : input.clientSharePct != null
+        ? Number(input.clientSharePct)
+        : (100 - defaultPartnerSharePct);
+
       const invoice = await tx.purchaseInvoice.create({
         data: {
           invoiceNo: formattedNumber,
@@ -1021,6 +1133,10 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           purchaseOrderId: input.purchaseOrderId || null,
           date: input.date,
           status: isSettled ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
+          isPartnership: isPartnershipTx,
+          partnershipId,
+          partnerSharePct: isPartnershipTx ? defaultPartnerSharePct : null,
+          clientSharePct: isPartnershipTx ? defaultClientSharePct : null,
           totalAmount,
           amountPaid: paidAmount,
           freightCharges: freight,
@@ -1040,9 +1156,7 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
       });
 
       // Update lots with unitCost and partnerId if supplier is a partner/beneficiary
-      const isSupplierBeneficiary = targetSupplierId
-        ? (await tx.party.findUnique({ where: { id: targetSupplierId }, select: { isBeneficiary: true } }))?.isBeneficiary
-        : false;
+      const isSupplierBeneficiary = supplierParty?.isPartner || supplierParty?.isBeneficiary;
 
       for (const item of input.items) {
         const lotId = item.warehouseLotId || input.warehouseLotId;
@@ -1074,10 +1188,33 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         }
       }
 
-      // Create stock movements (PURCHASE_IN) at receiving location only if not already fulfilled
+      // Create stock movements at receiving location only if not already fulfilled
       if (!alreadyFulfilledByPO) {
         for (const item of input.items) {
           const itemLoc = (item as any).locationId || fallbackLocationId;
+          const srcLotId = (item as any).sourceWarehouseLotId || item.warehouseLotId || input.warehouseLotId;
+          const srcLot = srcLotId ? lotMap.get(srcLotId) : null;
+
+          // If stock was pulled from Shared Warehouse into Shop (different location):
+          // Decrement the available quantity in the Shared Warehouse location
+          if (srcLot && srcLot.locationId !== itemLoc) {
+            await tx.stockMovement.create({
+              data: {
+                productId: item.productId,
+                locationId: srcLot.locationId,
+                warehouseLotId: srcLot.id,
+                type: StockMovementType.TRANSFER_OUT,
+                quantity: item.quantity,
+                referenceType: "PARTNERSHIP_PULL",
+                referenceId: invoice.invoiceNo,
+                createdById: session.user.id,
+                createdAt: input.date,
+                notes: `Stock pull to ${itemLoc} via ${invoice.invoiceNo}`,
+              },
+            });
+          }
+
+          // Person A's shop receives the units at full unit cost under the designated shop lot
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
@@ -1088,6 +1225,7 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
               referenceType: "PURCHASE_INVOICE",
               referenceId: invoice.id,
               createdById: session.user.id,
+              createdAt: input.date,
               notes: `Purchase Invoice ${invoice.invoiceNo}`,
             },
           });
@@ -1107,13 +1245,24 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         const lineTotal = item.quantity * item.unitCost;
         const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitCost})`;
 
-        // Purchases Expense (Debit per product)
+        const itemLotId = item.warehouseLotId || (item as any).sourceWarehouseLotId || input.warehouseLotId;
+        const itemLot = itemLotId ? lotMap.get(itemLotId) : null;
+        const partnerShare = itemLot?.partnerSharePct != null
+          ? Number(itemLot.partnerSharePct)
+          : defaultPartnerSharePct;
+
+        // Dynamic Purchase Calculation: Person A's payable liability to Person B reflects only Person B's ownership portion
+        const payableCredit = isPartnershipTx ? lineTotal * (partnerShare / 100) : lineTotal;
+
+        // Purchases Expense (Debit per product at full shop valuation)
         await tx.ledgerEntry.create({
           data: {
             partyId: null,
             accountType: AccountType.PURCHASES,
             debit: lineTotal,
             credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "PURCHASE_INVOICE",
             referenceId: invoice.id,
             date: input.date,
@@ -1122,17 +1271,21 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           },
         });
 
-        // Supplier Payable (Credit per product)
+        // Supplier Payable (Credit reflecting partner ownership portion)
         await tx.ledgerEntry.create({
           data: {
             partyId: targetSupplierId!,
             accountType: AccountType.PAYABLE,
             debit: 0,
-            credit: lineTotal,
+            credit: payableCredit,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "PURCHASE_INVOICE",
             referenceId: invoice.id,
             date: input.date,
-            description: `Payable for ${invoice.invoiceNo}: ${itemDesc}`,
+            description: isPartnershipTx && partnerShare < 100
+              ? `Payable for ${invoice.invoiceNo}: ${itemDesc} (${partnerShare}% equity share)`
+              : `Payable for ${invoice.invoiceNo}: ${itemDesc}`,
             createdById: session.user.id,
           },
         });
@@ -1322,8 +1475,8 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
         throw userError("Purchase invoice not found.");
       }
 
-      if (existing.status !== InvoiceStatus.OPEN) {
-        throw userError(`Only OPEN purchase invoices can be edited. This invoice is currently ${existing.status}.`);
+      if (existing.status === InvoiceStatus.CANCELLED) {
+        throw userError(`Cancelled purchase invoices cannot be edited.`);
       }
 
       let targetSupplierId = input.supplierId;
@@ -1444,6 +1597,9 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
         });
       }
 
+      const isPartnershipTx = input.isPartnership !== undefined ? input.isPartnership : existing.isPartnership;
+      const partnershipId = input.partnershipId !== undefined ? input.partnershipId : existing.partnershipId;
+
       // 4. Update purchase invoice
       const updatedInvoice = await tx.purchaseInvoice.update({
         where: { id: existing.id },
@@ -1452,6 +1608,8 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
           locationId: fallbackLocationId,
           date: input.date,
           status: isSettled ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
+          isPartnership: isPartnershipTx,
+          partnershipId,
           totalAmount,
           amountPaid: paidAmount,
           freightCharges: freight,
@@ -1520,6 +1678,9 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
         const lineTotal = item.quantity * item.unitCost;
         const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitCost})`;
 
+        const partnerShare = existing.partnerSharePct != null ? Number(existing.partnerSharePct) : 100;
+        const payableCredit = isPartnershipTx ? lineTotal * (partnerShare / 100) : lineTotal;
+
         // Purchases Expense (Debit per product)
         await tx.ledgerEntry.create({
           data: {
@@ -1527,6 +1688,8 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
             accountType: AccountType.PURCHASES,
             debit: lineTotal,
             credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "PURCHASE_INVOICE",
             referenceId: existing.id,
             date: input.date,
@@ -1541,7 +1704,9 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
             partyId: targetSupplierId!,
             accountType: AccountType.PAYABLE,
             debit: 0,
-            credit: lineTotal,
+            credit: payableCredit,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "PURCHASE_INVOICE",
             referenceId: existing.id,
             date: input.date,
@@ -1559,6 +1724,8 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
             accountType: AccountType.PURCHASES,
             debit: freight,
             credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "PURCHASE_INVOICE",
             referenceId: existing.id,
             date: input.date,
@@ -1573,6 +1740,8 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
             accountType: AccountType.PAYABLE,
             debit: 0,
             credit: freight,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "PURCHASE_INVOICE",
             referenceId: existing.id,
             date: input.date,
@@ -1606,6 +1775,8 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
             sequenceNo: paymentSeq,
             partyId: targetSupplierId!,
             purchaseInvoiceId: existing.id,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             amount: paidAmount,
             method: primaryMethod,
             direction: "OUT",
@@ -1632,6 +1803,8 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
             accountType: AccountType.PAYABLE,
             debit: paidAmount,
             credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
             referenceType: "PAYMENT",
             referenceId: payment.id,
             date: input.date,
@@ -1648,6 +1821,8 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
               accountType: AccountType.CASH,
               debit: 0,
               credit: split.amount,
+              isPartnership: isPartnershipTx,
+              partnershipId,
               referenceType: "PAYMENT",
               referenceId: payment.id,
               date: input.date,

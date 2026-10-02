@@ -181,9 +181,19 @@ export async function deactivateLocationAction(raw: unknown) {
       },
     });
 
-    emitRealtimeEvent(["locations", "inventory"], "delete", "Location", { id });
+    // Cascade deactivate all lots belonging to this deactivated location
+    await prisma.warehouseLot.updateMany({
+      where: { locationId: id, isActive: true },
+      data: {
+        isActive: false,
+        deletedAt: new Date(),
+      },
+    });
+
+    emitRealtimeEvent(["locations", "inventory", "warehouse-lots"], "delete", "Location", { id });
 
     revalidateLocations();
+    revalidateWarehouseLots();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");
@@ -210,15 +220,70 @@ export async function reactivateLocationAction(raw: unknown) {
       },
     });
 
-    emitRealtimeEvent(["locations", "inventory"], "update", "Location", { id });
+    emitRealtimeEvent(["locations", "inventory", "warehouse-lots"], "update", "Location", { id });
 
     revalidateLocations();
+    revalidateWarehouseLots();
     revalidatePath("/settings/locations");
     revalidatePath("/inventory");
     revalidatePath("/purchases");
     revalidatePath("/delivery-orders");
 
     return location;
+  });
+}
+
+export async function deleteLocationAction(raw: unknown) {
+  return runAction("locations.delete", async () => {
+    const session = await requireSession();
+    if (session.user.role !== Role.OWNER) {
+      throw userError("Only owners can delete locations.");
+    }
+
+    const { id } = parseInput(z.object({ id: z.string().min(1) }), raw);
+
+    const loc = await prisma.location.findUnique({ where: { id } });
+    if (!loc) throw userError("Location not found.");
+
+    const activeCount = await prisma.location.count({
+      where: { isActive: true, deletedAt: null },
+    });
+    if (activeCount <= 1) {
+      throw userError("Cannot delete the only active location. At least one location must remain active.");
+    }
+
+    const [movementsCount, doCount, poCount, siCount, piCount, lotCount] = await Promise.all([
+      prisma.stockMovement.count({ where: { locationId: id } }),
+      prisma.deliveryOrder.count({ where: { OR: [{ locationId: id }, { destinationLocationId: id }] } }),
+      prisma.purchaseOrder.count({ where: { locationId: id } }),
+      prisma.saleInvoice.count({ where: { locationId: id } }),
+      prisma.purchaseInvoice.count({ where: { locationId: id } }),
+      prisma.warehouseLot.count({ where: { locationId: id } }),
+    ]);
+
+    if (movementsCount > 0 || doCount > 0 || poCount > 0 || siCount > 0 || piCount > 0 || lotCount > 0) {
+      const updated = await prisma.location.update({
+        where: { id },
+        data: { isActive: false, deletedAt: new Date() },
+      });
+      // Cascade deactivate all lots belonging to this location
+      await prisma.warehouseLot.updateMany({
+        where: { locationId: id, isActive: true },
+        data: { isActive: false, deletedAt: new Date() },
+      });
+      emitRealtimeEvent(["locations", "inventory", "warehouse-lots"], "delete", "Location", { id });
+      revalidateLocations();
+      revalidateWarehouseLots();
+      revalidatePath("/settings/locations");
+      return { ...updated, softDeleted: true, message: `Location "${loc.name}" has historical records and was deactivated instead of permanently deleted.` };
+    }
+
+    await prisma.location.delete({ where: { id } });
+    emitRealtimeEvent(["locations", "inventory", "warehouse-lots"], "delete", "Location", { id });
+    revalidateLocations();
+    revalidateWarehouseLots();
+    revalidatePath("/settings/locations");
+    return { id, success: true, softDeleted: false, message: `Location "${loc.name}" was deleted successfully.` };
   });
 }
 

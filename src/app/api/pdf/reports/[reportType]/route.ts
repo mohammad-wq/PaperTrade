@@ -179,41 +179,71 @@ export async function GET(
         return new NextResponse("partyId parameter is required", { status: 400 });
       }
 
+      const viewMode = searchParams.get("view") || "detailed";
+      const isSummary = viewMode === "summary";
+
       const data = await calculatePartyStatement({ partyId, startDate, endDate, productId });
 
       const safeName = (data.party.name || "Party")
         .replace(/[^a-zA-Z0-9_-]/g, "_")
         .replace(/_+/g, "_")
         .replace(/^_+|_+$/g, "") || "Account";
-      filename = `Statement-${safeName}.pdf`;
+      filename = `${isSummary ? "Summary-Statement" : "Statement"}-${safeName}.pdf`;
+
+      const settings = await prisma.appSetting.findMany({
+        where: { key: { in: ["businessName", "businessAddress", "businessPhone", "businessEmail"] } },
+      });
+      const settingMap = Object.fromEntries(settings.map((s) => [s.key, s.value]));
 
       const pdfBuffer = await renderPartyStatementPdfKit({
-        companyName: process.env.BUSINESS_NAME || "PAPER TRADE CO.",
-        companyAddress: process.env.BUSINESS_ADDRESS || "Wholesale Paper Market, Station Road",
-        companyPhone: process.env.BUSINESS_PHONE || "+92-300-1234567",
-        companyEmail: process.env.BUSINESS_EMAIL || undefined,
+        companyName: settingMap.businessName || process.env.BUSINESS_NAME || "Sughra Trader",
+        companyAddress: settingMap.businessAddress || process.env.BUSINESS_ADDRESS || "Wholesale Paper Market, Station Road",
+        companyPhone: settingMap.businessPhone || process.env.BUSINESS_PHONE || "+92-300-1234567",
+        companyEmail: settingMap.businessEmail || process.env.BUSINESS_EMAIL || undefined,
         party: data.party,
         currentBalance: data.currentBalance,
         openingBalance: data.openingBalance,
         openingBalanceSourceYear: (data as any).openingBalanceSourceYear,
         startDate: safeFormatDate(startDate),
         endDate: safeFormatDate(endDate),
-        ledgerRows: data.ledgerRows.map((r) => ({
-          date: safeFormatDate(r.date) || "—",
-          referenceDocNo: r.referenceDocNo,
-          referenceType: r.referenceType,
-          description: r.description,
-          debit: Number(r.debit) || 0,
-          credit: Number(r.credit) || 0,
-          runningBalance: Number(r.runningBalance) || 0,
-          detailRows: r.detailRows?.map((d) => ({
-            productName: d.productName,
-            quantity: Number(d.quantity) || 0,
-            unit: d.unit,
-            rate: Number(d.rate) || 0,
-            amount: Number(d.amount) || 0,
-          })),
-        })),
+        ledgerRows: data.ledgerRows.map((r) => {
+          let description = r.description;
+          if (isSummary) {
+            if (r.referenceType === "SALE_INVOICE") {
+              description = "Total Bill Amount";
+            } else if (r.referenceType === "PURCHASE_INVOICE") {
+              description = "Total Purchase Amount";
+            } else if (r.referenceType === "PAYMENT") {
+              const lowerDesc = (r.description || "").toLowerCase();
+              if (lowerDesc.includes("cheque")) {
+                description = r.debit > 0 ? "Cheque Paid - Invoices Chq" : "Cheque Rcvd - Invoices Chq Rec";
+              } else if (lowerDesc.includes("bank")) {
+                description = r.debit > 0 ? "Bank Paid - Invoices Bank" : "Bank Rcvd - Invoices Bank Rec";
+              } else {
+                description = r.debit > 0 ? "Cash Paid - Invoices" : "Cash Rcvd - Invoices Cash Rec";
+              }
+            }
+          }
+
+          return {
+            date: safeFormatDate(r.date) || "—",
+            referenceDocNo: r.referenceDocNo,
+            referenceType: r.referenceType,
+            description,
+            debit: Number(r.debit) || 0,
+            credit: Number(r.credit) || 0,
+            runningBalance: Number(r.runningBalance) || 0,
+            detailRows: isSummary
+              ? undefined
+              : r.detailRows?.map((d) => ({
+                  productName: d.productName,
+                  quantity: Number(d.quantity) || 0,
+                  unit: d.unit,
+                  rate: Number(d.rate) || 0,
+                  amount: Number(d.amount) || 0,
+                })),
+          };
+        }),
       });
 
       const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
