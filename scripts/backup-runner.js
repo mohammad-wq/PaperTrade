@@ -54,7 +54,7 @@ function parseEnv(root = PROJECT_ROOT) {
   const envCandidates = [
     path.join(root, '.env'),
     path.resolve(root, '..', '..', '.env'),
-    'C:\\Users\\dell\\Desktop\\PaperTrade\\.env',
+    ...(process.env.USERPROFILE ? [path.join(process.env.USERPROFILE, 'Desktop', 'PaperTrade', '.env')] : []),
   ];
 
   const envVars = { ...process.env };

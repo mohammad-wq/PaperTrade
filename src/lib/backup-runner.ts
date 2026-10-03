@@ -35,9 +35,8 @@ function resolveRunnerScript(): { scriptPath: string; workingDir: string } {
     // 1. If running inside .next/standalone, actual project root is 2 levels up
     path.resolve(cwd, "..", ".."),
     // 2. Current working directory
-    cwd,
-    // 3. Absolute known root on this Windows installation
-    "C:\\Users\\dell\\Desktop\\PaperTrade",
+    // 3. User profile desktop directory if applicable
+    ...(process.env.USERPROFILE ? [path.join(process.env.USERPROFILE, "Desktop", "PaperTrade")] : []),
     // 4. Relative to compiled module directory
     path.resolve(__dirname, "..", ".."),
     path.resolve(__dirname, "..", "..", ".."),

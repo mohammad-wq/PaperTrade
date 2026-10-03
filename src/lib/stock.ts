@@ -62,6 +62,7 @@ export async function assertStockAvailableForDeduction(
       select: {
         id: true,
         name: true,
+        type: true,
         warehouseLots: {
           where: { isActive: true, deletedAt: null },
           select: { id: true },
@@ -85,7 +86,7 @@ export async function assertStockAvailableForDeduction(
     if (!selectedLot) {
       throw userError(`Select an active lot belonging to ${location.name}.`);
     }
-  } else if (location.warehouseLots.length > 0) {
+  } else if (location.type === "WAREHOUSE" && location.warehouseLots.length > 0) {
     throw userError(`Select a specific lot before deducting stock at ${location.name}.`);
   }
 

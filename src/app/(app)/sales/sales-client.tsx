@@ -116,9 +116,15 @@ type ProductOption = {
 
 type StockInfo = {
   productId: string;
+  productNo?: string;
   locationId: string;
+  stockCategory?: "REGULAR" | "BENEFICIARY";
+  beneficiaryId?: string | null;
+  beneficiaryName?: string | null;
+  lotId?: string | null;
+  lotNumber?: string | null;
   available: number;
-  lots?: Array<{ id: string | null; lotNumber: string; available: number }>;
+  lots?: Array<{ id: string | null; lotNumber: string; available: number; description?: string | null }>;
 };
 
 type CommittedLineItem = {
@@ -420,31 +426,64 @@ export default function SalesClient({
     return matchingInventory.reduce((sum, item) => sum + item.available, 0);
   }
 
+  function getShopPoolTotals(prodId: string, locId: string) {
+    const shopRows = inventory.filter(
+      (row) => row.productId === prodId && row.locationId === locId,
+    );
+
+    const partnerLotIds = new Set(
+      warehouseLots
+        .filter((lot) => lot.locationId === locId && Boolean(lot.partnerId))
+        .map((lot) => lot.id),
+    );
+
+    let regularQty = 0;
+    let partnerQty = 0;
+
+    for (const row of shopRows) {
+      const isBeneficiaryRow =
+        (row as any).stockCategory === "BENEFICIARY" ||
+        Boolean((row as any).beneficiaryId) ||
+        Boolean(
+          (row as any).lotId &&
+            (partnerLotIds.has((row as any).lotId) ||
+              ((row as any).lotNumber || "").endsWith("-SHOP")),
+        );
+
+      if (isBeneficiaryRow) {
+        partnerQty += Number(row.available || 0);
+      } else {
+        if (Array.isArray(row.lots) && row.lots.length > 0) {
+          for (const lot of row.lots) {
+            if (
+              !lot.id ||
+              (!partnerLotIds.has(lot.id) &&
+                !(lot.lotNumber || "").endsWith("-SHOP"))
+            ) {
+              regularQty += Number(lot.available || 0);
+            } else {
+              partnerQty += Number(lot.available || 0);
+            }
+          }
+        } else {
+          regularQty += Number(row.available || 0);
+        }
+      }
+    }
+
+    const totalQty = regularQty + partnerQty;
+    return { regularQty, partnerQty, totalQty };
+  }
+
   function getShopSourceAvailableStock(
     prodId: string,
     locId: string,
     source: CommittedLineItem["stockSource"],
   ) {
-    if (source === "REGULAR_ONLY") {
-      return getAvailableStock(prodId, locId, null);
-    }
-    const partnerLotIds = new Set(
-      warehouseLots
-        .filter((lot) => lot.locationId === locId && lot.partnerId)
-        .map((lot) => lot.id),
-    );
-    const partnerStock = inventory
-      .filter((row) => row.productId === prodId && row.locationId === locId)
-      .reduce(
-        (total, row) =>
-          total +
-          (row.lots || [])
-            .filter((lot) => lot.id && partnerLotIds.has(lot.id))
-            .reduce((sum, lot) => sum + lot.available, 0),
-        0,
-      );
-    if (source === "PARTNER_ONLY") return partnerStock;
-    return getAvailableStock(prodId, locId, null) + partnerStock;
+    const { regularQty, partnerQty, totalQty } = getShopPoolTotals(prodId, locId);
+    if (source === "REGULAR_ONLY") return regularQty;
+    if (source === "PARTNER_ONLY") return partnerQty;
+    return totalQty;
   }
 
   const currentItemLocationId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
@@ -2125,6 +2164,7 @@ export default function SalesClient({
                             (() => {
                               const targetLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
                               const targetLocation = dbLocations.find((location) => location.id === targetLocId);
+                              const shopPool = getShopPoolTotals(matchedProduct.id, targetLocId);
                               const currentStock = targetLocation?.type === "WAREHOUSE"
                                 ? activeLotId
                                   ? getAvailableStock(matchedProduct.id, targetLocId, activeLotId)
@@ -2146,11 +2186,15 @@ export default function SalesClient({
                                     {currentStock} {matchedProduct.unit}
                                     {activeLotId ? " (Lot)" : ""}
                                   </span>
-                                  {totalStock !== currentStock && (
+                                  {targetLocation?.type === "SHOP" ? (
+                                    <span className="text-[9px] text-slate-400 font-sans">
+                                      Regular: {shopPool.regularQty} | Partner: {shopPool.partnerQty}
+                                    </span>
+                                  ) : totalStock !== currentStock ? (
                                     <span className="text-[9px] text-slate-400 font-sans">
                                       Total: {totalStock} {matchedProduct.unit}
                                     </span>
-                                  )}
+                                  ) : null}
                                 </div>
                               );
                             })()
@@ -2176,10 +2220,34 @@ export default function SalesClient({
                             onKeyDown={handleQtyKeyDown}
                             className="h-7 text-xs text-right bg-white dark:bg-slate-900 font-mono font-bold"
                           />
-                          {matchedProduct && (matchedProduct.packetWeight || matchedProduct.reamWeight) ? (
-                            <div className="text-[9px] text-slate-400 font-mono text-right mt-0.5">
-                              {((parseFloat(activeQty) || 0) * (matchedProduct.packetWeight || matchedProduct.reamWeight || 0)).toFixed(2)} kg
-                            </div>
+                          {matchedProduct ? (
+                            (() => {
+                              const targetLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
+                              const targetLocation = dbLocations.find((location) => location.id === targetLocId);
+                              const shopPool = getShopPoolTotals(matchedProduct.id, targetLocId);
+                              const currentStock = targetLocation?.type === "WAREHOUSE"
+                                ? activeLotId
+                                  ? getAvailableStock(matchedProduct.id, targetLocId, activeLotId)
+                                  : 0
+                                : targetLocation?.type === "SHOP"
+                                  ? getShopSourceAvailableStock(matchedProduct.id, targetLocId, activeStockSource)
+                                  : getAvailableStock(matchedProduct.id, targetLocId);
+
+                              return (
+                                <div className="mt-0.5 space-y-0.5 text-right font-mono text-[9px]">
+                                  {targetLocation?.type === "SHOP" && (
+                                    <div className="text-slate-600 dark:text-slate-300 font-medium">
+                                      Available: {currentStock} {matchedProduct.unit} (Regular: {shopPool.regularQty} | Partner: {shopPool.partnerQty})
+                                    </div>
+                                  )}
+                                  {(matchedProduct.packetWeight || matchedProduct.reamWeight) ? (
+                                    <div className="text-slate-400">
+                                      {((parseFloat(activeQty) || 0) * (matchedProduct.packetWeight || matchedProduct.reamWeight || 0)).toFixed(2)} kg
+                                    </div>
+                                  ) : null}
+                                </div>
+                              );
+                            })()
                           ) : null}
                         </td>
 

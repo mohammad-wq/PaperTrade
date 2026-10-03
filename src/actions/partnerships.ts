@@ -6,7 +6,7 @@ import { runAction, parseInput } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { userError } from "@/lib/errors";
 import { getPartyBalance } from "@/lib/ledger";
-import { StockMovementType, InvoiceStatus, AccountType } from "@prisma/client";
+import { StockMovementType, InvoiceStatus, PaymentStatus, AccountType } from "@prisma/client";
 import { assertStockDeductionsAvailable, getStockOnHand } from "@/lib/stock";
 import { generateDocumentNumber, withResourceQueue } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
@@ -268,7 +268,7 @@ async function txProduct(productId: string) {
 const partnershipPurchaseIntakeSchema = z
   .object({
     partnerId: z.string().min(1, "Partner is required"),
-    supplierId: z.string().min(1, "External Supplier is required"),
+    supplierId: z.string().trim().optional().nullable(),
     destinationLocationId: z.string().min(1, "Destination Location is required"),
     lotNumber: z.string().trim().min(1, "Lot Number / Reference is required"),
     partnerSharePct: z.coerce.number().min(0).max(100).default(100),
@@ -310,11 +310,14 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
     });
     if (!partner) throw userError("Partner not found.");
 
-    const supplier = await prisma.party.findUnique({
-      where: { id: input.supplierId },
-      select: { id: true, name: true },
-    });
-    if (!supplier) throw userError("External supplier / vendor not found.");
+    let supplier: { id: string; name: string } | null = null;
+    if (input.supplierId) {
+      supplier = await prisma.party.findUnique({
+        where: { id: input.supplierId },
+        select: { id: true, name: true },
+      });
+      if (!supplier) throw userError("External supplier / vendor not found.");
+    }
 
     const destinationLocation = await prisma.location.findUnique({
       where: { id: input.destinationLocationId },
@@ -378,21 +381,30 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
       const invoiceNo = generateDocumentNumber("PINV-SH");
 
       // 3. Create Purchase Invoice record tagged with partnershipId
+      // Decouple from commercial accounts payable:
+      // - Marked as PAID with balanceAmount = 0 via PARTNER_CAPITAL
+      // - If mill is selected, record in notes/metadata without creating commercial AP ledger liability
+      const invoiceSupplierId = supplier ? supplier.id : partner.id;
+      const originalSupplierNote = supplier ? ` [Vendor/Mill: ${supplier.name}]` : "";
+
       const invoice = await tx.purchaseInvoice.create({
         data: {
           invoiceNo,
           financialYearId: activeYear?.id || null,
-          supplierId: supplier.id,
+          supplierId: invoiceSupplierId,
           locationId: destinationLocation.id,
           date: intakeDate,
-          status: InvoiceStatus.OPEN,
+          status: InvoiceStatus.SETTLED,
+          paymentStatus: PaymentStatus.PAID,
           isPartnership: true,
           partnershipId: partner.id,
           partnerSharePct,
           clientSharePct,
           totalAmount,
-          amountPaid: 0,
-          notes: `Partnership Intake directly to ${destinationLocation.name} [Partner: ${partner.name}] (Equity: ${partnerSharePct}% Partner / ${clientSharePct}% Client). Lot: ${lot.lotNumber}${input.notes ? ` — ${input.notes}` : ""}`,
+          amountPaid: totalAmount,
+          paidAmount: totalAmount,
+          balanceAmount: 0,
+          notes: `[Partnership Intake] [Payment Mode: PARTNER_CAPITAL] directly to ${destinationLocation.name} [Partner: ${partner.name}]${originalSupplierNote} (Equity: ${partnerSharePct}% Partner / ${clientSharePct}% Client). Lot: ${lot.lotNumber}${input.notes ? ` — ${input.notes}` : ""}`,
           createdById: session.user.id,
           items: {
             create: input.items.map((it) => ({
@@ -425,7 +437,7 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
         });
       }
 
-      // 5. Create general ledger entries for external supplier purchase
+      // 5. Double-entry for Partner Capital Injection:
       // Purchases debit
       await tx.ledgerEntry.create({
         data: {
@@ -443,22 +455,47 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
         },
       });
 
-      // External vendor payable credit
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: supplier.id,
-          accountType: AccountType.PAYABLE,
-          debit: 0,
-          credit: totalAmount,
-          isPartnership: false,
-          partnershipId: null,
-          referenceType: "PURCHASE_INVOICE",
-          referenceId: invoice.id,
-          date: intakeDate,
-          description: `Payable to vendor ${supplier.name} for Partnership Intake ${invoice.invoiceNo}`,
-          createdById: session.user.id,
-        },
-      });
+      // Credit Partner B Equity / Capital Account directly (NOT the external mill!)
+      // When Partner B injects stock, it directly credits Partner B's capital account
+      if (partnerCapital > 0) {
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: partner.id,
+            accountType: AccountType.PAYABLE,
+            debit: 0,
+            credit: partnerCapital,
+            isPartnership: true,
+            partnershipId: partner.id,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: invoice.id,
+            date: intakeDate,
+            description: `Partner Capital Contribution (${partner.name}): Lot ${lot.lotNumber} (${invoice.invoiceNo}) - ${partnerSharePct}% Partner Equity`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      // If client share > 0, credit client capital equity
+      if (clientCapital > 0) {
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.PAYABLE,
+            debit: 0,
+            credit: clientCapital,
+            isPartnership: true,
+            partnershipId: partner.id,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: invoice.id,
+            date: intakeDate,
+            description: `Client Capital Contribution: Lot ${lot.lotNumber} (${invoice.invoiceNo}) - ${clientSharePct}% Client Equity`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      // CRITICAL: We intentionally do NOT create any Accounts Payable LedgerEntry for the mill/supplier.
+      // Commercial mill payables remain decoupled from partnership capital injection.
 
       return {
         success: true,
@@ -1158,7 +1195,7 @@ export async function getPartnershipHubDataAction(
 
     // Pulls come from purchase invoices where Person B is the supplier (Person A buying/pulling into shop)
     const pullInvoices = purchaseInvoices.filter(
-      (inv) => inv.supplierId === partner.id
+      (inv) => inv.supplierId === partner.id && !inv.notes?.includes("Partnership Intake")
     );
 
     for (const inv of pullInvoices) {
