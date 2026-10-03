@@ -351,6 +351,8 @@ export default function PartnershipClient({
     warehouseLotId: string;
     quantity: number;
     direction: "OUT" | "IN";
+    mode?: "DELTA" | "TARGET_COUNT";
+    targetCount?: number;
   };
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [adjustLocationId, setAdjustLocationId] = useState("");
@@ -732,27 +734,49 @@ export default function PartnershipClient({
   }
 
   // ------------------------------------------
+  // ------------------------------------------
   // ADJUSTMENT MODAL HANDLERS
   // ------------------------------------------
   function openAdjustModalForProduct(prodId?: string, lotId?: string) {
-    const defaultWh = hubData?.locations?.sharedWarehouse?.id || locations.find((l) => l.type === "WAREHOUSE")?.id || "";
-    setAdjustLocationId(defaultWh);
+    const lotObj = lotId ? hubData?.allLots?.find((l) => l.id === lotId) : null;
+    const filteredWarehouse = locations.find(
+      (location) => location.id === filterWarehouseId && location.type === "WAREHOUSE",
+    );
+    const namedPartnerWarehouse = locations.find(
+      (location) =>
+        location.type === "WAREHOUSE" &&
+        (location.name.toLowerCase().includes("partner") || location.name.toLowerCase().includes("shared")),
+    );
+    const chosenWh =
+      lotObj?.locationId ||
+      (filterWarehouseId !== "all" ? filteredWarehouse?.id : undefined) ||
+      hubData?.locations?.sharedWarehouse?.id ||
+      selectedPartner?.partnerWarehouse?.id ||
+      namedPartnerWarehouse?.id ||
+      "";
+
+    setAdjustLocationId(chosenWh);
     setAdjustDate(new Date().toISOString().split("T")[0]);
-    setAdjustReason("Direct sale / delivery from shared warehouse");
+    setAdjustReason("Direct physical stock adjustment / balance count");
     setAdjustNotes("");
     setAdjustError(null);
 
     const initialProdId = prodId || hubData?.productBreakdown?.[0]?.product.id || hubData?.allProducts?.[0]?.id || "";
     const prodEntry = hubData?.productBreakdown?.find((p) => p.product.id === initialProdId);
-    const initialLotId = lotId || prodEntry?.lots?.[0]?.id || "";
+    const firstLocationLot = hubData?.allLots?.find((lot) => lot.locationId === chosenWh);
+    const initialLotId = lotId || firstLocationLot?.id || "";
+    const initialLot = prodEntry?.lots?.find((l) => l.id === initialLotId);
+    const initialAvail = initialLot ? initialLot.qtyRemainingSharedWarehouse : (prodEntry?.remainingInSharedWarehouse ?? 0);
 
     setAdjustItems([
       {
         id: Math.random().toString(),
         productId: initialProdId,
         warehouseLotId: initialLotId,
-        direction: "OUT",
+        mode: "DELTA",
+        direction: "IN",
         quantity: 1,
+        targetCount: initialAvail,
       },
     ]);
     setShowAdjustModal(true);
@@ -761,15 +785,20 @@ export default function PartnershipClient({
   function addAdjustItem() {
     const defaultProd = hubData?.productBreakdown?.[0]?.product.id || hubData?.allProducts?.[0]?.id || "";
     const prodEntry = hubData?.productBreakdown?.find((p) => p.product.id === defaultProd);
-    const defaultLot = prodEntry?.lots?.[0]?.id || "";
+    const defaultLot = hubData?.allLots?.find((lot) => lot.locationId === adjustLocationId)?.id || "";
+    const defaultLotObj = prodEntry?.lots?.find((l) => l.id === defaultLot);
+    const defaultAvail = defaultLotObj ? defaultLotObj.qtyRemainingSharedWarehouse : (prodEntry?.remainingInSharedWarehouse ?? 0);
+
     setAdjustItems((prev) => [
       ...prev,
       {
         id: Math.random().toString(),
         productId: defaultProd,
         warehouseLotId: defaultLot,
-        direction: "OUT",
+        mode: "DELTA",
+        direction: "IN",
         quantity: 1,
+        targetCount: defaultAvail,
       },
     ]);
   }
@@ -784,10 +813,34 @@ export default function PartnershipClient({
       copy[index] = { ...copy[index], [field]: value };
       if (field === "productId") {
         const prodEntry = hubData?.productBreakdown?.find((p) => p.product.id === value);
-        copy[index].warehouseLotId = prodEntry?.lots?.[0]?.id || "";
+        const firstLot = hubData?.allLots?.find((lot) => lot.locationId === adjustLocationId);
+        copy[index].warehouseLotId = firstLot?.id || "";
+        const avail = prodEntry?.lots?.find((lot) => lot.id === firstLot?.id)?.qtyRemainingSharedWarehouse ?? 0;
+        copy[index].targetCount = avail;
+      }
+      if (field === "warehouseLotId") {
+        const prodEntry = hubData?.productBreakdown?.find((p) => p.product.id === copy[index].productId);
+        const selLot = prodEntry?.lots?.find((l) => l.id === value);
+        const avail = selLot?.qtyRemainingSharedWarehouse ?? 0;
+        copy[index].targetCount = avail;
       }
       return copy;
     });
+  }
+
+  function handleAdjustLocationChange(locationId: string) {
+    setAdjustLocationId(locationId);
+    const locationLotIds = new Set(
+      hubData?.allLots?.filter((lot) => lot.locationId === locationId).map((lot) => lot.id) || [],
+    );
+    setAdjustItems((items) =>
+      items.map((item) => ({
+        ...item,
+        warehouseLotId: locationLotIds.has(item.warehouseLotId)
+          ? item.warehouseLotId
+          : hubData?.allLots?.find((lot) => lot.locationId === locationId)?.id || "",
+      })),
+    );
   }
 
   async function handleAdjustSubmit(e: React.FormEvent) {
@@ -801,11 +854,52 @@ export default function PartnershipClient({
       setAdjustError("Please add at least one product item to adjust.");
       return;
     }
+
+    const normalizedItems: Array<{
+      productId: string;
+      warehouseLotId?: string;
+      quantity: number;
+      direction: "OUT" | "IN";
+    }> = [];
+
     for (const it of adjustItems) {
-      if (!it.productId || it.quantity <= 0) {
-        setAdjustError("All adjustment items must have a valid product and quantity > 0.");
+      if (!it.productId) {
+        setAdjustError("All adjustment items must have a valid product selected.");
         return;
       }
+      const prodEntry = hubData?.productBreakdown.find((p) => p.product.id === it.productId);
+      const selectedLot = prodEntry?.lots?.find((l) => l.id === it.warehouseLotId);
+      const currentAvail = selectedLot ? selectedLot.qtyRemainingSharedWarehouse : (prodEntry?.remainingInSharedWarehouse ?? 0);
+
+      let finalDirection: "OUT" | "IN" = it.direction || "IN";
+      let finalQuantity: number = Number(it.quantity) || 0;
+
+      if (it.mode === "TARGET_COUNT") {
+        const target = Number(it.targetCount);
+        if (isNaN(target) || target < 0) {
+          setAdjustError(`Target final count must be a non-negative number for ${prodEntry?.product.name || "item"}.`);
+          return;
+        }
+        const delta = target - currentAvail;
+        if (delta === 0) {
+          setAdjustError(`Target final count (${target}) matches the current on-hand count for ${prodEntry?.product.name || "item"}. No adjustment needed.`);
+          return;
+        }
+        finalDirection = delta > 0 ? "IN" : "OUT";
+        finalQuantity = Math.abs(delta);
+      } else {
+        if (finalQuantity <= 0) {
+          setAdjustError("All adjustment delta quantities must be greater than 0.");
+          return;
+        }
+      }
+
+      normalizedItems.push({
+        productId: it.productId,
+        warehouseLotId: it.warehouseLotId || undefined,
+        quantity: finalQuantity,
+        direction: finalDirection,
+      });
     }
 
     setSubmittingAdjust(true);
@@ -816,19 +910,14 @@ export default function PartnershipClient({
         reason: adjustReason.trim(),
         notes: adjustNotes.trim() || undefined,
         date: new Date(adjustDate),
-        items: adjustItems.map((it) => ({
-          productId: it.productId,
-          warehouseLotId: it.warehouseLotId || undefined,
-          quantity: Number(it.quantity),
-          direction: it.direction,
-        })),
+        items: normalizedItems,
       });
 
       if (res.success) {
         setShowAdjustModal(false);
         await loadHubData(selectedPartnerId, startDate, endDate);
         await confirm.alert(
-          `Bulk adjustment completed successfully! Updated ${res.data?.movementCount || adjustItems.length} stock movement(s) in ${locations.find((l) => l.id === adjustLocationId)?.name || "Warehouse"}.`,
+          `Adjustment completed successfully! Updated ${res.data?.movementCount || normalizedItems.length} stock movement(s) in ${locations.find((l) => l.id === adjustLocationId)?.name || "Warehouse"}.`,
           { variant: "default" }
         );
       } else {
@@ -1098,7 +1187,7 @@ export default function PartnershipClient({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => router.push(`/purchase-orders?supplierId=${selectedPartnerId}&action=new`)}
+              onClick={() => router.push(`/purchase-orders?partnerId=${selectedPartnerId}&action=new`)}
               className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold text-slate-800 dark:text-slate-200 shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800"
               title="Create Purchase Order for this Partner"
             >
@@ -2691,9 +2780,9 @@ export default function PartnershipClient({
       {/* ========================================================= */}
       {showAdjustModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="w-full max-w-3xl bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+          <div className="w-full max-w-3xl bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-xl shadow-2xl flex flex-col max-h-[85vh] overflow-y-auto">
             {/* Sticky Header */}
-            <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 shrink-0 bg-white dark:bg-slate-900 z-10">
+            <div className="sticky top-0 flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 shrink-0 bg-white dark:bg-slate-900 z-10">
               <div className="flex items-center gap-2">
                 <div className="p-1.5 rounded-md bg-amber-600 text-white">
                   <Sliders className="h-4 w-4" />
@@ -2703,7 +2792,7 @@ export default function PartnershipClient({
                     Bulk Shared Warehouse Stock Adjustment
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Adjust multiple products and lots directly in the shared warehouse (removals / direct sales / additions)
+                    Enter an adjustment delta for each product and lot: IN adds the entered quantity; OUT removes it.
                   </p>
                 </div>
               </div>
@@ -2717,8 +2806,8 @@ export default function PartnershipClient({
             </div>
 
             {/* Scrollable Form Body */}
-            <form onSubmit={handleAdjustSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
-              <div className="p-4 overflow-y-auto flex-1 space-y-4">
+            <form onSubmit={handleAdjustSubmit} className="flex flex-col flex-1 min-h-0">
+              <div className="p-4 flex-1 space-y-4">
                 {adjustError && (
                   <div className="rounded bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700 flex items-center gap-2">
                     <AlertCircle className="h-4 w-4 shrink-0" />
@@ -2732,12 +2821,12 @@ export default function PartnershipClient({
                     <Label className="text-xs font-semibold">Warehouse Location *</Label>
                     <select
                       value={adjustLocationId}
-                      onChange={(e) => setAdjustLocationId(e.target.value)}
+                      onChange={(e) => handleAdjustLocationChange(e.target.value)}
                       className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium"
                       required
                     >
                       <option value="">Select warehouse location</option>
-                      {locations.map((loc) => (
+                      {locations.filter((loc) => loc.type === "WAREHOUSE").map((loc) => (
                         <option key={loc.id} value={loc.id}>
                           {loc.name} ({loc.type})
                         </option>
@@ -2778,9 +2867,9 @@ export default function PartnershipClient({
                   <div className="space-y-2">
                     {adjustItems.map((item, idx) => {
                       const prodEntry = hubData?.productBreakdown.find((p) => p.product.id === item.productId);
-                      const lotOptions = prodEntry?.lots || [];
-                      const selectedLot = lotOptions.find((l) => l.id === item.warehouseLotId);
-                      const availInWH = selectedLot ? selectedLot.qtyRemainingSharedWarehouse : (prodEntry?.remainingInSharedWarehouse ?? 0);
+                      const lotOptions = hubData?.allLots?.filter((lot) => lot.locationId === adjustLocationId) || [];
+                      const selectedLot = prodEntry?.lots.find((lot) => lot.id === item.warehouseLotId);
+                      const availInWH = selectedLot?.qtyRemainingSharedWarehouse ?? 0;
 
                       return (
                         <div
@@ -2821,16 +2910,21 @@ export default function PartnershipClient({
 
                             {/* Lot */}
                             <div className="sm:col-span-4 space-y-1">
-                              <label className="text-[11px] font-medium text-slate-500">Lot Batch (Optional / Recommended)</label>
+                              <label className="text-[11px] font-medium text-slate-500">Lot Batch {lotOptions.length > 0 ? "*" : "(Optional)"}</label>
                               <select
                                 value={item.warehouseLotId}
                                 onChange={(e) => updateAdjustItem(idx, "warehouseLotId", e.target.value)}
                                 className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5 text-xs font-mono"
+                                required={lotOptions.length > 0}
                               >
-                                <option value="">Auto / First Available Lot</option>
+                                {lotOptions.length === 0 ? (
+                                  <option value="">No lot (unassigned stock)</option>
+                                ) : (
+                                  <option value="">Select a lot</option>
+                                )}
                                 {lotOptions.map((lot) => (
                                   <option key={lot.id} value={lot.id}>
-                                    {lot.lotNumber} ({lot.equityBadge}) — Rem: {lot.qtyRemainingSharedWarehouse}
+                                    {lot.lotNumber} — Available: {prodEntry?.lots.find((productLot) => productLot.id === lot.id)?.qtyRemainingSharedWarehouse ?? 0}
                                   </option>
                                 ))}
                               </select>
@@ -2857,7 +2951,7 @@ export default function PartnershipClient({
                             {/* Qty */}
                             <div className="sm:col-span-2 space-y-1">
                               <div className="flex items-center justify-between">
-                                <label className="text-[11px] font-medium text-slate-500">Qty *</label>
+                                <label className="text-[11px] font-medium text-slate-500">Adjustment delta *</label>
                                 {item.direction === "OUT" && (
                                   <span className="text-[10px] text-amber-700 dark:text-amber-400 font-mono font-bold">
                                     Avail: {availInWH}
@@ -2954,7 +3048,7 @@ export default function PartnershipClient({
               </div>
 
               {/* Sticky Footer */}
-              <div className="p-3 border-t border-slate-200 dark:border-slate-800 shrink-0 bg-slate-50 dark:bg-slate-900/90 flex items-center justify-between z-10">
+              <div className="sticky bottom-0 p-3 border-t border-slate-200 dark:border-slate-800 shrink-0 bg-slate-50 dark:bg-slate-900/95 flex items-center justify-between z-10">
                 <span className="text-xs text-slate-500 font-mono">
                   {adjustItems.length} line item(s) to process
                 </span>
@@ -2974,7 +3068,7 @@ export default function PartnershipClient({
                     disabled={submittingAdjust}
                     className="bg-amber-800 hover:bg-amber-700 text-white h-8 text-xs font-semibold shadow-xs px-4"
                   >
-                    {submittingAdjust ? "Posting Bulk Adjustment..." : "Post Bulk Adjustment"}
+                    {submittingAdjust ? "Saving Adjustments..." : "Save Adjustments"}
                   </Button>
                 </div>
               </div>

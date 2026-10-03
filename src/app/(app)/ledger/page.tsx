@@ -98,7 +98,7 @@ function ParticularsCell({
 
   const primaryLabel = docLabel || description || "Transaction";
   const hasItems = items.length > 0;
-  const secondaryText = cleanDescription && cleanDescription !== description ? cleanDescription : description;
+  const secondaryText = cleanDescription?.trim();
 
   return (
     <div className="flex flex-col gap-0.5">

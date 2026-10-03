@@ -7,8 +7,8 @@ import { requireSession } from "@/lib/auth/session";
 import { userError } from "@/lib/errors";
 import { getPartyBalance } from "@/lib/ledger";
 import { StockMovementType, InvoiceStatus, AccountType } from "@prisma/client";
-import { getStockOnHand } from "@/lib/stock";
-import { generateDocumentNumber } from "@/lib/concurrency";
+import { assertStockDeductionsAvailable, getStockOnHand } from "@/lib/stock";
+import { generateDocumentNumber, withResourceQueue } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { createPaymentAction } from "@/actions/payments";
@@ -92,9 +92,20 @@ export async function adjustSharedWarehouseStockAction(raw: unknown) {
 
     const location = await prisma.location.findUnique({
       where: { id: input.locationId },
-      select: { id: true, name: true },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        warehouseLots: {
+          where: { isActive: true, deletedAt: null },
+          select: { id: true, lotNumber: true },
+        },
+      },
     });
     if (!location) throw userError("Location not found.");
+    if (location.type !== "WAREHOUSE") {
+      throw userError("Shared warehouse adjustments must target a warehouse location.");
+    }
 
     // Normalize items
     const itemsToProcess: Array<{
@@ -112,7 +123,7 @@ export async function adjustSharedWarehouseStockAction(raw: unknown) {
           productId: it.productId,
           warehouseLotId: it.warehouseLotId || undefined,
           quantity: it.quantity,
-          direction: it.direction,
+          direction: it.direction || "OUT",
           reason: it.reason?.trim() || input.reason?.trim() || "Warehouse stock adjustment",
           notes: it.notes?.trim() || input.notes?.trim() || undefined,
         });
@@ -130,7 +141,19 @@ export async function adjustSharedWarehouseStockAction(raw: unknown) {
 
     const createdMovements: string[] = [];
 
-    await prisma.$transaction(async (tx) => {
+    await withResourceQueue(
+      itemsToProcess.map((item) => `stock:${item.productId}:${input.locationId}`),
+      async (tx) => {
+      const deductions = itemsToProcess
+        .filter((item) => item.direction === "OUT")
+        .map((item) => ({
+          productId: item.productId,
+          locationId: input.locationId,
+          warehouseLotId: item.warehouseLotId,
+          quantity: item.quantity,
+        }));
+      await assertStockDeductionsAvailable(deductions, tx);
+
       for (const item of itemsToProcess) {
         const product = await tx.product.findUnique({
           where: { id: item.productId },
@@ -138,23 +161,30 @@ export async function adjustSharedWarehouseStockAction(raw: unknown) {
         });
         if (!product) throw userError(`Product with ID ${item.productId} not found.`);
 
-        let lotRecord = null;
+        let lotRecord: { id: string; lotNumber: string; locationId: string } | null = null;
         if (item.warehouseLotId) {
-          lotRecord = await tx.warehouseLot.findUnique({
-            where: { id: item.warehouseLotId },
+          lotRecord = await tx.warehouseLot.findFirst({
+            where: {
+              id: item.warehouseLotId,
+              locationId: input.locationId,
+              isActive: true,
+              deletedAt: null,
+            },
             select: { id: true, lotNumber: true, locationId: true },
           });
+          if (
+            !lotRecord ||
+            lotRecord.locationId !== input.locationId ||
+            !location.warehouseLots.some((lot) => lot.id === item.warehouseLotId)
+          ) {
+            throw userError(`The selected lot does not belong to ${location.name}.`);
+          }
         }
 
-        // Check available stock if decremented
-        if (item.direction === "OUT") {
-          const current = await getStockOnHand(item.productId, input.locationId, undefined, item.warehouseLotId || undefined);
-          if (current < item.quantity) {
-            const lotDesc = lotRecord ? ` (Lot ${lotRecord.lotNumber})` : "";
-            throw userError(
-              `Insufficient stock for ${product.name}${lotDesc} at ${location.name}. Available: ${current} ${product.unit}, Requested: ${item.quantity}`
-            );
-          }
+        if (location.warehouseLots.length > 0 && !item.warehouseLotId) {
+          throw userError(
+            `A specific lot batch must be selected for stock adjustments at ${location.name}.`
+          );
         }
 
         const delta = item.direction === "IN" ? item.quantity : -item.quantity;
@@ -179,7 +209,8 @@ export async function adjustSharedWarehouseStockAction(raw: unknown) {
 
         createdMovements.push(movement.id);
       }
-    });
+    },
+    );
 
     emitRealtimeEvent(["inventory", "stock-movements", "dashboard"], "create", "StockMovement", {
       count: createdMovements.length,
@@ -532,17 +563,15 @@ export async function pullPartnershipStockToShopAction(raw: unknown) {
       : null;
 
     if (!destinationLocation) {
-      destinationLocation =
-        (await prisma.location.findFirst({
-          where: { isActive: true, deletedAt: null, type: "SHOP" },
-          select: { id: true, name: true, type: true },
-        })) ||
-        (await prisma.location.findFirst({
-          where: { isActive: true, deletedAt: null },
-          select: { id: true, name: true, type: true },
-        }));
+      destinationLocation = await prisma.location.findFirst({
+        where: { isActive: true, deletedAt: null, type: "SHOP" },
+        select: { id: true, name: true, type: true },
+      });
     }
     if (!destinationLocation) throw userError("Destination Shop location not found.");
+    if (destinationLocation.type !== "SHOP") {
+      throw userError("Partnership stock must be received at a shop location.");
+    }
 
     const activeYear = await prisma.financialYear.findFirst({
       where: { isActive: true, isClosed: false },
@@ -569,6 +598,9 @@ export async function pullPartnershipStockToShopAction(raw: unknown) {
         where: { id: item.lotId },
       });
       if (!sourceLot) throw userError(`Selected partnership source lot (${item.lotId}) not found.`);
+      if (sourceLot.partnerId !== partner.id) {
+        throw userError(`Selected lot ${sourceLot.lotNumber} is not assigned to ${partner.name}.`);
+      }
 
       const sourceLocationId = input.sourceLocationId || sourceLot.locationId;
       const sourceLocation = await prisma.location.findUnique({
@@ -576,6 +608,9 @@ export async function pullPartnershipStockToShopAction(raw: unknown) {
         select: { id: true, name: true, type: true },
       });
       if (!sourceLocation) throw userError(`Source Warehouse location (${sourceLocationId}) not found.`);
+      if (sourceLocation.type !== "WAREHOUSE" || sourceLot.locationId !== sourceLocation.id) {
+        throw userError(`Selected lot ${sourceLot.lotNumber} does not belong to the source warehouse.`);
+      }
 
       const product = await prisma.product.findUnique({
         where: { id: item.productId },
@@ -619,8 +654,23 @@ export async function pullPartnershipStockToShopAction(raw: unknown) {
     const totalBatchValuation = validatedRows.reduce((sum, r) => sum + r.totalValuation, 0);
     const totalBatchPayable = validatedRows.reduce((sum, r) => sum + r.payableToPartner, 0);
 
-    const res = await prisma.$transaction(async (tx) => {
+    const res = await withResourceQueue(
+      validatedRows.flatMap((row) => [
+        `stock:${row.product.id}:${row.sourceLocationId}`,
+        `stock:${row.product.id}:${destinationLocation.id}`,
+      ]),
+      async (tx) => {
       const invoiceNo = generateDocumentNumber("PINV-PULL");
+
+      await assertStockDeductionsAvailable(
+        validatedRows.map((row) => ({
+          productId: row.product.id,
+          locationId: row.sourceLocationId,
+          warehouseLotId: row.sourceLot.id,
+          quantity: row.quantity,
+        })),
+        tx,
+      );
 
       // 1. Process or find shop lots for each line
       const invoiceItemsData: Array<{
@@ -647,6 +697,20 @@ export async function pullPartnershipStockToShopAction(raw: unknown) {
               partnerId: partner.id,
               lotNumber: row.sourceLot.lotNumber,
               description: `Pulled from ${row.sourceLocationName} [Lot ${row.sourceLot.lotNumber}] (${row.partnerSharePct}% Partner / ${row.clientSharePct}% Client)`,
+              unitCost: row.baseCost,
+              partnerSharePct: row.partnerSharePct,
+              clientSharePct: row.clientSharePct,
+            },
+          });
+        } else if (shopLot.partnerId && shopLot.partnerId !== partner.id) {
+          throw userError(
+            `Shop lot ${shopLot.lotNumber} is already assigned to a different partner.`
+          );
+        } else if (!shopLot.partnerId) {
+          shopLot = await tx.warehouseLot.update({
+            where: { id: shopLot.id },
+            data: {
+              partnerId: partner.id,
               unitCost: row.baseCost,
               partnerSharePct: row.partnerSharePct,
               clientSharePct: row.clientSharePct,
@@ -764,7 +828,8 @@ export async function pullPartnershipStockToShopAction(raw: unknown) {
         quantityMoved: validatedRows.reduce((sum, r) => sum + r.quantity, 0),
         itemsCount: validatedRows.length,
       };
-    });
+      },
+    );
 
     emitRealtimeEvent(["inventory", "stock-movements", "purchases", "parties", "ledger"], "create", "StockPull", {
       invoiceId: res.invoiceId,
@@ -815,14 +880,23 @@ export async function getPartnershipHubDataAction(
           where: {
             isActive: true,
             deletedAt: null,
+            type: "WAREHOUSE",
             OR: [
               { name: { contains: "Partner", mode: "insensitive" } },
               { name: { contains: "Shared", mode: "insensitive" } },
-              { type: "WAREHOUSE" },
             ],
           },
           select: { id: true, name: true, type: true },
-        })) || null;
+        })) ||
+        (await prisma.location.findFirst({
+          where: {
+            isActive: true,
+            deletedAt: null,
+            type: "WAREHOUSE",
+          },
+          select: { id: true, name: true, type: true },
+        })) ||
+        null;
     }
 
     // Resolve Shop location

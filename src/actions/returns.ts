@@ -8,7 +8,7 @@ import { canPerformAction } from "@/lib/auth/permissions";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { saleReturnSchema, purchaseReturnSchema } from "@/schemas/return";
-import { getStockOnHand } from "@/lib/stock";
+import { assertStockDeductionsAvailable } from "@/lib/stock";
 import { AccountType, StockMovementType } from "@prisma/client";
 import { getActiveFinancialYear, getNextAtomicSequence, updateInvoiceSettlementStatus } from "@/lib/financial-year";
 
@@ -242,12 +242,32 @@ export async function createPurchaseReturnAction(raw: unknown) {
         throw userError("Purchase invoice not found.");
       }
 
-      // Validate quantities against original invoice and available stock on hand
-      for (const returnItem of input.items) {
-        const origItem = invoice.items.find((i) => i.productId === returnItem.productId);
-        if (!origItem) {
+      // Validate quantities against original invoice and exact lot balances.
+      const sourceItems = input.items.map((returnItem) => {
+        const originalItem = invoice.items.find((item) => item.productId === returnItem.productId);
+        if (!originalItem) {
           throw userError(`Product does not exist on purchase invoice ${invoice.invoiceNo}.`);
         }
+        return {
+          returnItem,
+          originalItem,
+          locationId: originalItem.locationId || invoice.locationId,
+        };
+      });
+
+      await assertStockDeductionsAvailable(
+        sourceItems.map(({ returnItem, originalItem, locationId }) => ({
+          productId: returnItem.productId,
+          locationId,
+          warehouseLotId: originalItem.warehouseLotId,
+          quantity: returnItem.quantity,
+        })),
+        tx,
+      );
+
+      for (const returnItem of input.items) {
+        const origItem = invoice.items.find((i) => i.productId === returnItem.productId);
+        if (!origItem) throw userError(`Product does not exist on purchase invoice ${invoice.invoiceNo}.`);
 
         const previouslyReturned = invoice.returns.reduce((sum, ret) => {
           const item = ret.items.find((i) => i.productId === returnItem.productId);
@@ -261,12 +281,6 @@ export async function createPurchaseReturnAction(raw: unknown) {
           );
         }
 
-        const available = await getStockOnHand(returnItem.productId, invoice.locationId, tx);
-        if (available < returnItem.quantity) {
-          throw userError(
-            `Insufficient stock on hand at ${invoice.location.name} to process purchase return. Available: ${available}, Requested: ${returnItem.quantity}.`,
-          );
-        }
       }
 
       const totalAmount = input.items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
@@ -301,11 +315,12 @@ export async function createPurchaseReturnAction(raw: unknown) {
       });
 
       // Stock movements: PURCHASE_RETURN (Outbound stock returned to supplier)
-      for (const item of input.items) {
+      for (const { returnItem: item, originalItem, locationId } of sourceItems) {
         await tx.stockMovement.create({
           data: {
             productId: item.productId,
-            locationId: invoice.locationId,
+            locationId,
+            warehouseLotId: originalItem.warehouseLotId,
             type: StockMovementType.PURCHASE_RETURN,
             quantity: item.quantity,
             referenceType: "PURCHASE_RETURN",

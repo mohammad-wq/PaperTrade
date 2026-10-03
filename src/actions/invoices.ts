@@ -4,7 +4,7 @@ import { parseInput, runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
-import { getStockOnHand } from "@/lib/stock";
+import { assertStockDeductionsAvailable, assertStockAvailableForDeduction, getStockOnHand } from "@/lib/stock";
 import { getPartyBalance } from "@/lib/ledger";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
@@ -159,24 +159,16 @@ export async function createSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // 2. Verify stock availability for each product at its specified location
-      for (const item of input.items) {
-        const itemLocId = item.locationId || fallbackLocationId;
-        const available = await getStockOnHand(item.productId, itemLocId, tx);
-        if (available < item.quantity) {
-          const product = await tx.product.findUnique({
-            where: { id: item.productId },
-            select: { name: true, productNo: true, unit: true },
-          });
-          const loc = await tx.location.findUnique({
-            where: { id: itemLocId },
-            select: { name: true },
-          });
-          throw userError(
-            `Insufficient stock for "${product?.productNo} - ${product?.name}" at ${loc?.name || "location"}. Available: ${available} ${product?.unit || "Packets"}, Requested: ${item.quantity}.`,
-          );
-        }
-      }
+      // Validate exact lot balances; aggregate duplicate invoice lines before checking.
+      await assertStockDeductionsAvailable(
+        input.items.map((item) => ({
+          productId: item.productId,
+          locationId: item.locationId || fallbackLocationId,
+          warehouseLotId: item.warehouseLotId,
+          quantity: item.quantity,
+        })),
+        tx,
+      );
 
       // Resolve payment amount (for walk-in or immediate cash settlement)
       const rawPaid = typeof input.amountPaid === "number" ? input.amountPaid : 0;
@@ -676,24 +668,16 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         await tx.payment.delete({ where: { id: op.id } });
       }
 
-      // 3. Verify stock availability for each item at its specified location (now that old stock movements are cleared)
-      for (const item of input.items) {
-        const itemLocId = item.locationId || fallbackLocationId;
-        const available = await getStockOnHand(item.productId, itemLocId, tx);
-        if (available < item.quantity) {
-          const product = await tx.product.findUnique({
-            where: { id: item.productId },
-            select: { name: true, productNo: true, unit: true },
-          });
-          const loc = await tx.location.findUnique({
-            where: { id: itemLocId },
-            select: { name: true },
-          });
-          throw userError(
-            `Insufficient stock for "${product?.productNo} - ${product?.name}" at ${loc?.name || "location"}. Available: ${available} ${product?.unit || "Packets"}, Requested: ${item.quantity}.`,
-          );
-        }
-      }
+      // Revalidate exact lot balances after the previous invoice movements have been removed.
+      await assertStockDeductionsAvailable(
+        input.items.map((item) => ({
+          productId: item.productId,
+          locationId: item.locationId || fallbackLocationId,
+          warehouseLotId: item.warehouseLotId,
+          quantity: item.quantity,
+        })),
+        tx,
+      );
 
       // Resolve payment amount
       const rawPaid = typeof input.amountPaid === "number" ? input.amountPaid : 0;
@@ -1188,6 +1172,11 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           })
         : [];
       const lotMap = new Map(referencedLots.map((l) => [l.id, l]));
+      for (const lotId of referencedLotIds) {
+        if (!lotMap.has(lotId)) {
+          throw userError(`Selected source lot ${lotId} does not exist.`);
+        }
+      }
 
       // Check primary lot equity split
       const primaryLot = referencedLots[0];
@@ -1230,6 +1219,8 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
                   where: { id: srcLot.id },
                   data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
                 });
+              } else if (srcLot.partnerId !== partnerIdForLot) {
+                throw userError(`Lot ${srcLot.lotNumber} belongs to a different partner.`);
               }
             } else {
               // Ensure receiving Shop location has a corresponding partner lot with the same lot number
@@ -1256,6 +1247,8 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
                   where: { id: receivingLot.id },
                   data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
                 });
+              } else if (receivingLot.partnerId !== partnerIdForLot) {
+                throw userError(`Shop lot ${receivingLot.lotNumber} belongs to a different partner.`);
               }
               finalLotId = receivingLot.id;
             }
@@ -1268,6 +1261,8 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
                     where: { id: givenLot.id },
                     data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
                   });
+                } else if (givenLot.partnerId !== partnerIdForLot) {
+                  throw userError(`Lot ${givenLot.lotNumber} belongs to a different partner.`);
                 }
               } else {
                 let receivingLot = await tx.warehouseLot.findFirst({
@@ -1290,6 +1285,8 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
                     where: { id: receivingLot.id },
                     data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
                   });
+                } else if (receivingLot.partnerId !== partnerIdForLot) {
+                  throw userError(`Shop lot ${receivingLot.lotNumber} belongs to a different partner.`);
                 }
                 finalLotId = receivingLot.id;
               }
@@ -1317,6 +1314,8 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
                 where: { id: receivingLot.id },
                 data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
               });
+            } else if (receivingLot.partnerId !== partnerIdForLot) {
+              throw userError(`Shop lot ${receivingLot.lotNumber} belongs to a different partner.`);
             }
             finalLotId = receivingLot.id;
           }
@@ -1384,6 +1383,18 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
 
       // Create stock movements at receiving location only if not already fulfilled
       if (!alreadyFulfilledByPO) {
+        await assertStockDeductionsAvailable(
+          resolvedItems
+            .filter((item) => item.srcLot && item.srcLot.locationId !== item.locationId)
+            .map((item) => ({
+              productId: item.productId,
+              locationId: item.srcLot!.locationId,
+              warehouseLotId: item.srcLot!.id,
+              quantity: item.quantity,
+            })),
+          tx,
+        );
+
         for (const item of resolvedItems) {
           // If stock was pulled from Shared Warehouse into Shop (different location):
           // Decrement the available quantity in the Shared Warehouse location

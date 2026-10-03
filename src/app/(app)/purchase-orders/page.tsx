@@ -468,9 +468,16 @@ export default function PurchaseOrdersPage() {
   }
 
   function handleCreatePurchaseInvoiceFromPO(po: PORow) {
-    // When converting a PO to a Purchase Invoice, set the invoice destination and header location to the Main Retail Shop (destinationLocationId), not the source Partnership Warehouse.
-    const shopLoc = dbLocations.find((l) => l.name.toLowerCase().includes("shop") || l.type === "SHOP") ?? dbLocations[0];
-    const destinationShopId = po.items.find((i: any) => i.destinationLocationId)?.destinationLocationId || shopLoc?.id || po.location?.id || "";
+    const shopLoc =
+      dbLocations.find((location) => location.name.trim().toLowerCase() === "main retail shop") ||
+      dbLocations.find((location) => location.type === "SHOP");
+    if (!shopLoc) {
+      void confirm.alert("A Main Retail Shop location must be configured before converting this PO.", {
+        variant: "destructive",
+      });
+      return;
+    }
+    const destinationShopId = shopLoc.id;
 
     const payload = {
       purchaseOrderId: po.id,
@@ -479,12 +486,21 @@ export default function PurchaseOrdersPage() {
       locationId: destinationShopId,
       destinationLocationId: destinationShopId,
       includePricing: po.includePricing,
-      isPartnership: Boolean((po as any).isPartnership || po.supplier?.isBeneficiary || po.supplier?.isPartner),
+      isPartnership: Boolean((po as any).isPartnership || (po.supplier as any)?.isBeneficiary || (po.supplier as any)?.isPartner),
       items: po.items.map((item: any) => {
         const prod = products.find((p) => p.id === (item.product?.id || item.productId));
-        // Invoice Price Fallback for Unpriced POs: Pre-populate with product's master cost price or batch intake cost
-        const fallbackCost = prod?.costPrice || item.unitCost || 0;
-        const resolvedCost = po.includePricing ? (item.unitCost ?? fallbackCost) : fallbackCost;
+        const intakeCost = Number(item.unitCost);
+        const masterCost = Number(prod?.costPrice);
+        const fallbackCost =
+          Number.isFinite(intakeCost) && intakeCost > 0
+            ? intakeCost
+            : Number.isFinite(masterCost) && masterCost > 0
+              ? masterCost
+              : 0;
+        const resolvedCost =
+          po.includePricing && Number.isFinite(intakeCost) && intakeCost > 0
+            ? intakeCost
+            : fallbackCost;
 
         return {
           productId: item.product?.id || item.productId || "",
@@ -1166,9 +1182,12 @@ export default function PurchaseOrdersPage() {
                                 availText = ` (Lot Avail: ${count} ${p.unit})`;
                               } else if (isSourceSharedStock) {
                                 const partnerInv = inventory.filter(
-                                  (inv) => inv.productId === p.id && (inv.stockCategory === "BENEFICIARY" || inv.beneficiaryId === supplierId)
+                                  (inv) => inv.productId === p.id && inv.beneficiaryId === supplierId,
                                 );
-                                const count = partnerInv.reduce((sum, inv) => sum + (inv.available || 0), 0);
+                                const count = partnerInv.reduce((sum, inv) => {
+                                  const available = Number(inv.available);
+                                  return Number.isFinite(available) && available > 0 ? sum + available : sum;
+                                }, 0);
                                 availText = ` (Shared Stock: ${count} ${p.unit})`;
                               } else if (inventory.length > 0) {
                                 const count = inventory.filter((inv) => inv.productId === p.id).reduce((sum, inv) => sum + (inv.available || 0), 0);
@@ -1225,7 +1244,7 @@ export default function PurchaseOrdersPage() {
                                 const invRow = item.productId
                                   ? inventory.find((inv) => inv.productId === item.productId && inv.lotId === lot.id)
                                   : null;
-                                const count = invRow ? invRow.available : (lot.currentStock ?? 0);
+                                const count = invRow ? invRow.available : ((lot as any).currentStock ?? 0);
                                 return {
                                   id: lot.id,
                                   label: `#${lot.lotNumber} (${count} avail)`,

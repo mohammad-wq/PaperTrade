@@ -1,0 +1,115 @@
+<USER_REQUEST>
+# Comprehensive Bug Fix: Partnership Bulk Adjustment, Negative Unassigned Stock, Location Isolation, and Metrics
+
+Resolve the failure in `partnerships.adjustSharedStock`, prevent negative/unassigned stock leaks, correct top metric cards, and clean up the Ledger layout.
+
+---
+
+## 1. Fix `partnerships.adjustSharedStock` Mutation & Modal
+
+Files: `src/actions/partnerships.ts` and Partnership Adjustment Modal components
+
+* **Fix Absolute vs. Delta Quantity Handling:**
+  * In the adjustment modal, clarify whether the user is entering **New Total Count** or an **Adjustment Delta (+/-)**.
+  * If the user enters a target final count (e.g. `1,000`):
+    * Calculate: `delta = targetCount - currentAvailable`.
+    * If `delta > 0`: create `ADJUSTMENT_IN` for `delta`.
+    * If `delta < 0`: create `ADJUSTMENT_OUT` for `Math.abs(delta)`.
+  * If using manual delta inputs, do not deduct the full quantity when an addition was intended.
+* **Fix Target Location Scoping:**
+  * Do not let the adjustment action default to `Personal Warehouse`.
+  * The mutation must strictly target the specific `warehouseId` (e.g. `Partnership Warehouse`) and `lotId` selected in the modal or table row.
+* **Fix Modal Cutoff:**
+  * Add `max-h-[85vh] overflow-y-auto` to the modal container.
+  * Use a flex container with a sticky header and sticky bottom buttons (`Save`, `Cancel`) so the controls are never cut off.
+* **Support Bulk Adjustments:**
+  * Allow adjusting multiple products and lots in one session.
+
+---
+
+## 2. Eliminate Negative Unassigned Stock & Enforce Lot Integrity
+
+Files: `src/actions/sales.ts`, `src/actions/delivery-orders.ts`, `src/actions/inventory.ts`, `src/actions/purchases.ts`
+
+* **Block Negative Stock Deductions:**
+  * Before recording any outbound movement (`SALE_OUT`, `TRANSFER_OUT`, `ADJUSTMENT_OUT`):
+    * Verify that `availableQuantity - requestedQuantity >= 0`.
+    * If balance is insufficient, abort the transaction and return a clear user error.
+* **Require Explicit Lot ID:**
+  * When reducing inventory from a location that contains lots (such as `Partnership Warehouse`), **never** record stock movements with `lotId = null`.
+  * Deductions must decrement the specified Lot (e.g., Lot #101). Do not dump overflow into an `Unassigned` bucket.
+
+---
+
+## 3. Fix Zeroed-out Top Inventory Metric Cards
+
+File: `src/actions/inventory.ts` or `src/app/(app)/inventory/page.tsx`
+
+* The top cards (`Total Wt: 0 kg`, `Tonnage: 0.000 T`, `Units: 0`) must dynamically aggregate all positive active stock matching the selected location and lot filter.
+* Ensure:
+  * `Units` = Total valid packet balances.
+  * `Total Wt (kg)` = Sum of `(packets * product.packetWeight)`.
+  * `Tonnage (T)` = `Total Wt / 1,000`.
+* A single corrupted row or negative unassigned entry must not zero out valid stock tallies.
+
+---
+
+## 4. Partnership PO to Purchase Invoice: Location & Partner Lot Tagging
+
+Files: `src/actions/orders.ts`, `src/actions/purchases.ts`, and PO-to-PI conversion handlers
+
+* **Show Available Balance:** When creating a PO from the Partnership Hub, show current available stock next to each product.
+* **Price Fallback on Conversion:** When converting an unpriced PO to a Purchase Invoice:
+  * Pre-populate each line's `unitPrice` with the product's master cost or intake cost as an editable default.
+* **Preserve Shop Location:** Ensure the converted Purchase Invoice sets its receiving and header location to **Main Retail Shop**, not the source warehouse.
+* **Tag Shop Inward Stock to Partner Lot:**
+  * Post the incoming stock movements (`PURCHASE_IN`) linked to the **Partner Lot** (`isPartnership = true`, `partnerId = Person B`).
+  * Ensure this stock appears under the **Beneficiary / Partner Stock** selector in Shop Sale Invoices.
+
+---
+
+## 5. Ledger "Particulars / Account" Readability Polish
+
+Files: `src/app/(app)/ledger/page.tsx` and `src/components/ledger/`
+
+Clean up the table layout:
+* Remove repeated party titles (e.g., `test partner 1 [SUPPLIER] PAYABLE`) from individual table rows.
+* Strip verbose sentences like `Payable to vendor test partner 1 for Partnership Intake...`.
+* Use a structured 2-line layout:
+  * **Line 1 (Bold):** Clean transaction type and document number (e.g., `Partnership Intake #PINV-SH-2610-961047-CBGR`).
+  * **Line 2 (Muted text):** Compact item breakdown (e.g., `[1501] Newsprint 180gsm red (100 PKT) • [1502] Newsprint 180gsm blue (100 PKT)`).
+
+---
+
+## 6. One-Time Data Repair Script
+
+Create a brief cleanup script in `prisma/seed.ts` or a temporary server action:
+* Query `StockMovement` records where `lotId IS NULL` in `Partnership Warehouse` with negative quantities.
+* Re-link them to the correct lot (e.g. Lot #101) or adjust them to bring physical stock back into alignment.
+
+---
+
+## 7. Verification Steps
+
+1. **Adjustment Test:** Open Bulk Adjust in the Partnership Hub for Partnership Warehouse. Adjust a product by +10 packets. Verify no `Insufficient stock at Personal Warehouse` error occurs in the terminal.
+2. **Negative Deduction Prevention:** Attempt to deduct 500 packets from a lot with only 100 packets. Confirm the server safely blocks it with an insufficient stock warning.
+3. **Inventory Dashboard:** Open `/inventory`. Verify the top cards display accurate, non-zero values for `Units`, `Total Wt`, and `Tonnage`.
+4. **PO to PI Flow:** Convert a PO to a Purchase Invoice, confirm the location is Shop, confirm default cost rates appear, and verify the resulting shop stock is tagged to Person B's lot.
+5. **Ledger Check:** Open `/ledger` for `test partner 1` and confirm particulars render as concise two-line entries.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-10-03T14:27:51+05:00.
+
+The user's current state is as follows:
+Active Document: c:\Users\dell\Desktop\PaperTrade\src\proxy.ts (LANGUAGE_TYPESCRIPT)
+Cursor is on line: 1
+Other open documents:
+- c:\Users\dell\Desktop\PaperTrade\src\lib\auth\session.ts (LANGUAGE_TYPESCRIPT)
+- c:\Users\dell\Desktop\PaperTrade\src\app\(app)\users\page.tsx (LANGUAGE_TSX)
+- c:\Users\dell\Desktop\PaperTrade\src\proxy.ts (LANGUAGE_TYPESCRIPT)
+- c:\Users\dell\Desktop\PaperTrade\src\app\(app)\partnerships\partnership-client.tsx (LANGUAGE_TSX)
+- c:\Users\dell\Desktop\PaperTrade\.next\BUILD_ID (LANGUAGE_UNSPECIFIED)
+</ADDITIONAL_METADATA>
+<USER_SETTINGS_CHANGE>
+The user changed setting `Model Selection` from Gemini 3.8 Flash (Medium) to Claude Sonnet 4.6 (Thinking). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.
+</USER_SETTINGS_CHANGE>

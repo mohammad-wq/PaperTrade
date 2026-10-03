@@ -13,7 +13,7 @@ import {
   bulkStockAdjustmentSchema,
   bulkStockTransferSchema,
 } from "@/schemas/inventory";
-import { getStockOnHand } from "@/lib/stock";
+import { assertStockDeductionsAvailable, getStockOnHand } from "@/lib/stock";
 import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
@@ -242,9 +242,11 @@ export async function listInventoryAction() {
           (lot) => !lot.partnerId && !lot.partner?.isBeneficiary
         );
 
-        const unassignedStock = lotStockMap.get(`${product.id}:${location.id}:`) ?? 0;
+        const unassignedStockRaw = lotStockMap.get(`${product.id}:${location.id}:`) ?? 0;
+        // Clamp unassigned to 0 so corrupted null-lot movements don't cancel valid lot stock
+        const unassignedStock = Math.max(0, unassignedStockRaw);
         const nonPartnerLotsStock = nonPartnerLots.reduce(
-          (sum, lot) => sum + (lotStockMap.get(`${product.id}:${location.id}:${lot.id}`) ?? 0),
+          (sum, lot) => sum + Math.max(0, lotStockMap.get(`${product.id}:${location.id}:${lot.id}`) ?? 0),
           0
         );
         const regularAvailable = unassignedStock + nonPartnerLotsStock;
@@ -259,7 +261,7 @@ export async function listInventoryAction() {
             description: lot.description,
             available: lotStockMap.get(`${product.id}:${location.id}:${lot.id}`) ?? 0,
           })),
-          ...(unassignedStock !== 0
+          ...(unassignedStock > 0
             ? [
                 {
                   id: null,
@@ -299,7 +301,8 @@ export async function listInventoryAction() {
 
         // Separate row for each Partner / Beneficiary lot
         for (const pLot of partnerLots) {
-          const lotStock = lotStockMap.get(`${product.id}:${location.id}:${pLot.id}`) ?? 0;
+          const lotStockRaw = lotStockMap.get(`${product.id}:${location.id}:${pLot.id}`) ?? 0;
+          const lotStock = Math.max(0, lotStockRaw);
           // Only create partner row if stock exists or if lots are configured
           resultRows.push({
             productId: product.id,
@@ -528,6 +531,8 @@ export async function adjustStockAction(raw: unknown) {
     if (input.warehouseLotId) {
       const lot = location.warehouseLots.find((l) => l.id === input.warehouseLotId);
       if (!lot) throw userError("Selected lot does not exist in this location.");
+    } else if (location.warehouseLots.length > 0) {
+      throw userError(`Select a specific lot before adjusting stock at ${location.name}.`);
     }
 
     const lockKeys = [`stock:${input.productId}:${input.locationId}`];
@@ -541,9 +546,16 @@ export async function adjustStockAction(raw: unknown) {
       );
       const desired = input.direction === "OUT" ? currentStock - input.quantity : currentStock + input.quantity;
 
-      if (input.direction === "OUT" && currentStock < input.quantity) {
-        const targetDesc = input.warehouseLotId ? "the selected lot" : "standard stock";
-        throw userError(`Insufficient stock for this adjustment. Available in ${targetDesc}: ${currentStock}, Requested: ${input.quantity}.`);
+      if (input.direction === "OUT") {
+        await assertStockDeductionsAvailable(
+          [{
+            productId: input.productId,
+            locationId: input.locationId,
+            warehouseLotId: input.warehouseLotId,
+            quantity: input.quantity,
+          }],
+          tx,
+        );
       }
 
       const movementType = "ADJUSTMENT";
@@ -608,6 +620,12 @@ export async function transferStockAction(raw: unknown) {
       const lot = toLocation.warehouseLots.find((l) => l.id === input.toWarehouseLotId);
       if (!lot) throw userError(`Selected destination lot does not exist in "${toLocation.name}".`);
     }
+    if (fromLocation.warehouseLots.length > 0 && !input.fromWarehouseLotId) {
+      throw userError(`Select a specific source lot before transferring stock from ${fromLocation.name}.`);
+    }
+    if (toLocation.warehouseLots.length > 0 && !input.toWarehouseLotId) {
+      throw userError(`Select a specific destination lot before transferring stock to ${toLocation.name}.`);
+    }
 
     if (input.fromLocationId === input.toLocationId && (input.fromWarehouseLotId || "") === (input.toWarehouseLotId || "")) {
       throw userError("Source and destination lot cannot be identical in the same location.");
@@ -619,27 +637,15 @@ export async function transferStockAction(raw: unknown) {
     ];
 
     const res = await withResourceQueue(lockKeys, async (tx) => {
-      const fromStock = await getStockOnHand(
-        input.productId,
-        input.fromLocationId,
+      await assertStockDeductionsAvailable(
+        [{
+          productId: input.productId,
+          locationId: input.fromLocationId,
+          warehouseLotId: input.fromWarehouseLotId,
+          quantity: input.quantity,
+        }],
         tx,
-        input.fromWarehouseLotId ? input.fromWarehouseLotId : null,
       );
-      if (fromStock < input.quantity) {
-        const totalLocStock = await getStockOnHand(input.productId, input.fromLocationId, tx, undefined);
-        const prod = await tx.product.findUnique({ where: { id: input.productId }, select: { productNo: true, name: true } });
-        const prodLabel = `"${prod?.productNo || ""} ${prod?.name || ""}"`;
-        if (!input.fromWarehouseLotId && totalLocStock >= input.quantity) {
-          throw userError(
-            `Insufficient stock for ${prodLabel} in standard/unassigned stock (Available: ${fromStock}). However, ${totalLocStock} units exist in lots at this location. Please select the specific source lot.`
-          );
-        }
-        throw userError(
-          input.fromWarehouseLotId
-            ? `Not enough stock available for ${prodLabel} in the selected source lot. Available: ${fromStock}, Required: ${input.quantity}.`
-            : `Not enough stock available for ${prodLabel} in standard stock. Available: ${fromStock}, Required: ${input.quantity}.`,
-        );
-      }
 
       const referenceId = generateDocumentNumber("TRF");
       await tx.stockMovement.createMany({
@@ -731,6 +737,8 @@ export async function bulkAdjustStockAction(raw: unknown) {
         if (!lotExists) {
           throw userError(`Selected lot does not exist in warehouse "${loc.name}".`);
         }
+      } else if (locationMap.get(item.locationId)!.warehouseLots.length > 0) {
+        throw userError(`Select a specific lot before adjusting stock at ${locationMap.get(item.locationId)!.name}.`);
       }
     }
 
@@ -739,23 +747,19 @@ export async function bulkAdjustStockAction(raw: unknown) {
     const res = await withResourceQueue(lockKeys, async (tx) => {
       const referenceId = generateDocumentNumber("ADJ");
 
+      await assertStockDeductionsAvailable(
+        normalizedItems
+          .filter((item) => item.direction === "OUT")
+          .map((item) => ({
+            productId: item.productId,
+            locationId: item.locationId,
+            warehouseLotId: item.warehouseLotId,
+            quantity: item.quantity,
+          })),
+        tx,
+      );
+
       for (const item of normalizedItems) {
-        const lotFilter = item.warehouseLotId ? item.warehouseLotId : null;
-        const currentStock = await getStockOnHand(
-          item.productId,
-          item.locationId,
-          tx,
-          lotFilter,
-        );
-
-        if (item.direction === "OUT" && currentStock < item.quantity) {
-          const prod = await tx.product.findUnique({ where: { id: item.productId }, select: { productNo: true, name: true } });
-          const targetDesc = item.warehouseLotId ? "in the selected lot" : "in standard stock";
-          throw userError(
-            `Insufficient stock for "${prod?.productNo || ""} ${prod?.name || ""}" ${targetDesc}. Available: ${currentStock}, Required: ${item.quantity}.`
-          );
-        }
-
         await tx.stockMovement.create({
           data: {
             productId: item.productId,
@@ -825,6 +829,12 @@ export async function bulkTransferStockAction(raw: unknown) {
         const lot = toLocation.warehouseLots.find((l) => l.id === item.toWarehouseLotId);
         if (!lot) throw userError(`Selected destination lot does not exist in "${toLocation.name}".`);
       }
+      if (fromLocation.warehouseLots.length > 0 && !item.fromWarehouseLotId) {
+        throw userError(`Select a specific source lot before transferring stock from ${fromLocation.name}.`);
+      }
+      if (toLocation.warehouseLots.length > 0 && !item.toWarehouseLotId) {
+        throw userError(`Select a specific destination lot before transferring stock to ${toLocation.name}.`);
+      }
     }
 
     const lockKeys = input.items.flatMap((it) => [
@@ -835,30 +845,17 @@ export async function bulkTransferStockAction(raw: unknown) {
     const res = await withResourceQueue(lockKeys, async (tx) => {
       const referenceId = generateDocumentNumber("TRF");
 
+      await assertStockDeductionsAvailable(
+        input.items.map((item) => ({
+          productId: item.productId,
+          locationId: input.fromLocationId,
+          warehouseLotId: item.fromWarehouseLotId,
+          quantity: item.quantity,
+        })),
+        tx,
+      );
+
       for (const item of input.items) {
-        const fromLotFilter = item.fromWarehouseLotId ? item.fromWarehouseLotId : null;
-        const fromStock = await getStockOnHand(
-          item.productId,
-          input.fromLocationId,
-          tx,
-          fromLotFilter,
-        );
-
-        if (fromStock < item.quantity) {
-          const totalLocStock = await getStockOnHand(item.productId, input.fromLocationId, tx, undefined);
-          const prod = await tx.product.findUnique({ where: { id: item.productId }, select: { productNo: true, name: true } });
-          const prodTitle = `"${prod?.productNo || ""} ${prod?.name || ""}"`;
-          if (!item.fromWarehouseLotId && totalLocStock >= item.quantity) {
-            throw userError(
-              `Insufficient stock for ${prodTitle} in standard/unassigned stock (Available: ${fromStock}). However, ${totalLocStock} units exist in lots at this location. Please select the specific source lot.`
-            );
-          }
-          const locDesc = item.fromWarehouseLotId ? "in the selected source lot" : "in standard stock";
-          throw userError(
-            `Insufficient stock for ${prodTitle} ${locDesc}. Available: ${fromStock}, Required: ${item.quantity}.`
-          );
-        }
-
         await tx.stockMovement.createMany({
           data: [
             {

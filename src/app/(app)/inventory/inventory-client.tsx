@@ -475,20 +475,45 @@ export default function InventoryClient({
     [locationScopedRows],
   );
 
-  // Calculate total inventory weight in kg and tonnes
+  const metricRows = useMemo(
+    () =>
+      locationScopedRows.flatMap((row) => {
+        let quantity = row.available;
+        const selectedLotFilterApplies =
+          selectedLocationId !== "all" &&
+          selectedLocationLots.length > 1 &&
+          selectedLotId !== "all";
+
+        if (selectedLotFilterApplies) {
+          if (selectedLotId === "unassigned") {
+            quantity = row.lots?.find((lot) => lot.id === null)?.available ?? 0;
+          } else if (row.lotId !== selectedLotId) {
+            quantity = row.lots?.find((lot) => lot.id === selectedLotId)?.available ?? 0;
+          }
+        }
+
+        return row.isActive === false || !Number.isFinite(quantity) || quantity <= 0
+          ? []
+          : [{ row, quantity }];
+      }),
+    [locationScopedRows, selectedLocationId, selectedLocationLots.length, selectedLotId],
+  );
+
+  // Ignore invalid and non-positive balances per row so corrupt records cannot poison valid totals.
   const totalWeightInKg = useMemo(() => {
-    return filteredRows.reduce((sum, row) => {
-      if (row.available <= 0) return sum;
-      const unitWeight = row.unit === "PACKET" ? (row.packetWeight || 0) : (row.reamWeight || 0);
-      return sum + (row.available * unitWeight);
+    return metricRows.reduce((sum, { row, quantity }) => {
+      const unitWeight = row.unit === "PACKET" ? Number(row.packetWeight) : Number(row.reamWeight);
+      return Number.isFinite(unitWeight) && unitWeight > 0
+        ? sum + quantity * unitWeight
+        : sum;
     }, 0);
-  }, [filteredRows]);
+  }, [metricRows]);
 
   const totalWeightInTonnes = useMemo(() => totalWeightInKg / 1000, [totalWeightInKg]);
 
   const totalPhysicalUnits = useMemo(() => {
-    return filteredRows.reduce((sum, row) => sum + Math.max(0, row.available), 0);
-  }, [filteredRows]);
+    return metricRows.reduce((sum, { quantity }) => sum + quantity, 0);
+  }, [metricRows]);
 
   async function handleAdjustment(event: React.FormEvent) {
     event.preventDefault();

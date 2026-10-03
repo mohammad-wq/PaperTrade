@@ -4,7 +4,7 @@ import { parseInput, runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
-import { getStockOnHand } from "@/lib/stock";
+import { assertStockDeductionsAvailable, getStockOnHand } from "@/lib/stock";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { purchaseOrderSchema, purchaseOrderItemSchema, deliveryOrderSchema, deliveryOrderItemSchema } from "@/schemas/order";
@@ -94,6 +94,21 @@ async function createDeliveryOrderStockMovements(
   if (!destinationLocationId) {
     return;
   }
+
+  await assertStockDeductionsAvailable(
+    order.items.flatMap((item) => {
+      const sourceLocationId = item.locationId || order.locationId;
+      return sourceLocationId && sourceLocationId !== destinationLocationId
+        ? [{
+            productId: item.productId,
+            locationId: sourceLocationId,
+            warehouseLotId: item.warehouseLotId,
+            quantity: Number(item.quantity),
+          }]
+        : [];
+    }),
+    tx,
+  );
 
   for (const item of order.items) {
     // Line location strictly takes precedence over header location
@@ -922,4 +937,3 @@ export async function listLocationsAction() {
 export async function dispatchDeliveryOrderAction(id: string) {
   return updateDeliveryOrderStatusAction({ id, status: DeliveryOrderStatus.DISPATCHED });
 }
-

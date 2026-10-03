@@ -125,6 +125,7 @@ export async function listLedgerEntriesAction(filters?: {
               id: true,
               invoiceNo: true,
               sequenceNo: true,
+              isPartnership: true,
               items: {
                 select: {
                   quantity: true,
@@ -208,7 +209,7 @@ export async function listLedgerEntriesAction(filters?: {
     }
     for (const p of purchaseInvoices) {
       docMap.set(p.id, {
-        voucherType: "Purchase",
+        voucherType: p.isPartnership ? "Partnership Intake" : "Purchase",
         docNo: `#${formatSequenceDisplay(p.sequenceNo, p.invoiceNo)}`,
       });
       if (p.items && p.items.length > 0) {
@@ -318,8 +319,10 @@ export async function listLedgerEntriesAction(filters?: {
       // Generate clean document label
       let docLabel = "";
       if (e.referenceType === "PURCHASE_INVOICE") {
-        const isPartnership = docInfo.docNo.includes("PINV-SH") || (e.description && e.description.toLowerCase().includes("partnership"));
-        docLabel = isPartnership ? `Partnership Intake ${docInfo.docNo}` : `Purchase Invoice ${docInfo.docNo}`;
+        docLabel =
+          docInfo.voucherType === "Partnership Intake"
+            ? `Partnership Intake ${docInfo.docNo}`
+            : `Purchase Invoice ${docInfo.docNo}`;
       } else if (e.referenceType === "SALE_INVOICE") {
         docLabel = `Sale Invoice ${docInfo.docNo}`;
       } else if (e.referenceType === "PAYMENT") {
@@ -340,9 +343,8 @@ export async function listLedgerEntriesAction(filters?: {
 
       // Clean up description boilerplate
       let cleanDesc = (e.description || "")
-        .replace(/^Payable to (?:vendor|supplier|customer)\s+[^f]+for\s+/i, "")
-        .replace(/^Receivable from (?:customer|vendor)\s+[^f]+for\s+/i, "")
-        .replace(/^Payment (?:to|from)\s+[^—-]+[—–-]\s*/i, "")
+        .replace(/^(?:Payable to|Receivable from)\s+(?:vendor|supplier|customer)\s+.+?\s+for\s+/i, "")
+        .replace(/^Payment (?:to|from)\s+.+?\s+[—–-]\s*/i, "")
         .trim();
 
       return {
@@ -376,4 +378,3 @@ export async function listLedgerEntriesAction(filters?: {
     };
   });
 }
-
