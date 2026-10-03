@@ -97,6 +97,7 @@ type LineItem = {
   productId: string;
   locationId?: string;
   warehouseLotId?: string;
+  sourceWarehouseLotId?: string;
   quantity: number;
   unitCost: number;
 };
@@ -798,6 +799,7 @@ export default function PurchasesPage() {
           productId: i.productId,
           locationId: i.locationId || finalLocationId,
           warehouseLotId: i.warehouseLotId || undefined,
+          sourceWarehouseLotId: i.sourceWarehouseLotId || undefined,
           quantity: i.quantity,
           unitCost: i.unitCost,
         })),

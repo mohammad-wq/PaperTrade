@@ -11,6 +11,7 @@ import { assertStockDeductionsAvailable, getStockOnHand } from "@/lib/stock";
 import { generateDocumentNumber, withResourceQueue } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 import { createPaymentAction } from "@/actions/payments";
 
 export async function listPartnersAction() {
@@ -1227,60 +1228,111 @@ export async function getPartnershipHubDataAction(
       dateFilter.lte = new Date(filters.endDate);
     }
 
-    const saleItemsFromPartnerLots = await prisma.saleInvoiceItem.findMany({
-      where: {
-        warehouseLotId: filters?.lotId ? filters.lotId : { in: partnerLotIds },
-        invoice: {
-          status: { not: InvoiceStatus.CANCELLED },
-          ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
-        },
-      },
-      include: {
-        invoice: {
-          select: { id: true, invoiceNo: true, date: true, customer: { select: { name: true } }, walkInName: true },
-        },
-        product: {
-          select: { id: true, productNo: true, name: true, unit: true, costPrice: true },
-        },
-        warehouseLot: {
-          select: { id: true, lotNumber: true, unitCost: true, partnerSharePct: true, clientSharePct: true },
-        },
-      },
-      orderBy: { invoice: { date: "desc" } },
-    });
-
-    const settlementLog = saleItemsFromPartnerLots.map((item) => {
+    const statementLotIds = filters?.lotId ? [filters.lotId] : partnerLotIds;
+    const allPartnerSaleMovements =
+      statementLotIds.length > 0
+        ? await prisma.stockMovement.findMany({
+            where: {
+              referenceType: "SALE_INVOICE",
+              type: StockMovementType.SALE_OUT,
+              warehouseLotId: { in: statementLotIds },
+            },
+            include: {
+              product: {
+                select: { id: true, productNo: true, name: true, unit: true, costPrice: true },
+              },
+              warehouseLot: {
+                select: { id: true, lotNumber: true, unitCost: true, partnerSharePct: true, clientSharePct: true },
+              },
+            },
+          })
+        : [];
+    const movementInvoiceIds = Array.from(
+      new Set(allPartnerSaleMovements.map((movement) => movement.referenceId)),
+    );
+    const saleInvoicesForStatement = movementInvoiceIds.length
+      ? await prisma.saleInvoice.findMany({
+          where: {
+            id: { in: movementInvoiceIds },
+            status: { not: InvoiceStatus.CANCELLED },
+            ...(Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {}),
+          },
+          select: {
+            id: true,
+            invoiceNo: true,
+            date: true,
+            customer: { select: { name: true } },
+            walkInName: true,
+          },
+        })
+      : [];
+    const invoiceById = new Map(saleInvoicesForStatement.map((invoice) => [invoice.id, invoice]));
+    const partnerSaleMovements = allPartnerSaleMovements.filter((movement) =>
+      invoiceById.has(movement.referenceId),
+    );
+    const invoiceIds = Array.from(new Set(partnerSaleMovements.map((movement) => movement.referenceId)));
+    const saleItemsForRates = invoiceIds.length
+      ? await prisma.saleInvoiceItem.findMany({
+          where: {
+            invoiceId: { in: invoiceIds },
+            productId: { in: Array.from(new Set(partnerSaleMovements.map((movement) => movement.productId))) },
+          },
+          select: { invoiceId: true, productId: true, quantity: true, unitPrice: true },
+        })
+      : [];
+    const ratesByInvoiceProduct = new Map<string, { quantity: number; saleValue: number }>();
+    for (const item of saleItemsForRates) {
+      const key = `${item.invoiceId}:${item.productId}`;
+      const aggregate = ratesByInvoiceProduct.get(key) || { quantity: 0, saleValue: 0 };
       const quantity = Number(item.quantity);
-      const unitSellingPrice = Number(item.unitPrice);
+      aggregate.quantity += quantity;
+      aggregate.saleValue += quantity * Number(item.unitPrice);
+      ratesByInvoiceProduct.set(key, aggregate);
+    }
+    const soldByInvoiceProductLot = new Map<string, { movement: (typeof partnerSaleMovements)[number]; quantity: number }>();
+    for (const movement of partnerSaleMovements) {
+      const key = `${movement.referenceId}:${movement.productId}:${movement.warehouseLotId}`;
+      const aggregate = soldByInvoiceProductLot.get(key);
+      if (aggregate) {
+        aggregate.quantity += Number(movement.quantity);
+      } else {
+        soldByInvoiceProductLot.set(key, { movement, quantity: Number(movement.quantity) });
+      }
+    }
+
+    const settlementLog = Array.from(soldByInvoiceProductLot.values()).map(({ movement, quantity }) => {
+      const invoice = invoiceById.get(movement.referenceId)!;
+      const saleRate = ratesByInvoiceProduct.get(`${invoice.id}:${movement.productId}`);
+      const unitSellingPrice = saleRate && saleRate.quantity > 0
+        ? saleRate.saleValue / saleRate.quantity
+        : 0;
       const unitLotCost =
-        item.unitCost != null
-          ? Number(item.unitCost)
-          : item.warehouseLot?.unitCost != null
-          ? Number(item.warehouseLot.unitCost)
-          : Number(item.product.costPrice);
+        movement.warehouseLot?.unitCost != null
+          ? Number(movement.warehouseLot.unitCost)
+          : Number(movement.product.costPrice);
 
       const totalSale = quantity * unitSellingPrice;
       const totalCost = quantity * unitLotCost;
       const netMargin = totalSale - totalCost;
 
-      const partnerSharePct = item.warehouseLot?.partnerSharePct != null
-        ? Number(item.warehouseLot.partnerSharePct)
+      const partnerSharePct = movement.warehouseLot?.partnerSharePct != null
+        ? Number(movement.warehouseLot.partnerSharePct)
         : 100;
       const partnerProfitShare = netMargin * (partnerSharePct / 100);
 
       return {
-        id: item.id,
-        date: item.invoice.date,
-        invoiceId: item.invoice.id,
-        invoiceNo: item.invoice.invoiceNo,
-        customerName: item.invoice.customer?.name || item.invoice.walkInName || "Customer",
-        productId: item.productId,
-        productName: item.product.name,
-        productNo: item.product.productNo,
-        lotNumber: item.warehouseLot?.lotNumber || "N/A",
+        id: `${invoice.id}:${movement.productId}:${movement.warehouseLotId}`,
+        date: invoice.date,
+        invoiceId: invoice.id,
+        invoiceNo: invoice.invoiceNo,
+        customerName: invoice.customer?.name || invoice.walkInName || "Customer",
+        productId: movement.productId,
+        productName: movement.product.name,
+        productNo: movement.product.productNo,
+        lotNumber: movement.warehouseLot?.lotNumber || "N/A",
         partnerSharePct,
         quantity,
-        unit: item.product.unit,
+        unit: movement.product.unit,
         unitSellingPrice,
         unitLotCost,
         totalSale,
@@ -1542,7 +1594,7 @@ export async function getPartnershipHubDataAction(
       existingWarehouseLots,
       partner: {
         id: partner.id,
-        name: partner.name,
+        name: cleanPartyDisplayName(partner.name),
         phone: partner.phone,
         email: partner.email,
         isPartner: (partner as any).isPartner ?? partner.isBeneficiary,

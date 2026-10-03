@@ -42,6 +42,9 @@ export async function listWarehouseLotsAction(
         location: {
           select: { id: true, name: true, type: true },
         },
+        partner: {
+          select: { id: true, name: true },
+        },
       },
       orderBy: [{ isActive: "desc" }, { lotNumber: "asc" }],
     });
@@ -88,6 +91,8 @@ export async function listWarehouseLotsAction(
       locationId: lot.locationId,
       locationName: lot.location.name,
       locationType: lot.location.type,
+      partnerId: lot.partnerId,
+      partnerName: lot.partner?.name || null,
       lotNumber: lot.lotNumber,
       description: lot.description,
       isActive: lot.isActive,
@@ -325,4 +330,3 @@ export async function deleteWarehouseLotAction(raw: unknown) {
     return { id, success: true, softDeleted: false, message: `Lot "${lot.lotNumber}" was deleted successfully.` };
   });
 }
-

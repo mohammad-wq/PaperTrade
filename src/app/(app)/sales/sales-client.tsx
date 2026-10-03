@@ -58,8 +58,9 @@ type WarehouseLotOption = {
   lotNumber: string;
   description?: string | null;
   partnerId?: string | null;
-  unitCost?: number | null;
   partnerName?: string | null;
+  unitCost?: number | null;
+  currentStock: number;
 };
 
 type SaleInvoiceRow = {
@@ -135,6 +136,7 @@ type CommittedLineItem = {
   locationType: string;
   warehouseLotId?: string | null;
   lotNumber?: string | null;
+  stockSource: "AUTO_SPLIT" | "REGULAR_ONLY" | "PARTNER_ONLY";
   packetWeight?: number;
   reamWeight?: number;
 };
@@ -200,6 +202,7 @@ export default function SalesClient({
   const [matchedProduct, setMatchedProduct] = useState<ProductOption | null>(null);
   const [activeItemLocationId, setActiveItemLocationId] = useState<string>(defaultLoc ? defaultLoc.id : "");
   const [activeLotId, setActiveLotId] = useState<string>("");
+  const [activeStockSource, setActiveStockSource] = useState<CommittedLineItem["stockSource"]>("AUTO_SPLIT");
   const [activeQty, setActiveQty] = useState<string>("1");
   const [activeRate, setActiveRate] = useState<string>("0");
   const [activeRowError, setActiveRowError] = useState<string | null>(null);
@@ -400,19 +403,48 @@ export default function SalesClient({
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [isDialogOpen]);
 
-  function getAvailableStock(prodId: string, locId?: string, lotId?: string) {
-    if (!locId) {
-      return inventory
-        .filter((i) => i.productId === prodId)
-        .reduce((sum, i) => sum + i.available, 0);
+  function getAvailableStock(prodId: string, locId?: string, lotId?: string | null) {
+    const matchingInventory = inventory.filter(
+      (item) => item.productId === prodId && (!locId || item.locationId === locId),
+    );
+    if (lotId !== undefined) {
+      return matchingInventory.reduce(
+        (sum, item) =>
+          sum +
+          (item.lots || [])
+            .filter((lot) => lot.id === lotId)
+            .reduce((lotSum, lot) => lotSum + lot.available, 0),
+        0,
+      );
     }
-    const found = inventory.find((i) => i.productId === prodId && i.locationId === locId);
-    if (!found) return 0;
-    if (lotId && found.lots && found.lots.length > 0) {
-      const lotItem = found.lots.find((l) => l.id === lotId);
-      return lotItem ? lotItem.available : 0;
+    return matchingInventory.reduce((sum, item) => sum + item.available, 0);
+  }
+
+  function getShopSourceAvailableStock(
+    prodId: string,
+    locId: string,
+    source: CommittedLineItem["stockSource"],
+  ) {
+    if (source === "REGULAR_ONLY") {
+      return getAvailableStock(prodId, locId, null);
     }
-    return found.available;
+    const partnerLotIds = new Set(
+      warehouseLots
+        .filter((lot) => lot.locationId === locId && lot.partnerId)
+        .map((lot) => lot.id),
+    );
+    const partnerStock = inventory
+      .filter((row) => row.productId === prodId && row.locationId === locId)
+      .reduce(
+        (total, row) =>
+          total +
+          (row.lots || [])
+            .filter((lot) => lot.id && partnerLotIds.has(lot.id))
+            .reduce((sum, lot) => sum + lot.available, 0),
+        0,
+      );
+    if (source === "PARTNER_ONLY") return partnerStock;
+    return getAvailableStock(prodId, locId, null) + partnerStock;
   }
 
   const currentItemLocationId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
@@ -539,6 +571,7 @@ export default function SalesClient({
     setMatchedProduct(null);
     setActiveItemLocationId(locationId || (dbLocations[0]?.id ?? ""));
     setActiveLotId("");
+    setActiveStockSource("AUTO_SPLIT");
     setActiveQty("1");
     setActiveRate("0");
     setActiveRowError(null);
@@ -572,6 +605,7 @@ export default function SalesClient({
       return;
     }
     setEditingInvoiceId(inv.id);
+    setActiveStockSource("AUTO_SPLIT");
     const isWalkIn = inv.customer.name.toLowerCase().includes("walk-in");
     if (isWalkIn) {
       setCustomerType("WALK_IN");
@@ -612,8 +646,15 @@ export default function SalesClient({
         locationId: itLocId,
         locationName: itLoc?.name || inv.location?.name || "Location",
         locationType: itLoc?.type || "SHOP",
-        warehouseLotId: it.warehouseLot?.id || it.warehouseLotId || null,
+        warehouseLotId: itLoc?.type === "WAREHOUSE"
+          ? it.warehouseLot?.id || it.warehouseLotId || null
+          : null,
         lotNumber: it.warehouseLot?.lotNumber || null,
+        stockSource: itLoc?.type === "WAREHOUSE"
+          ? "AUTO_SPLIT"
+          : it.warehouseLot?.id || it.warehouseLotId
+            ? "PARTNER_ONLY"
+            : "AUTO_SPLIT",
         packetWeight: prod?.packetWeight || 0,
         reamWeight: prod?.reamWeight || 0,
       };
@@ -623,6 +664,7 @@ export default function SalesClient({
     setActiveCodeInput("");
     setMatchedProduct(null);
     setActiveLotId("");
+    setActiveStockSource("AUTO_SPLIT");
     setActiveQty("1");
     setActiveRate("0");
     setActiveRowError(null);
@@ -1001,7 +1043,22 @@ export default function SalesClient({
     const finalLoc = dbLocations.find((l) => l.id === finalLocId);
     const finalLocLots = warehouseLots.filter((l) => l.locationId === finalLocId);
     const matchedLot = activeLotId ? finalLocLots.find((l) => l.id === activeLotId) : null;
-    const available = finalLocId ? getAvailableStock(matchedProduct.id, finalLocId) : 0;
+    if (finalLoc?.type === "WAREHOUSE" && !matchedLot) {
+      setActiveRowError("Select a lot before adding a warehouse sale.");
+      lotComboboxInputRef.current?.focus();
+      return;
+    }
+    const available = finalLocId
+      ? finalLoc?.type === "WAREHOUSE"
+        ? getAvailableStock(matchedProduct.id, finalLocId, matchedLot?.id)
+        : getShopSourceAvailableStock(matchedProduct.id, finalLocId, activeStockSource)
+      : 0;
+    if (qtyNum > available) {
+      setActiveRowError(`Insufficient stock. Available: ${available} ${matchedProduct.unit}.`);
+      qtyInputRef.current?.focus();
+      qtyInputRef.current?.select();
+      return;
+    }
 
     // Add to committed items list
     setCommittedItems((prev) => [
@@ -1019,8 +1076,9 @@ export default function SalesClient({
         locationId: finalLocId,
         locationName: finalLoc?.name || "Location",
         locationType: finalLoc?.type || "SHOP",
-        warehouseLotId: activeLotId || null,
+        warehouseLotId: finalLoc?.type === "WAREHOUSE" ? activeLotId || null : null,
         lotNumber: matchedLot ? matchedLot.lotNumber : null,
+        stockSource: activeStockSource,
         packetWeight: matchedProduct.packetWeight || 0,
         reamWeight: matchedProduct.reamWeight || 0,
       },
@@ -1030,6 +1088,7 @@ export default function SalesClient({
     setActiveCodeInput("");
     setMatchedProduct(null);
     setActiveLotId("");
+    setActiveStockSource("AUTO_SPLIT");
     setActiveQty("1");
     setActiveRate("0");
     setActiveRowError(null);
@@ -1124,6 +1183,7 @@ export default function SalesClient({
           productId: item.productId,
           locationId: item.locationId || fallbackLocId,
           warehouseLotId: item.warehouseLotId || undefined,
+          stockSource: item.stockSource,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           unitCost: item.unitCost ?? undefined,
@@ -1769,7 +1829,7 @@ export default function SalesClient({
                         <th className="py-1.5 px-2 w-8 text-center border-r border-slate-200 dark:border-slate-700">#</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 min-w-[180px]">Product Code / Name</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-32 whitespace-nowrap">Location</th>
-                        <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-28 whitespace-nowrap">Lot</th>
+                        <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-36 whitespace-nowrap">Lot / Stock Source</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Category</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap text-right">Available Stock</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Unit</th>
@@ -1805,9 +1865,17 @@ export default function SalesClient({
                               </span>
                             </td>
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-mono text-[11px]">
-                              {item.lotNumber ? (
+                              {item.locationType === "WAREHOUSE" && item.lotNumber ? (
                                 <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-semibold text-[10px]">
-                                  #{item.lotNumber}
+                                  Lot #{item.lotNumber}
+                                </span>
+                              ) : item.locationType === "SHOP" ? (
+                                <span className="text-[10px] text-slate-600 dark:text-slate-300 font-sans">
+                                  {item.stockSource === "REGULAR_ONLY"
+                                    ? "Regular Stock Only"
+                                    : item.stockSource === "PARTNER_ONLY"
+                                      ? "Partner Stock Only"
+                                      : "Auto / Split"}
                                 </span>
                               ) : (
                                 <span className="text-slate-400">—</span>
@@ -1818,7 +1886,9 @@ export default function SalesClient({
                             </td>
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right">
                               {(() => {
-                                const liveStock = getAvailableStock(item.productId, item.locationId, item.warehouseLotId || undefined);
+                                const liveStock = item.locationType === "WAREHOUSE"
+                                  ? getAvailableStock(item.productId, item.locationId, item.warehouseLotId)
+                                  : getShopSourceAvailableStock(item.productId, item.locationId, item.stockSource);
                                 return (
                                   <span
                                     className={`px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${
@@ -1985,13 +2055,13 @@ export default function SalesClient({
                             onChange={(val) => {
                               setActiveItemLocationId(val);
                               setActiveLotId("");
+                              setActiveStockSource("AUTO_SPLIT");
                             }}
                             inputRef={itemLocationInputRef}
                             onEnterPress={() => {
                               const chosenLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
-                              const chosenLoc = dbLocations.find((l) => l.id === chosenLocId);
-                              const chosenLots = warehouseLots.filter((l) => l.locationId === chosenLocId);
-                              if (chosenLots.length > 0 && lotComboboxInputRef.current) {
+                              const chosenLocation = dbLocations.find((l) => l.id === chosenLocId);
+                              if (chosenLocation?.type === "WAREHOUSE" && lotComboboxInputRef.current) {
                                 lotComboboxInputRef.current.focus();
                                 lotComboboxInputRef.current.select();
                               } else {
@@ -2004,19 +2074,19 @@ export default function SalesClient({
                           />
                         </td>
 
-                        {/* Lot Selector */}
-                        <td className="py-1 px-1 border-r border-slate-200 dark:border-slate-700 min-w-[120px]">
-                          {locationLots.length > 0 ? (
+                        {/* Warehouse lot or shop stock-source selector */}
+                        <td className="py-1 px-1 border-r border-slate-200 dark:border-slate-700 min-w-[145px]">
+                          {isItemLocationWarehouse ? (
                             <SearchCombobox
-                              options={[
-                                { id: "", label: "Regular Stock" },
-                                ...locationLots.map((lot) => ({
+                              options={locationLots.map((lot) => {
+                                const available = matchedProduct
+                                  ? getAvailableStock(matchedProduct.id, currentItemLocationId, lot.id)
+                                  : lot.currentStock;
+                                return {
                                   id: lot.id,
-                                  label: `${lot.partnerName ? `[${lot.partnerName}] ` : ""}#${lot.lotNumber}${lot.unitCost != null ? ` (Cost: ${lot.unitCost})` : ""}`,
-                                  badge: lot.partnerName ? "Partner" : undefined,
-                                  badgeColor: "amber" as const,
-                                })),
-                              ]}
+                                  label: `Lot #${lot.lotNumber} (${available} ${matchedProduct?.unit || "pkts"})`,
+                                };
+                              })}
                               value={activeLotId}
                               onChange={(val) => setActiveLotId(val)}
                               inputRef={lotComboboxInputRef}
@@ -2024,11 +2094,23 @@ export default function SalesClient({
                                 qtyInputRef.current?.focus();
                                 qtyInputRef.current?.select();
                               }}
-                              placeholder="Regular Stock"
+                              placeholder="Select lot"
                               inputClassName="h-7 text-xs font-mono"
                             />
+                          ) : activeItemLocation?.type === "SHOP" ? (
+                            <select
+                              value={activeStockSource}
+                              onChange={(event) =>
+                                setActiveStockSource(event.target.value as CommittedLineItem["stockSource"])
+                              }
+                              className="h-7 w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1.5 text-[10px] font-sans"
+                            >
+                              <option value="AUTO_SPLIT">Auto / Split</option>
+                              <option value="REGULAR_ONLY">Regular Stock Only</option>
+                              <option value="PARTNER_ONLY">Partner Stock Only</option>
+                            </select>
                           ) : (
-                            <span className="text-[10px] text-slate-400 font-sans italic px-1 block text-center">Regular Stock</span>
+                            <span className="text-[10px] text-slate-400 font-sans italic px-1 block text-center">Not applicable</span>
                           )}
                         </td>
 
@@ -2042,7 +2124,14 @@ export default function SalesClient({
                           {matchedProduct ? (
                             (() => {
                               const targetLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
-                              const currentStock = getAvailableStock(matchedProduct.id, targetLocId, activeLotId || undefined);
+                              const targetLocation = dbLocations.find((location) => location.id === targetLocId);
+                              const currentStock = targetLocation?.type === "WAREHOUSE"
+                                ? activeLotId
+                                  ? getAvailableStock(matchedProduct.id, targetLocId, activeLotId)
+                                  : 0
+                                : targetLocation?.type === "SHOP"
+                                  ? getShopSourceAvailableStock(matchedProduct.id, targetLocId, activeStockSource)
+                                  : getAvailableStock(matchedProduct.id, targetLocId);
                               const totalStock = getAvailableStock(matchedProduct.id);
                               return (
                                 <div className="flex flex-col items-end">

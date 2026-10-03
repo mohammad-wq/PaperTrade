@@ -1,10 +1,12 @@
 import { assertPageAccess } from "@/lib/auth/session";
 import { getPartnershipHubDataAction } from "@/actions/partnerships";
 import { getBusinessInfoAction } from "@/actions/settings";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 import { format } from "date-fns";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { Printer, ArrowLeft } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
+import { PrintStatementButton } from "./print-statement-button";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +26,6 @@ export default async function PrintPartnershipSalesPage({
   await assertPageAccess("/partnerships");
   const { partnerId } = await params;
   const sp = searchParams ? await searchParams : {};
-
   const fromDate = sp.from || undefined;
   const toDate = sp.to || undefined;
   const lotId = sp.lotId && sp.lotId !== "all" ? sp.lotId : undefined;
@@ -38,329 +39,190 @@ export default async function PrintPartnershipSalesPage({
     }),
     getBusinessInfoAction(),
   ]);
-
-  if (!hubRes.success || !hubRes.data) {
-    notFound();
-  }
+  if (!hubRes.success || !hubRes.data) notFound();
 
   const hubData = hubRes.data;
-  const business = bizRes.success && bizRes.data ? bizRes.data : { businessName: "Paper Trader" };
+  const businessName = bizRes.success && bizRes.data
+    ? bizRes.data.businessName || "Paper Trader"
+    : "Paper Trader";
+  const rows = hubData.settlementLog.filter(
+    (item) => !productId || item.productId === productId,
+  );
+  const groupedRows = new Map<string, {
+    productNo: string;
+    productName: string;
+    lotNumber: string;
+    unit: string;
+    quantity: number;
+    totalSale: number;
+    totalCost: number;
+    partnerShare: number;
+  }>();
 
-  let items = hubData.settlementLog;
-  if (productId) {
-    items = items.filter((item) => item.productId === productId);
+  for (const row of rows) {
+    const key = `${row.productId}:${row.lotNumber}`;
+    const aggregate = groupedRows.get(key) || {
+      productNo: row.productNo,
+      productName: row.productName,
+      lotNumber: row.lotNumber,
+      unit: row.unit,
+      quantity: 0,
+      totalSale: 0,
+      totalCost: 0,
+      partnerShare: 0,
+    };
+    aggregate.quantity += row.quantity;
+    aggregate.totalSale += row.totalSale;
+    aggregate.totalCost += row.totalCost;
+    aggregate.partnerShare += row.partnerProfitShare;
+    groupedRows.set(key, aggregate);
   }
 
-  // Summary Metrics
-  const totalQtySold = items.reduce((sum, i) => sum + i.quantity, 0);
-  const totalSalesRevenue = items.reduce((sum, i) => sum + i.totalSale, 0);
-  const totalCOGS = items.reduce((sum, i) => sum + i.totalCost, 0);
-  const totalGrossMargin = items.reduce((sum, i) => sum + i.netMargin, 0);
-  const totalPartnerProfitShare = items.reduce((sum, i) => sum + i.partnerProfitShare, 0);
-
-  // Capital & Settlement Metrics
-  const capitalLiability = hubData.metrics.capitalLiabilityAccrued || 0;
-  const priorPayments = hubData.metrics.capitalReimbursedToPartner || 0;
-  const netBalanceDue = hubData.metrics.netPayableToPartner || (capitalLiability + totalPartnerProfitShare - priorPayments);
-
-  const selectedLot = lotId ? hubData.allLots.find((l) => l.id === lotId) : null;
-  const selectedProduct = productId ? hubData.allProducts.find((p) => p.id === productId) : null;
+  const summaryRows = Array.from(groupedRows.values()).sort(
+    (a, b) =>
+      a.productNo.localeCompare(b.productNo, undefined, { numeric: true }) ||
+      a.lotNumber.localeCompare(b.lotNumber, undefined, { numeric: true }),
+  );
+  const totalQtySold = rows.reduce((sum, row) => sum + row.quantity, 0);
+  const totalSalesRevenue = rows.reduce((sum, row) => sum + row.totalSale, 0);
+  const totalCOGS = rows.reduce((sum, row) => sum + row.totalCost, 0);
+  const totalGrossMargin = totalSalesRevenue - totalCOGS;
+  const netPartnerSharePayable = rows.reduce((sum, row) => sum + row.partnerProfitShare, 0);
+  const selectedLot = lotId ? hubData.allLots.find((lot) => lot.id === lotId) : null;
+  const selectedProduct = productId
+    ? hubData.allProducts.find((product) => product.id === productId)
+    : null;
 
   return (
-    <div className="min-h-screen bg-slate-100 p-4 md:p-8 print:p-0 print:bg-white text-slate-900">
-      {/* Top Floating Control Bar - Hidden in Print */}
-      <div className="max-w-7xl mx-auto mb-4 flex items-center justify-between bg-white border border-slate-200 p-3 rounded-xl shadow-xs print:hidden">
+    <div className="min-h-screen bg-slate-100 p-4 text-slate-900 print:bg-white print:p-0">
+      <div className="mx-auto mb-4 flex max-w-7xl items-center justify-between rounded-xl border border-slate-200 bg-white p-3 shadow-xs print:hidden">
         <div className="flex items-center gap-3">
           <Link
             href={`/partnerships?partnerId=${partnerId}`}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Back to Partnership Hub
           </Link>
-          <span className="text-xs text-slate-500 font-mono">
-            Landscape Statement: {items.length} records matching filter
+          <span className="text-xs font-mono text-slate-500">
+            {summaryRows.length} product and lot summaries
           </span>
         </div>
-
-        <button
-          onClick={() => {}}
-          className="print-trigger-btn inline-flex items-center gap-2 px-4 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold shadow-xs transition"
-        >
-          <Printer className="h-4 w-4" />
-          Print Statement (A4 Landscape)
-        </button>
+        <PrintStatementButton autoPrint={sp.autoprint === "1"} />
       </div>
 
-      {/* Main Print Document (A4 Landscape container) */}
-      <div className="max-w-7xl mx-auto bg-white p-8 rounded-xl shadow-sm border border-slate-200 print:border-none print:shadow-none print:p-0 print:m-0 print:max-w-none text-slate-900">
-        {/* Document Header Section */}
-        <div className="flex justify-between items-start border-b-2 border-slate-900 pb-3 mb-4">
+      <main className="mx-auto max-w-7xl rounded-xl border border-slate-200 bg-white p-6 shadow-sm print:my-0 print:max-w-none print:border-none print:p-0 print:shadow-none">
+        <header className="mb-4 flex items-start justify-between border-b-2 border-slate-900 pb-3">
           <div>
-            <h1 className="text-xl font-black uppercase tracking-tight text-slate-950 font-serif">
-              {business.businessName || "Sughra Trader"}
+            <h1 className="font-serif text-xl font-black uppercase tracking-tight text-slate-950">
+              {businessName}
             </h1>
-            <p className="text-sm font-bold text-emerald-800 tracking-wide mt-0.5">
-              PARTNERSHIP STOCK SALES & SETTLEMENT STATEMENT
+            <p className="mt-0.5 text-sm font-bold tracking-wide text-emerald-800">
+              PARTNERSHIP STOCK SALES STATEMENT
             </p>
-            <div className="flex items-center gap-3 text-xs text-slate-600 mt-1 font-medium">
-              <span>
-                Period: <strong>{fromDate ? format(new Date(fromDate), "dd MMM yyyy") : "Beginning"}</strong> to{" "}
-                <strong>{toDate ? format(new Date(toDate), "dd MMM yyyy") : "Present"}</strong>
-              </span>
-              {selectedLot && (
-                <span>
-                  • Lot Filter: <strong className="font-mono">{selectedLot.lotNumber}</strong>
-                </span>
-              )}
-              {selectedProduct && (
-                <span>
-                  • Product Filter: <strong>{selectedProduct.name}</strong>
-                </span>
-              )}
-            </div>
+            <p className="mt-1 text-xs text-slate-600">
+              Period: <strong>{fromDate ? format(new Date(fromDate), "dd MMM yyyy") : "Beginning"}</strong>
+              {" — "}
+              <strong>{toDate ? format(new Date(toDate), "dd MMM yyyy") : "Present"}</strong>
+              {selectedLot && <> • Lot: <strong>#{selectedLot.lotNumber}</strong></>}
+              {selectedProduct && <> • Product: <strong>{selectedProduct.name}</strong></>}
+            </p>
           </div>
-
-          <div className="text-right text-xs space-y-0.5">
+          <div className="space-y-0.5 text-right text-xs">
             <p className="text-sm font-black text-slate-900">
-              Partner: {hubData.partner.name}
+              Partner: {cleanPartyDisplayName(hubData.partner.name)}
             </p>
-            <p className="text-slate-500 font-mono text-[11px]">
-              ID: {hubData.partner.id.slice(0, 10)} {hubData.partner.phone ? `• Ph: ${hubData.partner.phone}` : ""}
+            <p className="font-mono text-[11px] text-slate-500">
+              ID: {hubData.partner.id.slice(0, 10)}
+              {hubData.partner.phone ? ` • Ph: ${hubData.partner.phone}` : ""}
             </p>
-            <p className="text-slate-400 font-mono text-[10px]">
+            <p className="font-mono text-[10px] text-slate-400">
               Generated: {format(new Date(), "dd/MM/yyyy HH:mm:ss")}
             </p>
           </div>
+        </header>
+
+        <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+          {[
+            ["Total Units Sold", `${totalQtySold.toLocaleString()} units`],
+            ["Total Sales Revenue", `PKR ${totalSalesRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+            ["Total COGS", `PKR ${totalCOGS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+            ["Total Net Margin", `PKR ${totalGrossMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+            ["Net Partner Share Payable", `PKR ${netPartnerSharePayable.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-center">
+              <p className="text-[9px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+              <p className="mt-1 text-xs font-black text-slate-900">{value}</p>
+            </div>
+          ))}
         </div>
 
-        {/* Metric Cards Strip (Top of Document) */}
-        <div className="grid grid-cols-4 gap-3 mb-4">
-          <div className="border border-slate-200 rounded-lg p-2.5 bg-slate-50/70 text-center">
-            <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
-              Total Packets / Units Sold
-            </p>
-            <p className="text-lg font-black text-slate-900 font-mono mt-0.5">
-              {totalQtySold.toLocaleString()} <span className="text-xs font-normal">units</span>
-            </p>
-          </div>
-
-          <div className="border border-slate-200 rounded-lg p-2.5 bg-slate-50/70 text-center">
-            <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
-              Total Sales Revenue (PKR)
-            </p>
-            <p className="text-lg font-black text-emerald-800 font-mono mt-0.5">
-              PKR {totalSalesRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </p>
-          </div>
-
-          <div className="border border-slate-200 rounded-lg p-2.5 bg-slate-50/70 text-center">
-            <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
-              Total Cost of Goods (COGS)
-            </p>
-            <p className="text-lg font-black text-slate-700 font-mono mt-0.5">
-              PKR {totalCOGS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </p>
-          </div>
-
-          <div className="border border-emerald-200 rounded-lg p-2.5 bg-emerald-50/60 text-center">
-            <p className="text-[10px] uppercase font-bold text-emerald-900 tracking-wider">
-              Partner Margin / Net Profit Share
-            </p>
-            <p className="text-lg font-black text-emerald-900 font-mono mt-0.5">
-              PKR {totalPartnerProfitShare.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </p>
-          </div>
-        </div>
-
-        {/* Transaction Table (10 Columns) */}
-        <div className="border border-slate-300 rounded-lg overflow-hidden mb-4">
-          <table className="w-full text-left border-collapse text-[11px]">
-            <thead className="bg-slate-100 text-slate-800 font-bold uppercase tracking-wider text-[10px] border-b border-slate-300">
+        <div className="mb-6 overflow-hidden rounded-lg border border-slate-300">
+          <table className="w-full border-collapse text-left text-[10px]">
+            <thead className="border-b border-slate-300 bg-slate-100 text-[9px] font-bold uppercase tracking-wide text-slate-800">
               <tr>
-                <th className="py-2 px-2 border-r border-slate-300 w-16 text-center">Date</th>
-                <th className="py-2 px-2 border-r border-slate-300 w-24">Invoice / Ref #</th>
-                <th className="py-2 px-2 border-r border-slate-300">Product & Lot</th>
-                <th className="py-2 px-2 border-r border-slate-300 text-right w-16">Packets / Qty</th>
-                <th className="py-2 px-2 border-r border-slate-300 text-right w-20">Unit Cost</th>
-                <th className="py-2 px-2 border-r border-slate-300 text-right w-20">Sale Rate</th>
-                <th className="py-2 px-2 border-r border-slate-300 text-right w-24">Total Sale</th>
-                <th className="py-2 px-2 border-r border-slate-300 text-right w-24">Total Cost</th>
-                <th className="py-2 px-2 border-r border-slate-300 text-right w-24">Gross Margin</th>
-                <th className="py-2 px-2 text-right w-24 text-emerald-900 font-black">Partner Share</th>
+                <th className="border-r border-slate-300 px-2 py-2">SKU / Code</th>
+                <th className="border-r border-slate-300 px-2 py-2">Product Description</th>
+                <th className="border-r border-slate-300 px-2 py-2">Lot #</th>
+                <th className="border-r border-slate-300 px-2 py-2 text-right">Total Units Sold</th>
+                <th className="border-r border-slate-300 px-2 py-2 text-right">Intake Unit Cost (PKR)</th>
+                <th className="border-r border-slate-300 px-2 py-2 text-right">Avg Sale Rate (PKR)</th>
+                <th className="border-r border-slate-300 px-2 py-2 text-right">Total Sale Value (PKR)</th>
+                <th className="border-r border-slate-300 px-2 py-2 text-right">Total Cost Value (PKR)</th>
+                <th className="border-r border-slate-300 px-2 py-2 text-right">Total Gross Margin (PKR)</th>
+                <th className="px-2 py-2 text-right">Partner Share (PKR)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
-              {items.length === 0 ? (
+              {summaryRows.length ? summaryRows.map((row) => {
+                const grossMargin = row.totalSale - row.totalCost;
+                return (
+                  <tr key={`${row.productNo}:${row.lotNumber}`}>
+                    <td className="border-r border-slate-200 px-2 py-1.5 font-mono font-bold">{row.productNo}</td>
+                    <td className="border-r border-slate-200 px-2 py-1.5 font-semibold">{row.productName}</td>
+                    <td className="border-r border-slate-200 px-2 py-1.5 font-mono">#{row.lotNumber}</td>
+                    <td className="border-r border-slate-200 px-2 py-1.5 text-right font-mono">{row.quantity.toLocaleString()} {row.unit}</td>
+                    <td className="border-r border-slate-200 px-2 py-1.5 text-right font-mono">
+                      {(row.quantity ? row.totalCost / row.quantity : 0).toFixed(2)}
+                    </td>
+                    <td className="border-r border-slate-200 px-2 py-1.5 text-right font-mono">
+                      {(row.quantity ? row.totalSale / row.quantity : 0).toFixed(2)}
+                    </td>
+                    <td className="border-r border-slate-200 px-2 py-1.5 text-right font-mono">{row.totalSale.toFixed(2)}</td>
+                    <td className="border-r border-slate-200 px-2 py-1.5 text-right font-mono">{row.totalCost.toFixed(2)}</td>
+                    <td className="border-r border-slate-200 px-2 py-1.5 text-right font-mono font-bold">{grossMargin.toFixed(2)}</td>
+                    <td className="px-2 py-1.5 text-right font-mono font-bold text-emerald-800">{row.partnerShare.toFixed(2)}</td>
+                  </tr>
+                );
+              }) : (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center text-slate-400 italic">
-                    No partner stock sales logged for the selected period and lot criteria.
+                  <td colSpan={10} className="py-8 text-center italic text-slate-400">
+                    No partner stock sales for the selected period and filters.
                   </td>
                 </tr>
-              ) : (
-                items.map((row) => (
-                  <tr key={row.id} className="hover:bg-slate-50/60">
-                    <td className="py-1.5 px-2 border-r border-slate-200 text-center font-mono text-[10px]">
-                      {format(new Date(row.date), "dd/MM/yy")}
-                    </td>
-                    <td className="py-1.5 px-2 border-r border-slate-200 font-mono font-medium">
-                      {row.invoiceNo}
-                    </td>
-                    <td className="py-1.5 px-2 border-r border-slate-200">
-                      <div className="font-semibold text-slate-900 leading-tight">
-                        {row.productName}
-                      </div>
-                      <div className="text-[10px] text-slate-500 font-mono">
-                        SKU: {row.productNo} | Lot: {row.lotNumber} ({row.partnerSharePct}% Share)
-                      </div>
-                    </td>
-                    <td className="py-1.5 px-2 border-r border-slate-200 text-right font-mono font-medium">
-                      {row.quantity.toLocaleString()} {row.unit}
-                    </td>
-                    <td className="py-1.5 px-2 border-r border-slate-200 text-right font-mono">
-                      {row.unitLotCost.toFixed(2)}
-                    </td>
-                    <td className="py-1.5 px-2 border-r border-slate-200 text-right font-mono">
-                      {row.unitSellingPrice.toFixed(2)}
-                    </td>
-                    <td className="py-1.5 px-2 border-r border-slate-200 text-right font-mono font-medium">
-                      {row.totalSale.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
-                    <td className="py-1.5 px-2 border-r border-slate-200 text-right font-mono">
-                      {row.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
-                    <td className="py-1.5 px-2 border-r border-slate-200 text-right font-mono font-bold text-slate-800">
-                      {row.netMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
-                    <td className="py-1.5 px-2 text-right font-mono font-bold text-emerald-800 bg-emerald-50/30">
-                      {row.partnerProfitShare.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
-                  </tr>
-                ))
               )}
             </tbody>
-            {/* Totals Row */}
-            <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-400 text-slate-900 text-[11px]">
-              <tr>
-                <td colSpan={3} className="py-2 px-2 text-right uppercase tracking-wider">
-                  Totals Summary:
-                </td>
-                <td className="py-2 px-2 text-right font-mono border-r border-slate-300">
-                  {totalQtySold.toLocaleString()}
-                </td>
-                <td colSpan={2} className="py-2 px-2 border-r border-slate-300"></td>
-                <td className="py-2 px-2 text-right font-mono border-r border-slate-300">
-                  {totalSalesRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </td>
-                <td className="py-2 px-2 text-right font-mono border-r border-slate-300">
-                  {totalCOGS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </td>
-                <td className="py-2 px-2 text-right font-mono border-r border-slate-300 text-slate-900 font-black">
-                  {totalGrossMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </td>
-                <td className="py-2 px-2 text-right font-mono font-black text-emerald-900 bg-emerald-100/50">
-                  PKR {totalPartnerProfitShare.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </td>
-              </tr>
-            </tfoot>
           </table>
         </div>
 
-        {/* Footer & Reconciliation Summary */}
-        <div className="grid grid-cols-2 gap-6 items-start pt-2">
-          {/* Left: Notes & Signatures */}
-          <div className="space-y-6">
-            <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 p-2.5 rounded-lg space-y-1">
-              <p className="font-semibold text-slate-700">Statement Settlement Terms:</p>
-              <p>• Partner profit share calculated dynamically per individual lot equity proportion.</p>
-              <p>• Stock valuations based on weighted purchase invoice rates logged upon shared batch intake.</p>
-              <p>• Net balance due is settled upon verified signature of authorized accounts.</p>
-            </div>
-
-            {/* Signature Blocks */}
-            <div className="grid grid-cols-2 gap-8 pt-6">
-              <div className="border-t border-slate-900 pt-1 text-center">
-                <p className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                  Authorized Signature
-                </p>
-                <p className="text-[10px] text-slate-500">Person A (Managing Principal)</p>
-              </div>
-
-              <div className="border-t border-slate-900 pt-1 text-center">
-                <p className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                  Partner Acceptance
-                </p>
-                <p className="text-[10px] text-slate-500">Person B ({hubData.partner.name})</p>
-              </div>
-            </div>
+        <footer className="grid grid-cols-2 gap-12 px-4 pt-10">
+          <div className="border-t border-slate-900 pt-1 text-center">
+            <p className="text-xs font-bold uppercase tracking-wide">Person A (Shop Owner)</p>
           </div>
-
-          {/* Right: Settlement Summary Box */}
-          <div className="border border-slate-300 rounded-xl overflow-hidden bg-slate-50/50">
-            <div className="bg-slate-200/70 px-4 py-2 border-b border-slate-300 font-bold text-xs uppercase tracking-wider text-slate-800">
-              Settlement & Reconciliation Balance
-            </div>
-            <div className="p-4 space-y-2 text-xs">
-              <div className="flex justify-between items-center text-slate-700">
-                <span>Total Partner Capital Recoverable (Stock Pulls):</span>
-                <span className="font-mono font-medium">
-                  PKR {capitalLiability.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div className="flex justify-between items-center text-slate-700">
-                <span>Total Partner Profit Share:</span>
-                <span className="font-mono font-medium text-emerald-800">
-                  + PKR {totalPartnerProfitShare.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div className="flex justify-between items-center text-slate-700 border-b border-slate-200 pb-2">
-                <span>Less: Prior Payments / Settlements Disbursed:</span>
-                <span className="font-mono font-medium text-rose-700">
-                  - PKR {priorPayments.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div className="flex justify-between items-center pt-1 font-black text-sm text-slate-950">
-                <span>Net Balance Due to Partner:</span>
-                <span className="font-mono text-emerald-900 text-base">
-                  PKR {netBalanceDue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
-            </div>
+          <div className="border-t border-slate-900 pt-1 text-center">
+            <p className="text-xs font-bold uppercase tracking-wide">Person B (Partner)</p>
           </div>
-        </div>
-      </div>
+        </footer>
+      </main>
 
-      {/* Embedded Print CSS & Auto-Print Script */}
-      <style dangerouslySetInnerHTML={{ __html: `
+      <style>{`
         @media print {
-          @page {
-            size: A4 landscape;
-            margin: 10mm;
-          }
-          body {
-            background: white !important;
-            color: black !important;
-            print-color-adjust: exact !important;
-            -webkit-print-color-adjust: exact !important;
-          }
-          tr {
-            page-break-inside: avoid !important;
-          }
-          thead {
-            display: table-header-group !important;
-          }
-          .print\\:hidden {
-            display: none !important;
-          }
+          @page { size: A4 landscape; margin: 10mm; }
+          body { background: white !important; color: black !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+          tr { page-break-inside: avoid; }
+          thead { display: table-header-group; }
         }
-      `}} />
-
-      <script dangerouslySetInnerHTML={{ __html: `
-        document.querySelectorAll('.print-trigger-btn').forEach(btn => {
-          btn.addEventListener('click', () => window.print());
-        });
-        ${sp.autoprint === "1" ? "window.addEventListener('load', () => window.print());" : ""}
-      `}} />
+      `}</style>
     </div>
   );
 }

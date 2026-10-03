@@ -715,7 +715,7 @@ function LedgerContent() {
                 <option value="ALL">All Parties / General Accounts</option>
                 {parties.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} {p.type ? `[${p.type}]` : ""}
+                    {p.name}
                   </option>
                 ))}
               </select>

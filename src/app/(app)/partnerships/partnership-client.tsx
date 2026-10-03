@@ -1734,7 +1734,7 @@ export default function PartnershipClient({
                   if (endDate) params.set("to", endDate);
                   if (selectedLogLotId && selectedLogLotId !== "all") {
                     const foundLot = partnerLots.find((l) => l.id === selectedLogLotId);
-                    params.set("lotId", foundLot?.lotNumber || selectedLogLotId);
+                    params.set("lotId", foundLot?.id || selectedLogLotId);
                   }
                   params.set("autoprint", "1");
                   window.open(`/partnerships/${selectedPartnerId}/print-sales?${params.toString()}`, "_blank");

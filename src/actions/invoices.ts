@@ -10,11 +10,218 @@ import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { saleInvoiceSchema, updateSaleInvoiceSchema } from "@/schemas/sale-invoice";
 import { purchaseInvoiceSchema, updatePurchaseInvoiceSchema } from "@/schemas/purchase-invoice";
-import { AccountType, InvoiceStatus, PartyType, PaymentMethod, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
+import { AccountType, InvoiceStatus, PartyType, PaymentMethod, Prisma, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { getActiveFinancialYear, getNextAtomicSequence, updateInvoiceSettlementStatus } from "@/lib/financial-year";
 import { consumeAdvanceCreditsForInvoice } from "@/lib/payment-allocation";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 import { z } from "zod";
+
+type SaleStockLine = {
+  productId: string;
+  locationId?: string | null;
+  warehouseLotId?: string | null;
+  stockSource?: "AUTO_SPLIT" | "REGULAR_ONLY" | "PARTNER_ONLY";
+  quantity: number;
+};
+
+type SaleStockAllocation = {
+  productId: string;
+  locationId: string;
+  warehouseLotId: string | null;
+  quantity: number;
+};
+
+async function resolveSaleStockAllocations(
+  items: SaleStockLine[],
+  fallbackLocationId: string,
+  tx: Prisma.TransactionClient,
+): Promise<SaleStockAllocation[]> {
+  const locationCache = new Map<string, { id: string; name: string; type: string }>();
+  const partnerLotsByLocation = new Map<
+    string,
+    Array<{ id: string; lotNumber: string; partnerId: string | null }>
+  >();
+  const remainingByStockKey = new Map<string, number>();
+  const allocations: SaleStockAllocation[] = [];
+
+  const getLocation = async (locationId: string) => {
+    let location = locationCache.get(locationId);
+    if (!location) {
+      const found = await tx.location.findUnique({
+        where: { id: locationId },
+        select: { id: true, name: true, type: true },
+      });
+      if (!found) throw userError("Stock location not found.");
+      location = found;
+      locationCache.set(locationId, location);
+    }
+    return location;
+  };
+
+  const getRemaining = async (
+    productId: string,
+    locationId: string,
+    warehouseLotId: string | null,
+  ) => {
+    const key = `${productId}:${locationId}:${warehouseLotId ?? ""}`;
+    if (!remainingByStockKey.has(key)) {
+      remainingByStockKey.set(
+        key,
+        await getStockOnHand(productId, locationId, tx, warehouseLotId),
+      );
+    }
+    return { key, quantity: remainingByStockKey.get(key)! };
+  };
+
+  const allocate = async (
+    productId: string,
+    locationId: string,
+    warehouseLotId: string | null,
+    requested: number,
+  ) => {
+    if (requested <= 0) return 0;
+    const stock = await getRemaining(productId, locationId, warehouseLotId);
+    const allocated = Math.min(Math.max(0, stock.quantity), requested);
+    if (allocated > 0) {
+      remainingByStockKey.set(stock.key, stock.quantity - allocated);
+      allocations.push({ productId, locationId, warehouseLotId, quantity: allocated });
+    }
+    return requested - allocated;
+  };
+
+  for (const item of items) {
+    const locationId = item.locationId || fallbackLocationId;
+    const location = await getLocation(locationId);
+
+    if (location.type === "WAREHOUSE") {
+      if (!item.warehouseLotId) {
+        throw userError(`Select a lot before selling stock from ${location.name}.`);
+      }
+      await assertStockAvailableForDeduction(
+        item.productId,
+        locationId,
+        item.quantity,
+        tx,
+        item.warehouseLotId,
+      );
+      const stock = await getRemaining(item.productId, locationId, item.warehouseLotId);
+      if (stock.quantity < item.quantity) {
+        throw userError(`Insufficient stock in the selected lot at ${location.name}.`);
+      }
+      remainingByStockKey.set(stock.key, stock.quantity - item.quantity);
+      allocations.push({
+        productId: item.productId,
+        locationId,
+        warehouseLotId: item.warehouseLotId,
+        quantity: item.quantity,
+      });
+      continue;
+    }
+
+    if (location.type !== "SHOP") {
+      await assertStockAvailableForDeduction(
+        item.productId,
+        locationId,
+        item.quantity,
+        tx,
+        item.warehouseLotId,
+      );
+      const stock = await getRemaining(item.productId, locationId, item.warehouseLotId || null);
+      if (stock.quantity < item.quantity) {
+        throw userError(`Insufficient stock at ${location.name}.`);
+      }
+      remainingByStockKey.set(stock.key, stock.quantity - item.quantity);
+      allocations.push({
+        productId: item.productId,
+        locationId,
+        warehouseLotId: item.warehouseLotId || null,
+        quantity: item.quantity,
+      });
+      continue;
+    }
+
+    if (item.warehouseLotId) {
+      throw userError("Shop sales use Stock Source; remove the individual lot selection and try again.");
+    }
+
+    const stockSource = item.stockSource || "AUTO_SPLIT";
+    if (stockSource !== "AUTO_SPLIT" && stockSource !== "REGULAR_ONLY" && stockSource !== "PARTNER_ONLY") {
+      throw userError("Select a valid shop stock source.");
+    }
+    let partnerLots = partnerLotsByLocation.get(locationId);
+    if (!partnerLots) {
+      partnerLots = await tx.warehouseLot.findMany({
+        where: {
+          locationId,
+          partnerId: { not: null },
+          isActive: true,
+          deletedAt: null,
+        },
+        select: { id: true, lotNumber: true, partnerId: true },
+        orderBy: { lotNumber: "asc" },
+      });
+      partnerLotsByLocation.set(locationId, partnerLots);
+    }
+
+    let remaining = item.quantity;
+    if (stockSource !== "PARTNER_ONLY") {
+      remaining = await allocate(item.productId, locationId, null, remaining);
+    }
+    if (remaining > 0 && stockSource !== "REGULAR_ONLY") {
+      for (const lot of partnerLots) {
+        remaining = await allocate(item.productId, locationId, lot.id, remaining);
+        if (remaining <= 0) break;
+      }
+    }
+    if (remaining > 0) {
+      const available = item.quantity - remaining;
+      const sourceLabel =
+        stockSource === "REGULAR_ONLY"
+          ? "regular shop stock"
+          : stockSource === "PARTNER_ONLY"
+            ? "partner shop stock"
+            : "shop stock";
+      throw userError(
+        `Insufficient ${sourceLabel} for this product. Available: ${available}, requested: ${item.quantity}.`,
+      );
+    }
+  }
+
+  return allocations;
+}
+
+async function resolveSalePartnership(
+  allocations: SaleStockAllocation[],
+  isPartnership: boolean,
+  partnershipId: string | null,
+  tx: Prisma.TransactionClient,
+) {
+  const lotIds = Array.from(
+    new Set(
+      allocations
+        .map((allocation) => allocation.warehouseLotId)
+        .filter((lotId): lotId is string => Boolean(lotId)),
+    ),
+  );
+  const partnerLots = lotIds.length
+    ? await tx.warehouseLot.findMany({
+        where: { id: { in: lotIds }, partnerId: { not: null } },
+        select: { partnerId: true },
+      })
+    : [];
+  const partnerIds = Array.from(new Set(partnerLots.map((lot) => lot.partnerId).filter(Boolean))) as string[];
+  if (partnerIds.length > 1) {
+    throw userError("A sale invoice cannot consume partnership stock belonging to multiple partners.");
+  }
+  if (partnershipId && partnerIds.length && partnershipId !== partnerIds[0]) {
+    throw userError("Selected partnership does not own the partner stock being sold.");
+  }
+  if (partnerIds.length) {
+    return { isPartnership: true, partnershipId: partnerIds[0] };
+  }
+  return { isPartnership, partnershipId };
+}
 
 export async function listSaleInvoicesAction() {
   return runAction("sales.list", async () => {
@@ -46,6 +253,10 @@ export async function listSaleInvoicesAction() {
       const paymentStatus = inv.paymentStatus || (balanceDue <= 0.001 ? "PAID" : paidAmount > 0.001 ? "PARTIAL" : "UNPAID");
       return {
         ...inv,
+        customer: {
+          ...inv.customer,
+          name: cleanPartyDisplayName(inv.customer.name),
+        },
         totalAmount,
         amountPaid: paidAmount,
         paidAmount,
@@ -159,14 +370,9 @@ export async function createSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // Validate exact lot balances; aggregate duplicate invoice lines before checking.
-      await assertStockDeductionsAvailable(
-        input.items.map((item) => ({
-          productId: item.productId,
-          locationId: item.locationId || fallbackLocationId,
-          warehouseLotId: item.warehouseLotId,
-          quantity: item.quantity,
-        })),
+      const stockAllocations = await resolveSaleStockAllocations(
+        input.items,
+        fallbackLocationId,
         tx,
       );
 
@@ -223,23 +429,13 @@ export async function createSaleInvoiceAction(raw: unknown) {
         })
       );
 
-      // Determine if this sale invoice is a partnership transaction
-      let isPartnershipTx = Boolean(input.isPartnership || input.partnershipId);
-      let partnershipId = input.partnershipId || null;
-
-      if (!isPartnershipTx) {
-        const itemLotIds = input.items.map((i) => i.warehouseLotId).filter(Boolean) as string[];
-        if (itemLotIds.length > 0) {
-          const partLot = await tx.warehouseLot.findFirst({
-            where: { id: { in: itemLotIds }, partnerId: { not: null } },
-            select: { partnerId: true },
-          });
-          if (partLot?.partnerId) {
-            isPartnershipTx = true;
-            partnershipId = partLot.partnerId;
-          }
-        }
-      }
+      const { isPartnership: isPartnershipTx, partnershipId } =
+        await resolveSalePartnership(
+          stockAllocations,
+          Boolean(input.isPartnership || input.partnershipId),
+          input.partnershipId || null,
+          tx,
+        );
 
       const invoice = await tx.saleInvoice.create({
         data: {
@@ -287,14 +483,14 @@ export async function createSaleInvoiceAction(raw: unknown) {
 
       // Create stock movements (SALE_OUT) at each item's specific location only if not already deducted
       if (!alreadyDeductedByDO) {
-        for (const item of input.items) {
+        for (const allocation of stockAllocations) {
           await tx.stockMovement.create({
             data: {
-              productId: item.productId,
-              locationId: item.locationId || fallbackLocationId,
-              warehouseLotId: item.warehouseLotId || null,
+              productId: allocation.productId,
+              locationId: allocation.locationId,
+              warehouseLotId: allocation.warehouseLotId,
               type: StockMovementType.SALE_OUT,
-              quantity: item.quantity,
+              quantity: allocation.quantity,
               referenceType: "SALE_INVOICE",
               referenceId: invoice.id,
               createdById: session.user.id,
@@ -668,14 +864,9 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         await tx.payment.delete({ where: { id: op.id } });
       }
 
-      // Revalidate exact lot balances after the previous invoice movements have been removed.
-      await assertStockDeductionsAvailable(
-        input.items.map((item) => ({
-          productId: item.productId,
-          locationId: item.locationId || fallbackLocationId,
-          warehouseLotId: item.warehouseLotId,
-          quantity: item.quantity,
-        })),
+      const stockAllocations = await resolveSaleStockAllocations(
+        input.items,
+        fallbackLocationId,
         tx,
       );
 
@@ -698,23 +889,13 @@ export async function updateSaleInvoiceAction(raw: unknown) {
       const finalNotes = [input.notes?.trim(), walkInContactDetails].filter(Boolean).join(" — ");
       const isSettled = paidAmount >= totalAmount - 0.001;
 
-      // Determine if this sale invoice is a partnership transaction
-      let isPartnershipTx = input.isPartnership !== undefined ? input.isPartnership : existing.isPartnership;
-      let partnershipId = input.partnershipId !== undefined ? input.partnershipId : existing.partnershipId;
-
-      if (!isPartnershipTx) {
-        const itemLotIds = input.items.map((i) => i.warehouseLotId).filter(Boolean) as string[];
-        if (itemLotIds.length > 0) {
-          const partLot = await tx.warehouseLot.findFirst({
-            where: { id: { in: itemLotIds }, partnerId: { not: null } },
-            select: { partnerId: true },
-          });
-          if (partLot?.partnerId) {
-            isPartnershipTx = true;
-            partnershipId = partLot.partnerId;
-          }
-        }
-      }
+      const { isPartnership: isPartnershipTx, partnershipId } =
+        await resolveSalePartnership(
+          stockAllocations,
+          input.isPartnership !== undefined ? input.isPartnership : existing.isPartnership,
+          input.partnershipId !== undefined ? input.partnershipId : existing.partnershipId,
+          tx,
+        );
 
       // Update invoice record
       const updatedInvoice = await tx.saleInvoice.update({
@@ -793,14 +974,14 @@ export async function updateSaleInvoiceAction(raw: unknown) {
       }
 
       if (!alreadyDeductedByDO) {
-        for (const item of input.items) {
+        for (const allocation of stockAllocations) {
           await tx.stockMovement.create({
             data: {
-              productId: item.productId,
-              locationId: item.locationId || fallbackLocationId,
-              warehouseLotId: item.warehouseLotId || null,
+              productId: allocation.productId,
+              locationId: allocation.locationId,
+              warehouseLotId: allocation.warehouseLotId,
               type: StockMovementType.SALE_OUT,
-              quantity: item.quantity,
+              quantity: allocation.quantity,
               referenceType: "SALE_INVOICE",
               referenceId: existing.id,
               createdById: session.user.id,
@@ -1081,7 +1262,34 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
     }
     const input = parseInput(purchaseInvoiceSchema, raw);
 
-    const stockKeys = input.items.map((i) => `stock:${i.productId}:${input.locationId}`);
+    const sourceLotIds = Array.from(new Set([
+      ...input.items.map((item) =>
+        item.sourceWarehouseLotId ||
+        input.sourceWarehouseLotId ||
+        item.warehouseLotId ||
+        input.warehouseLotId,
+      ),
+    ].filter((lotId): lotId is string => Boolean(lotId))));
+    const sourceLots = sourceLotIds.length > 0
+      ? await prisma.warehouseLot.findMany({
+          where: { id: { in: sourceLotIds } },
+          select: { id: true, locationId: true },
+        })
+      : [];
+    const sourceLocationByLotId = new Map(sourceLots.map((lot) => [lot.id, lot.locationId]));
+    const stockKeys = input.items.flatMap((item) => {
+      const destinationLocationId = item.locationId || input.locationId;
+      const sourceLotId =
+        item.sourceWarehouseLotId ||
+        input.sourceWarehouseLotId ||
+        item.warehouseLotId ||
+        input.warehouseLotId;
+      const sourceLocationId = sourceLotId ? sourceLocationByLotId.get(sourceLotId) : undefined;
+      return [
+        ...(destinationLocationId ? [`stock:${item.productId}:${destinationLocationId}`] : []),
+        ...(sourceLocationId ? [`stock:${item.productId}:${sourceLocationId}`] : []),
+      ];
+    });
     const partyKey = input.supplierId ? `party:${input.supplierId}` : "party:one-time";
     const docKey = "doc:purchase_invoice";
     const poKey = input.purchaseOrderId ? `order:po:${input.purchaseOrderId}` : null;
@@ -1209,7 +1417,11 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         (isPartnershipTx && targetSupplierId ? targetSupplierId : null);
 
       // Fetch any referenced warehouse lots to determine equity splits
-      const referencedLotIds = input.items.map((i) => i.warehouseLotId || (i as any).sourceWarehouseLotId).filter(Boolean) as string[];
+      const referencedLotIds = Array.from(new Set([
+        ...input.items.flatMap((item) => [item.warehouseLotId, item.sourceWarehouseLotId]),
+        input.warehouseLotId,
+        input.sourceWarehouseLotId,
+      ].filter((lotId): lotId is string => Boolean(lotId))));
       const referencedLots = referencedLotIds.length > 0
         ? await tx.warehouseLot.findMany({
             where: { id: { in: referencedLotIds } },
@@ -1251,14 +1463,30 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         const itemLoc = isPartnershipPO
           ? fallbackLocationId
           : (item as any).locationId || fallbackLocationId;
-        const srcLotId = (item as any).sourceWarehouseLotId || item.warehouseLotId || input.warehouseLotId;
+        const srcLotId =
+          item.sourceWarehouseLotId ||
+          input.sourceWarehouseLotId ||
+          item.warehouseLotId ||
+          input.warehouseLotId;
         const srcLot = srcLotId ? lotMap.get(srcLotId) : null;
         const partnerIdForLot = partnershipId || srcLot?.partnerId || (isSupplierBeneficiary ? targetSupplierId : null);
 
         let finalLotId = item.warehouseLotId || input.warehouseLotId || null;
 
+        if (
+          isPartnershipTx &&
+          srcLot &&
+          srcLot.locationId !== itemLoc &&
+          !partnerIdForLot
+        ) {
+          throw userError(`Select the partner that owns source lot ${srcLot.lotNumber}.`);
+        }
+
         if (isPartnershipTx && partnerIdForLot) {
           if (srcLot) {
+            if (srcLot.partnerId && srcLot.partnerId !== partnerIdForLot) {
+              throw userError(`Source lot ${srcLot.lotNumber} belongs to a different partner.`);
+            }
             if (srcLot.locationId === itemLoc) {
               finalLotId = srcLot.id;
               if (!srcLot.partnerId) {
@@ -1270,6 +1498,22 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
                 throw userError(`Lot ${srcLot.lotNumber} belongs to a different partner.`);
               }
             } else {
+              if (srcLot.location.type !== "WAREHOUSE") {
+                throw userError(`Source lot ${srcLot.lotNumber} must be in a warehouse to pull stock.`);
+              }
+              const receivingLocation = await tx.location.findUnique({
+                where: { id: itemLoc },
+                select: { type: true },
+              });
+              if (receivingLocation?.type !== "SHOP") {
+                throw userError("Partnership warehouse stock can only be pulled into a shop location.");
+              }
+              if (!srcLot.partnerId) {
+                await tx.warehouseLot.update({
+                  where: { id: srcLot.id },
+                  data: { partnerId: partnerIdForLot },
+                });
+              }
               // Ensure receiving Shop location has a corresponding partner lot with the same lot number
               let receivingLot = await tx.warehouseLot.findFirst({
                 where: {
@@ -1377,6 +1621,9 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           unitCost: item.unitCost,
           lineTotal: item.quantity * item.unitCost,
         });
+        if (srcLot && srcLot.locationId !== itemLoc && !finalLotId) {
+          throw userError(`Could not resolve a partner lot at the receiving location for ${srcLot.lotNumber}.`);
+        }
       }
 
       const invoice = await tx.purchaseInvoice.create({

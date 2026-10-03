@@ -19,6 +19,7 @@ import { canPerformAction } from "@/lib/auth/permissions";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { revalidatePath } from "next/cache";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 
 const deletePartySchema = z.object({ id: z.string().min(1, "Party is required") });
 
@@ -58,6 +59,7 @@ export async function listPartiesAction() {
 
     return parties.map((party) => ({
       ...party,
+      name: cleanPartyDisplayName(party.name),
       creditLimit: party.creditLimit ? Number(party.creditLimit) : null,
       balance: balanceMap.get(party.id) ?? 0,
     }));
@@ -127,6 +129,7 @@ export async function getPartyDetailsAction(partyId: string, filterMode: "REGULA
     return {
       party: {
         ...party,
+        name: cleanPartyDisplayName(party.name),
         creditLimit: party.creditLimit ? Number(party.creditLimit) : null,
         balance: activeBalance,
         regularBalance,

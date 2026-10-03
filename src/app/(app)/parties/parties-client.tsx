@@ -34,6 +34,7 @@ import {
 import { PartyType } from "@prisma/client";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -232,7 +233,7 @@ export default function PartiesClient({
     setFormError(null);
     setFormData({
       id: party.id,
-      name: party.name,
+      name: cleanPartyDisplayName(party.name),
       type: party.type,
       phone: party.phone || "",
       email: party.email || "",
@@ -335,7 +336,7 @@ export default function PartiesClient({
     e?.stopPropagation();
     const ok = await confirm({
       title: "Delete Party",
-      description: `Are you sure you want to delete "${party.name}"? It will be removed from your active directory.`,
+      description: `Are you sure you want to delete "${cleanPartyDisplayName(party.name)}"? It will be removed from your active directory.`,
       confirmText: "Delete Party",
       variant: "destructive",
     });
@@ -769,7 +770,7 @@ export default function PartiesClient({
                         {/* Name */}
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-900 dark:text-slate-100">
                           <div className="flex items-center gap-1.5">
-                            <span>{p.name}</span>
+                            <span>{cleanPartyDisplayName(p.name)}</span>
                             {!p.isActive && (
                               <span className="rounded bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 text-[9px] px-1 font-sans">
                                 Inactive
@@ -893,7 +894,7 @@ export default function PartiesClient({
                         </span>
                       )}
                     </div>
-                    <h3 className="font-bold text-xs text-slate-900 dark:text-slate-100">{p.name}</h3>
+                    <h3 className="font-bold text-xs text-slate-900 dark:text-slate-100">{cleanPartyDisplayName(p.name)}</h3>
                   </div>
                   {p.address && <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{p.address}</p>}
                 </div>

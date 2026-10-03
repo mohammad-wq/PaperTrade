@@ -32,6 +32,7 @@ import { useRealtimeListener } from "@/hooks/use-realtime";
 import { PartyType, Role } from "@prisma/client";
 import { formatDate } from "@/lib/utils";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 
 type PartyData = {
   id: string;
@@ -334,7 +335,7 @@ function PartyDetailContent() {
             Back to Parties
           </Button>
           <span className="text-slate-300">/</span>
-          <span className="text-xs font-semibold text-slate-900">{party.name}</span>
+          <span className="text-xs font-semibold text-slate-900">{cleanPartyDisplayName(party.name)}</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -445,7 +446,7 @@ function PartyDetailContent() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
-                  <h1 className="text-lg font-bold text-slate-900">{party.name}</h1>
+                  <h1 className="text-lg font-bold text-slate-900">{cleanPartyDisplayName(party.name)}</h1>
                   <div className="flex flex-wrap gap-1 items-center">
                     {(party.isPartner || party.isBeneficiary) && (
                       <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">

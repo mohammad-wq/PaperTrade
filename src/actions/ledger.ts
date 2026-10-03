@@ -7,6 +7,7 @@ import { AccountType } from "@prisma/client";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 
 export async function listLedgerEntriesAction(filters?: {
   partyId?: string;
@@ -349,6 +350,9 @@ export async function listLedgerEntriesAction(filters?: {
 
       return {
         ...e,
+        party: e.party
+          ? { ...e.party, name: cleanPartyDisplayName(e.party.name) }
+          : null,
         description,
         cleanDescription: cleanDesc,
         docLabel,

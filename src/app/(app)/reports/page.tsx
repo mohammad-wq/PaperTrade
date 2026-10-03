@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 import {
   BarChart3,
   Calendar,
@@ -372,7 +373,7 @@ export default function ReportsPage() {
             {tab === "BS" && <p>As of: {bsDate || "Current"}</p>}
             {tab === "PARTY" && partyData && (
               <>
-                <p>Party: {partyData.party.name} ({partyData.party.type})</p>
+                <p>Party: {cleanPartyDisplayName(partyData.party.name)} ({partyData.party.type})</p>
                 <p>Period: {partyStart || "Beginning"} to {partyEnd || "Present"}</p>
               </>
             )}
@@ -1285,7 +1286,7 @@ export default function ReportsPage() {
                   >
                     {parties.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} ({p.type})
+                        {p.name}
                       </option>
                     ))}
                   </select>
@@ -1336,7 +1337,7 @@ export default function ReportsPage() {
               <div className="rounded-xl border border-sky-200 bg-sky-50/50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h2 className="text-lg font-bold text-slate-900">{partyData.party.name}</h2>
+                    <h2 className="text-lg font-bold text-slate-900">{cleanPartyDisplayName(partyData.party.name)}</h2>
                     <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-800">
                       {partyData.party.type}
                     </span>

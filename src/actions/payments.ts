@@ -5,6 +5,7 @@ import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 import { miscExpenseSchema, paymentSchema, paymentSplitItemSchema } from "@/schemas/payment";
 import { AccountType, PartyType, PaymentMethod } from "@prisma/client";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
@@ -48,6 +49,9 @@ export async function listPaymentsAction() {
 
     return payments.map((p) => ({
       ...p,
+      party: p.party
+        ? { ...p.party, name: cleanPartyDisplayName(p.party.name) }
+        : null,
       amount: Number(p.amount),
       remainingBalance: p.remainingBalance ? Number(p.remainingBalance) : null,
       saleInvoice: p.saleInvoice
