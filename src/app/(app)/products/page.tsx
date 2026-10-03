@@ -2,12 +2,14 @@ import { listProductsAction } from "@/actions/products";
 import { getCachedCategories, getCachedQualities } from "@/lib/cached-lookups";
 import ProductsClient from "./products-client";
 import { Suspense } from "react";
+import { assertPageAccess } from "@/lib/auth/session";
 
 import { serializeDecimals } from "@/lib/serialization";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProductsPage() {
+  await assertPageAccess("/products");
   const [productsRes, categories, qualities] = await Promise.all([
     listProductsAction(),
     getCachedCategories(),

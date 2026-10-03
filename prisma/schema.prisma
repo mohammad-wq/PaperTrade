@@ -355,6 +355,7 @@ model PurchaseOrder {
   locationId      String
   date            DateTime
   status          PurchaseOrderStatus  @default(DRAFT)
+  includePricing  Boolean              @default(true)
   isPartnership   Boolean              @default(false)
   partnershipId   String?
   notes           String?
@@ -385,8 +386,8 @@ model PurchaseOrderItem {
   destinationLocationId String?
   warehouseLotId        String?
   quantity              Decimal       @db.Decimal(14, 4)
-  unitCost              Decimal       @db.Decimal(14, 4)
-  lineTotal             Decimal       @db.Decimal(14, 4)
+  unitCost              Decimal?      @db.Decimal(14, 4)
+  lineTotal             Decimal?      @db.Decimal(14, 4)
 
   order               PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product             Product       @relation(fields: [productId], references: [id])

@@ -31,6 +31,7 @@ export interface PdfDocumentData {
   paymentSplits?: Array<{ method: string; amount: number; reference?: string | null }> | null;
   freightCharges?: number | null;
   notes?: string | null;
+  hidePricing?: boolean;
   deliveryDetails?: {
     vehicleNo?: string | null;
     driverName?: string | null;
@@ -140,7 +141,7 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
           ? `${data.partyName} (Attn: ${data.deliveryDetails.recipientName})`
           : data.partyName;
 
-      const hasRates = data.items.some((i) => typeof i.unitPrice === "number" && !isNaN(i.unitPrice));
+      const hasRates = !data.hidePricing && data.items.some((i) => typeof i.unitPrice === "number" && !isNaN(i.unitPrice));
       const hasLots = data.items.some((i) => Boolean(i.lot));
 
       // 1. Header Section (Ultra-compact)

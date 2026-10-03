@@ -5,6 +5,8 @@ import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { AccountType } from "@prisma/client";
 import { formatSequenceDisplay } from "@/lib/financial-year";
+import { userError } from "@/lib/errors";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 export async function listLedgerEntriesAction(filters?: {
   partyId?: string;
@@ -17,7 +19,13 @@ export async function listLedgerEntriesAction(filters?: {
   sortOrder?: "asc" | "desc";
 }) {
   return runAction("ledger.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "ledger", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "parties", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view the general ledger.");
+    }
 
     const where: Record<string, unknown> = {};
 
@@ -127,7 +135,34 @@ export async function listLedgerEntriesAction(filters?: {
           })
         : [],
       paymentIds.length > 0
-        ? prisma.payment.findMany({ where: { id: { in: paymentIds } }, select: { id: true, receiptNo: true, sequenceNo: true, direction: true } })
+        ? prisma.payment.findMany({
+            where: { id: { in: paymentIds } },
+            select: {
+              id: true,
+              receiptNo: true,
+              sequenceNo: true,
+              direction: true,
+              amount: true,
+              saleInvoice: {
+                select: { id: true, invoiceNo: true, sequenceNo: true, date: true, totalAmount: true },
+              },
+              purchaseInvoice: {
+                select: { id: true, invoiceNo: true, sequenceNo: true, date: true, totalAmount: true },
+              },
+              allocations: {
+                select: {
+                  id: true,
+                  amount: true,
+                  saleInvoice: {
+                    select: { id: true, invoiceNo: true, sequenceNo: true, date: true, totalAmount: true },
+                  },
+                  purchaseInvoice: {
+                    select: { id: true, invoiceNo: true, sequenceNo: true, date: true, totalAmount: true },
+                  },
+                },
+              },
+            },
+          })
         : [],
       saleReturnIds.length > 0
         ? prisma.saleReturn.findMany({ where: { id: { in: saleReturnIds } }, select: { id: true, returnNo: true, sequenceNo: true } })
@@ -142,6 +177,8 @@ export async function listLedgerEntriesAction(filters?: {
 
     const docMap = new Map<string, { voucherType: string; docNo: string }>();
     const itemsMap = new Map<string, string>();
+    const itemsListMap = new Map<string, Array<{ productNo: string; name: string; quantity: number; unit: string }>>();
+    const paymentAllocationsMap = new Map<string, Array<{ amount: number; docNo: string; date?: Date }>>();
 
     for (const s of saleInvoices) {
       docMap.set(s.id, {
@@ -149,6 +186,15 @@ export async function listLedgerEntriesAction(filters?: {
         docNo: `#${formatSequenceDisplay(s.sequenceNo, s.invoiceNo)}`,
       });
       if (s.items && s.items.length > 0) {
+        itemsListMap.set(
+          s.id,
+          s.items.map((i) => ({
+            productNo: i.product.productNo,
+            name: i.product.name,
+            quantity: Number(i.quantity),
+            unit: i.product.unit || "pkts",
+          }))
+        );
         itemsMap.set(
           s.id,
           s.items
@@ -166,6 +212,15 @@ export async function listLedgerEntriesAction(filters?: {
         docNo: `#${formatSequenceDisplay(p.sequenceNo, p.invoiceNo)}`,
       });
       if (p.items && p.items.length > 0) {
+        itemsListMap.set(
+          p.id,
+          p.items.map((i) => ({
+            productNo: i.product.productNo,
+            name: i.product.name,
+            quantity: Number(i.quantity),
+            unit: i.product.unit || "pkts",
+          }))
+        );
         itemsMap.set(
           p.id,
           p.items
@@ -183,6 +238,41 @@ export async function listLedgerEntriesAction(filters?: {
         voucherType: isOut ? "Payment Voucher" : "Receipt",
         docNo: `#${formatSequenceDisplay(pay.sequenceNo, pay.receiptNo)}`,
       });
+
+      const allocList: Array<{ amount: number; docNo: string; date?: Date }> = [];
+      if (pay.allocations && pay.allocations.length > 0) {
+        for (const a of pay.allocations) {
+          if (a.saleInvoice) {
+            allocList.push({
+              amount: Number(a.amount),
+              docNo: `#${formatSequenceDisplay(a.saleInvoice.sequenceNo, a.saleInvoice.invoiceNo)}`,
+              date: a.saleInvoice.date,
+            });
+          } else if (a.purchaseInvoice) {
+            allocList.push({
+              amount: Number(a.amount),
+              docNo: `#${formatSequenceDisplay(a.purchaseInvoice.sequenceNo, a.purchaseInvoice.invoiceNo)}`,
+              date: a.purchaseInvoice.date,
+            });
+          }
+        }
+      } else if (pay.saleInvoice) {
+        allocList.push({
+          amount: Number(pay.amount),
+          docNo: `#${formatSequenceDisplay(pay.saleInvoice.sequenceNo, pay.saleInvoice.invoiceNo)}`,
+          date: pay.saleInvoice.date,
+        });
+      } else if (pay.purchaseInvoice) {
+        allocList.push({
+          amount: Number(pay.amount),
+          docNo: `#${formatSequenceDisplay(pay.purchaseInvoice.sequenceNo, pay.purchaseInvoice.invoiceNo)}`,
+          date: pay.purchaseInvoice.date,
+        });
+      }
+
+      if (allocList.length > 0) {
+        paymentAllocationsMap.set(pay.id, allocList);
+      }
     }
     for (const sr of saleReturns) {
       docMap.set(sr.id, {
@@ -225,14 +315,48 @@ export async function listLedgerEntriesAction(filters?: {
         description = description ? `${description} • ${itemSummary}` : itemSummary;
       }
 
+      // Generate clean document label
+      let docLabel = "";
+      if (e.referenceType === "PURCHASE_INVOICE") {
+        const isPartnership = docInfo.docNo.includes("PINV-SH") || (e.description && e.description.toLowerCase().includes("partnership"));
+        docLabel = isPartnership ? `Partnership Intake ${docInfo.docNo}` : `Purchase Invoice ${docInfo.docNo}`;
+      } else if (e.referenceType === "SALE_INVOICE") {
+        docLabel = `Sale Invoice ${docInfo.docNo}`;
+      } else if (e.referenceType === "PAYMENT") {
+        docLabel = `${docInfo.voucherType} ${docInfo.docNo}`;
+      } else if (e.referenceType === "SALE_RETURN") {
+        docLabel = `Sale Return ${docInfo.docNo}`;
+      } else if (e.referenceType === "PURCHASE_RETURN") {
+        docLabel = `Purchase Return ${docInfo.docNo}`;
+      } else if (e.referenceType === "EXPENSE") {
+        docLabel = `Expense ${docInfo.docNo}`;
+      } else if (e.referenceType === "STORAGE_CHARGE") {
+        docLabel = `Storage Charge ${docInfo.docNo}`;
+      } else if (e.referenceType === "OPENING_BALANCE") {
+        docLabel = `Opening Balance`;
+      } else {
+        docLabel = `${docInfo.voucherType} ${docInfo.docNo}`;
+      }
+
+      // Clean up description boilerplate
+      let cleanDesc = (e.description || "")
+        .replace(/^Payable to (?:vendor|supplier|customer)\s+[^f]+for\s+/i, "")
+        .replace(/^Receivable from (?:customer|vendor)\s+[^f]+for\s+/i, "")
+        .replace(/^Payment (?:to|from)\s+[^—-]+[—–-]\s*/i, "")
+        .trim();
+
       return {
         ...e,
         description,
+        cleanDescription: cleanDesc,
+        docLabel,
+        lineItems: itemsListMap.get(e.referenceId) || [],
         debit,
         credit,
         runningBalance: currentBalance,
         voucherType: docInfo.voucherType,
         docNo: docInfo.docNo,
+        allocations: e.referenceType === "PAYMENT" ? paymentAllocationsMap.get(e.referenceId) || [] : [],
       };
     });
 

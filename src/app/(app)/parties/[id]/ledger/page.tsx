@@ -1,9 +1,11 @@
 import { redirect } from "next/navigation";
+import { assertPageAccess } from "@/lib/auth/session";
 
 export default async function PartyLedgerRedirectPage(props: {
   params: Promise<{ id: string }>;
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
+  await assertPageAccess("/ledger");
   const params = await props.params;
   const searchParams = await props.searchParams;
 

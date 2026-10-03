@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   RotateCcw,
   Plus,
@@ -30,6 +30,8 @@ import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf } from "@/lib/print-pdf";
 import { handleFormKeyDown } from "@/lib/keyboard-nav";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type SaleReturnRow = {
   id: string;
@@ -87,7 +89,18 @@ type InvoiceOption = {
 };
 
 export default function ReturnsPage() {
+  const router = useRouter();
   const confirm = useConfirm();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "returns", "view", (session.user as any).permissions);
+  const canCreate = !session?.user ? false : canPerformAction(session.user.role, "returns", "create", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [tab, setTab] = useState<"SALES" | "PURCHASES">("SALES");
   const [saleReturns, setSaleReturns] = useState<SaleReturnRow[]>([]);
   const [purchaseReturns, setPurchaseReturns] = useState<PurchaseReturnRow[]>([]);
@@ -100,7 +113,7 @@ export default function ReturnsPage() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "F2" || e.key === "Insert") {
+      if ((e.key === "F2" || e.key === "Insert") && canCreate) {
         e.preventDefault();
         setSelectedInvoiceId("");
         setReturnItems([]);
@@ -113,7 +126,7 @@ export default function ReturnsPage() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [canCreate]);
 
   const displayedSaleReturns = useMemo(() => {
     return saleReturns.filter((r) => {
@@ -425,18 +438,20 @@ export default function ReturnsPage() {
             </span>
           </div>
 
-          <Button
-            onClick={() => {
-              setSelectedInvoiceId("");
-              setReturnItems([]);
-              setReason("");
-              setIsDialogOpen(true);
-            }}
-            className="h-8 bg-rose-800 hover:bg-rose-900 text-white text-xs font-bold shadow-xs px-3"
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            {tab === "SALES" ? "New Sale Return" : "New Purchase Return"} <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
-          </Button>
+          {canCreate && (
+            <Button
+              onClick={() => {
+                setSelectedInvoiceId("");
+                setReturnItems([]);
+                setReason("");
+                setIsDialogOpen(true);
+              }}
+              className="h-8 bg-rose-800 hover:bg-rose-900 text-white text-xs font-bold shadow-xs px-3"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              {tab === "SALES" ? "New Sale Return" : "New Purchase Return"} <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+            </Button>
+          )}
         </div>
       </div>
 

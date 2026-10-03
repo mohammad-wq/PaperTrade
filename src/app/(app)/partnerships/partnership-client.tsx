@@ -40,14 +40,16 @@ import {
   adjustSharedWarehouseStockAction,
   deleteSharedWarehouseAdjustmentAction,
   partnershipPurchaseIntakeAction,
-  pullPartnershipStockToShopAction,
 } from "@/actions/partnerships";
+import { createPaymentAction } from "@/actions/payments";
 import { listLocationsAction } from "@/actions/orders";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 import { handleFormEnterKeyDown } from "@/lib/keyboard-nav";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 export type HubData = {
   partner: {
@@ -175,6 +177,50 @@ export type HubData = {
     notes: string | null;
     createdByName: string;
   }>;
+  purchaseOrders?: Array<{
+    id: string;
+    orderNo: string;
+    date: Date;
+    status: string;
+    includePricing: boolean;
+    locationName: string;
+    items: Array<{
+      id: string;
+      productNo: string;
+      productName: string;
+      quantity: number;
+      unit: string;
+      unitCost: number | null;
+      destinationLocationName: string | null;
+      lotNumber: string | null;
+    }>;
+    invoices: Array<{
+      id: string;
+      invoiceNo: string;
+      status: string;
+      date: Date;
+      totalAmount: number;
+    }>;
+  }>;
+  purchaseInvoices?: Array<{
+    id: string;
+    invoiceNo: string;
+    date: Date;
+    status: string;
+    totalAmount: number;
+    paidAmount: number;
+    balanceAmount: number;
+    purchaseOrderId: string | null;
+    items: Array<{
+      id: string;
+      productNo: string;
+      productName: string;
+      quantity: number;
+      unitCost: number;
+      lineTotal: number;
+      lotNumber: string | null;
+    }>;
+  }>;
 };
 
 export default function PartnershipClient({
@@ -196,6 +242,42 @@ export default function PartnershipClient({
   const router = useRouter();
   const confirm = useConfirm();
   const searchParams = useSearchParams();
+  const { data: session } = useSession();
+  const role = session?.user?.role;
+  const permissions = (session?.user as any)?.permissions;
+
+  const canRecordSettlement = !session?.user
+    ? false
+    : canPerformAction(role!, "partnerships", "update", permissions) ||
+      canPerformAction(role!, "payments", "create", permissions);
+
+  const canIntake = !session?.user
+    ? false
+    : canPerformAction(role!, "partnerships", "create", permissions) ||
+      canPerformAction(role!, "purchases", "create", permissions);
+
+  const canPullStock = !session?.user
+    ? false
+    : canPerformAction(role!, "partnerships", "update", permissions) ||
+      canPerformAction(role!, "inventory", "update", permissions);
+
+  const canAdjustStock = !session?.user
+    ? false
+    : canPerformAction(role!, "partnerships", "update", permissions) ||
+      canPerformAction(role!, "inventory", "update", permissions);
+
+  const canDeleteAdjustment = !session?.user
+    ? false
+    : canPerformAction(role!, "partnerships", "delete", permissions) ||
+      canPerformAction(role!, "inventory", "delete", permissions);
+
+  const canCreatePO = !session?.user
+    ? false
+    : canPerformAction(role!, "purchase-orders", "create", permissions);
+
+  const canCreatePI = !session?.user
+    ? false
+    : canPerformAction(role!, "purchases", "create", permissions);
 
   const [partners, setPartners] = useState(initialPartners);
   const [selectedPartnerId, setSelectedPartnerId] = useState(
@@ -209,13 +291,28 @@ export default function PartnershipClient({
   // Date range filters for Sales & Settlement Log
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [selectedLogLotId, setSelectedLogLotId] = useState("all");
+  const [selectedLogProductId, setSelectedLogProductId] = useState("all");
 
-  // Product breakdown search
+  // Product breakdown table filters
   const [productSearch, setProductSearch] = useState("");
+  const [filterWarehouseId, setFilterWarehouseId] = useState("all");
+  const [filterLotId, setFilterLotId] = useState("all");
+  const [showZeroStock, setShowZeroStock] = useState(false);
+
   // Expanded lots set
   const [expandedProductIds, setExpandedProductIds] = useState<Set<string>>(new Set());
-  // Active Tab: Inventory or Settlements
-  const [activeTab, setActiveTab] = useState<"inventory" | "settlements">("inventory");
+  // Active Tab: Inventory, Settlements, or Orders
+  const [activeTab, setActiveTab] = useState<"inventory" | "settlements" | "orders">("inventory");
+
+  // Settlement Payout Modal
+  const [showSettlementPayoutModal, setShowSettlementPayoutModal] = useState(false);
+  const [payoutAmount, setPayoutAmount] = useState<number>(0);
+  const [payoutMethod, setPayoutMethod] = useState<"CASH" | "BANK" | "CHEQUE" | "OTHER">("CASH");
+  const [payoutDate, setPayoutDate] = useState(new Date().toISOString().split("T")[0]);
+  const [payoutNotes, setPayoutNotes] = useState("");
+  const [submittingPayout, setSubmittingPayout] = useState(false);
+  const [payoutError, setPayoutError] = useState<string | null>(null);
 
   // ==========================================
   // MODAL 1: Dedicated Partnership Purchase Intake
@@ -238,27 +335,6 @@ export default function PartnershipClient({
   const [intakeError, setIntakeError] = useState<string | null>(null);
 
   // ==========================================
-  // MODAL 2: Pull Stock to Shop Modal (Multi-product support)
-  // ==========================================
-  type PullItemRow = {
-    lotId: string;
-    productId: string;
-    quantity: number;
-    unitCost?: number;
-  };
-  const [showPullModal, setShowPullModal] = useState(false);
-  const [pullItems, setPullItems] = useState<PullItemRow[]>([]);
-  const [pullLotId, setPullLotId] = useState("");
-  const [pullProductId, setPullProductId] = useState("");
-  const [pullSourceLocationId, setPullSourceLocationId] = useState("");
-  const [pullDestinationLocationId, setPullDestinationLocationId] = useState("");
-  const [pullQuantity, setPullQuantity] = useState(20);
-  const [pullDate, setPullDate] = useState(new Date().toISOString().split("T")[0]);
-  const [pullNotes, setPullNotes] = useState("");
-  const [submittingPull, setSubmittingPull] = useState(false);
-  const [pullError, setPullError] = useState<string | null>(null);
-
-  // ==========================================
   // MODAL 3: Settlement Statement Modal
   // ==========================================
   const [showSettlementModal, setShowSettlementModal] = useState(false);
@@ -267,13 +343,18 @@ export default function PartnershipClient({
   const [statementEndDate, setStatementEndDate] = useState("");
 
   // ==========================================
-  // MODAL 4: Manual Shared Warehouse Stock Adjustment
+  // MODAL 4: Bulk Shared Warehouse Stock Adjustment
   // ==========================================
+  type BulkAdjustItem = {
+    id: string;
+    productId: string;
+    warehouseLotId: string;
+    quantity: number;
+    direction: "OUT" | "IN";
+  };
   const [showAdjustModal, setShowAdjustModal] = useState(false);
-  const [adjustProductId, setAdjustProductId] = useState("");
   const [adjustLocationId, setAdjustLocationId] = useState("");
-  const [adjustQuantity, setAdjustQuantity] = useState(1);
-  const [adjustDirection, setAdjustDirection] = useState<"OUT" | "IN">("OUT");
+  const [adjustItems, setAdjustItems] = useState<BulkAdjustItem[]>([]);
   const [adjustReason, setAdjustReason] = useState("");
   const [adjustNotes, setAdjustNotes] = useState("");
   const [adjustDate, setAdjustDate] = useState(new Date().toISOString().split("T")[0]);
@@ -502,130 +583,6 @@ export default function PartnershipClient({
     }
   }
 
-  // ------------------------------------------
-  // PULL STOCK TO SHOP HANDLERS (Multi-Product)
-  // ------------------------------------------
-  function openPullModal(lotId?: string, productId?: string) {
-    const lotToUse = lotId
-      ? hubData?.allLots?.find((l) => l.id === lotId)
-      : hubData?.allLots?.[0];
-    const initialLotId = lotToUse?.id || "";
-    const initialProdId = productId || hubData?.allProducts?.[0]?.id || "";
-
-    setPullLotId(initialLotId);
-    setPullProductId(initialProdId);
-    setPullSourceLocationId(hubData?.locations?.sharedWarehouse?.id || lotToUse?.locationId || "");
-    setPullDestinationLocationId(
-      hubData?.locations?.shop?.id || locations.find((l) => l.type === "STORE" || l.type === "SHOP")?.id || ""
-    );
-    setPullQuantity(20);
-    setPullDate(new Date().toISOString().split("T")[0]);
-    setPullNotes("");
-    setPullItems([
-      {
-        lotId: initialLotId,
-        productId: initialProdId,
-        quantity: 20,
-        unitCost: lotToUse?.unitCost || 0,
-      },
-    ]);
-    setPullError(null);
-    setShowPullModal(true);
-  }
-
-  function addPullItem() {
-    const firstLot = hubData?.allLots?.[0];
-    const firstProd = hubData?.allProducts?.[0];
-    setPullItems((prev) => [
-      ...prev,
-      {
-        lotId: firstLot?.id || "",
-        productId: firstProd?.id || "",
-        quantity: 10,
-        unitCost: firstLot?.unitCost || firstProd?.costPrice || 0,
-      },
-    ]);
-  }
-
-  function removePullItem(idx: number) {
-    setPullItems((prev) => prev.filter((_, i) => i !== idx));
-  }
-
-  function updatePullItem(idx: number, field: string, val: any) {
-    setPullItems((prev) => {
-      const copy = [...prev];
-      copy[idx] = { ...copy[idx], [field]: val };
-      if (field === "lotId") {
-        const lot = hubData?.allLots?.find((l) => l.id === val);
-        if (lot && (!copy[idx].unitCost || copy[idx].unitCost <= 0)) {
-          copy[idx].unitCost = lot.unitCost;
-        }
-      }
-      return copy;
-    });
-  }
-
-  const pullSummaryMetrics = useMemo(() => {
-    let totalValuation = 0;
-    let totalPayable = 0;
-    for (const item of pullItems) {
-      const lot = hubData?.allLots?.find((l) => l.id === item.lotId);
-      const cost = item.unitCost && item.unitCost > 0 ? item.unitCost : (lot?.unitCost || 0);
-      const val = (Number(item.quantity) || 0) * cost;
-      const pShare = lot?.partnerSharePct != null ? lot.partnerSharePct : 100;
-      totalValuation += val;
-      totalPayable += val * (pShare / 100);
-    }
-    return { totalValuation, totalPayable };
-  }, [pullItems, hubData?.allLots]);
-
-  async function handlePullSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setPullError(null);
-    if (!selectedPartnerId || pullItems.length === 0) {
-      setPullError("Please configure at least one product transfer line.");
-      return;
-    }
-
-    for (const it of pullItems) {
-      if (!it.lotId || !it.productId || it.quantity <= 0) {
-        setPullError("All lines must specify a source lot, product, and valid quantity > 0.");
-        return;
-      }
-    }
-
-    setSubmittingPull(true);
-    try {
-      const res = await pullPartnershipStockToShopAction({
-        partnerId: selectedPartnerId,
-        sourceLocationId: pullSourceLocationId || undefined,
-        destinationLocationId: pullDestinationLocationId || undefined,
-        date: new Date(pullDate),
-        notes: pullNotes.trim() || undefined,
-        items: pullItems.map((it) => ({
-          warehouseLotId: it.lotId,
-          productId: it.productId,
-          quantity: Number(it.quantity),
-          unitCost: it.unitCost,
-        })),
-      });
-
-      if (res.success) {
-        setShowPullModal(false);
-        await loadHubData(selectedPartnerId, startDate, endDate);
-        await confirm.alert(
-          `Stock pull completed successfully! Invoice ${res.data?.invoiceNo} created. Transferred ${res.data?.quantityMoved} units across ${res.data?.itemsCount || 1} product(s). Payable Liability: PKR ${res.data?.payableToPartner?.toLocaleString()} (${res.data?.partnerSharePct}% partner equity).`,
-          { variant: "default" }
-        );
-      } else {
-        setPullError(res.error || "Failed to pull stock to shop.");
-      }
-    } catch (err: any) {
-      setPullError(err.message || "An unexpected error occurred.");
-    } finally {
-      setSubmittingPull(false);
-    }
-  }
 
   // ------------------------------------------
   // SETTLEMENT STATEMENT MODAL HANDLERS
@@ -777,25 +734,78 @@ export default function PartnershipClient({
   // ------------------------------------------
   // ADJUSTMENT MODAL HANDLERS
   // ------------------------------------------
-  function openAdjustModalForProduct(prodId?: string) {
-    setAdjustProductId(prodId || "");
+  function openAdjustModalForProduct(prodId?: string, lotId?: string) {
     const defaultWh = hubData?.locations?.sharedWarehouse?.id || locations.find((l) => l.type === "WAREHOUSE")?.id || "";
     setAdjustLocationId(defaultWh);
-    setAdjustQuantity(1);
-    setAdjustDirection("OUT");
+    setAdjustDate(new Date().toISOString().split("T")[0]);
     setAdjustReason("Direct sale / delivery from shared warehouse");
     setAdjustNotes("");
-    setAdjustDate(new Date().toISOString().split("T")[0]);
     setAdjustError(null);
+
+    const initialProdId = prodId || hubData?.productBreakdown?.[0]?.product.id || hubData?.allProducts?.[0]?.id || "";
+    const prodEntry = hubData?.productBreakdown?.find((p) => p.product.id === initialProdId);
+    const initialLotId = lotId || prodEntry?.lots?.[0]?.id || "";
+
+    setAdjustItems([
+      {
+        id: Math.random().toString(),
+        productId: initialProdId,
+        warehouseLotId: initialLotId,
+        direction: "OUT",
+        quantity: 1,
+      },
+    ]);
     setShowAdjustModal(true);
+  }
+
+  function addAdjustItem() {
+    const defaultProd = hubData?.productBreakdown?.[0]?.product.id || hubData?.allProducts?.[0]?.id || "";
+    const prodEntry = hubData?.productBreakdown?.find((p) => p.product.id === defaultProd);
+    const defaultLot = prodEntry?.lots?.[0]?.id || "";
+    setAdjustItems((prev) => [
+      ...prev,
+      {
+        id: Math.random().toString(),
+        productId: defaultProd,
+        warehouseLotId: defaultLot,
+        direction: "OUT",
+        quantity: 1,
+      },
+    ]);
+  }
+
+  function removeAdjustItem(index: number) {
+    setAdjustItems((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function updateAdjustItem(index: number, field: keyof BulkAdjustItem, value: any) {
+    setAdjustItems((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], [field]: value };
+      if (field === "productId") {
+        const prodEntry = hubData?.productBreakdown?.find((p) => p.product.id === value);
+        copy[index].warehouseLotId = prodEntry?.lots?.[0]?.id || "";
+      }
+      return copy;
+    });
   }
 
   async function handleAdjustSubmit(e: React.FormEvent) {
     e.preventDefault();
     setAdjustError(null);
-    if (!selectedPartnerId || !adjustLocationId || !adjustProductId || adjustQuantity <= 0 || !adjustReason.trim()) {
-      setAdjustError("Please fill in all mandatory fields.");
+    if (!selectedPartnerId || !adjustLocationId || !adjustReason.trim()) {
+      setAdjustError("Please specify warehouse location and a mandatory adjustment reason.");
       return;
+    }
+    if (adjustItems.length === 0) {
+      setAdjustError("Please add at least one product item to adjust.");
+      return;
+    }
+    for (const it of adjustItems) {
+      if (!it.productId || it.quantity <= 0) {
+        setAdjustError("All adjustment items must have a valid product and quantity > 0.");
+        return;
+      }
     }
 
     setSubmittingAdjust(true);
@@ -803,19 +813,22 @@ export default function PartnershipClient({
       const res = await adjustSharedWarehouseStockAction({
         partnerId: selectedPartnerId,
         locationId: adjustLocationId,
-        productId: adjustProductId,
-        quantity: adjustQuantity,
-        direction: adjustDirection,
         reason: adjustReason.trim(),
         notes: adjustNotes.trim() || undefined,
         date: new Date(adjustDate),
+        items: adjustItems.map((it) => ({
+          productId: it.productId,
+          warehouseLotId: it.warehouseLotId || undefined,
+          quantity: Number(it.quantity),
+          direction: it.direction,
+        })),
       });
 
       if (res.success) {
         setShowAdjustModal(false);
         await loadHubData(selectedPartnerId, startDate, endDate);
         await confirm.alert(
-          `Adjustment recorded successfully. Stock updated for product in ${locations.find((l) => l.id === adjustLocationId)?.name || "Warehouse"}.`,
+          `Bulk adjustment completed successfully! Updated ${res.data?.movementCount || adjustItems.length} stock movement(s) in ${locations.find((l) => l.id === adjustLocationId)?.name || "Warehouse"}.`,
           { variant: "default" }
         );
       } else {
@@ -849,18 +862,147 @@ export default function PartnershipClient({
     }
   }
 
+  // Available warehouses holding this partner's stock
+  const partnerWarehouses = useMemo(() => {
+    if (!hubData?.allLots) return [];
+    const map = new Map<string, string>();
+    if (hubData.locations?.sharedWarehouse) {
+      map.set(hubData.locations.sharedWarehouse.id, hubData.locations.sharedWarehouse.name);
+    }
+    for (const lot of hubData.allLots) {
+      if (lot.locationId && lot.locationName) {
+        map.set(lot.locationId, lot.locationName);
+      }
+    }
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [hubData]);
+
+  // Available lots for dropdown
+  const partnerLots = useMemo(() => {
+    return hubData?.allLots || [];
+  }, [hubData]);
+
   // Filtered Product Breakdown list
   const filteredProducts = useMemo(() => {
     if (!hubData?.productBreakdown) return [];
-    if (!productSearch.trim()) return hubData.productBreakdown;
-    const q = productSearch.toLowerCase();
-    return hubData.productBreakdown.filter(
-      (item) =>
-        item.product.name.toLowerCase().includes(q) ||
-        item.product.productNo.toLowerCase().includes(q) ||
-        item.lots.some((l) => l.lotNumber.toLowerCase().includes(q))
-    );
-  }, [hubData?.productBreakdown, productSearch]);
+    let list = hubData.productBreakdown;
+
+    // Table-level Warehouse filter
+    if (filterWarehouseId !== "all") {
+      list = list
+        .map((item) => {
+          const matchingLots = item.lots.filter((lot) => {
+            const lotObj = hubData.allLots?.find((l) => l.id === lot.id);
+            return lotObj?.locationId === filterWarehouseId;
+          });
+          if (matchingLots.length === 0) return null;
+          return {
+            ...item,
+            lots: matchingLots,
+          };
+        })
+        .filter(Boolean) as typeof list;
+    }
+
+    // Table-level Lot filter
+    if (filterLotId !== "all") {
+      list = list
+        .map((item) => {
+          const matchingLots = item.lots.filter((lot) => lot.id === filterLotId);
+          if (matchingLots.length === 0) return null;
+          return {
+            ...item,
+            lots: matchingLots,
+          };
+        })
+        .filter(Boolean) as typeof list;
+    }
+
+    // Filter Zero Stock: by default only list products where active balance > 0
+    if (!showZeroStock) {
+      list = list.filter((item) => {
+        const totalRemaining = (item.remainingInShop || 0) + (item.remainingInSharedWarehouse || 0);
+        return totalRemaining > 0;
+      });
+    }
+
+    if (productSearch.trim()) {
+      const q = productSearch.toLowerCase();
+      list = list.filter(
+        (item) =>
+          item.product.name.toLowerCase().includes(q) ||
+          item.product.productNo.toLowerCase().includes(q) ||
+          item.lots.some((l) => l.lotNumber.toLowerCase().includes(q))
+      );
+    }
+
+    return list;
+  }, [hubData?.productBreakdown, hubData?.allLots, productSearch, filterWarehouseId, filterLotId, showZeroStock]);
+
+  const filteredSettlementLog = useMemo(() => {
+    let list = hubData?.settlementLog || [];
+    if (selectedLogLotId !== "all") {
+      const lotObj = partnerLots.find((l) => l.id === selectedLogLotId);
+      const targetLotNumber = lotObj?.lotNumber;
+      list = list.filter((log) => log.lotNumber === targetLotNumber || log.lotNumber === selectedLogLotId);
+    }
+    if (selectedLogProductId !== "all") {
+      list = list.filter((log) => log.productId === selectedLogProductId);
+    }
+    return list;
+  }, [hubData?.settlementLog, selectedLogLotId, selectedLogProductId, partnerLots]);
+
+  const logTotals = useMemo(() => {
+    const totalSales = filteredSettlementLog.reduce((s, it) => s + (it.totalSale || 0), 0);
+    const totalCOGS = filteredSettlementLog.reduce((s, it) => s + (it.totalCost || 0), 0);
+    const totalMargin = filteredSettlementLog.reduce((s, it) => s + (it.netMargin || 0), 0);
+    const totalBProfit = filteredSettlementLog.reduce((s, it) => s + (it.partnerProfitShare || 0), 0);
+    return { totalSales, totalCOGS, totalMargin, totalBProfit };
+  }, [filteredSettlementLog]);
+
+  function openSettlementPayoutModal() {
+    const suggested = Math.max(0, hubData?.metrics?.netPayableToPartner || 0);
+    setPayoutAmount(suggested);
+    setPayoutDate(new Date().toISOString().split("T")[0]);
+    setPayoutNotes(`Partnership Settlement Payout for ${hubData?.partner.name || "Partner"}`);
+    setPayoutError(null);
+    setShowSettlementPayoutModal(true);
+  }
+
+  async function handleRecordSettlementPayout() {
+    if (!selectedPartnerId || payoutAmount <= 0) {
+      setPayoutError("Please enter a valid payout amount.");
+      return;
+    }
+    setSubmittingPayout(true);
+    setPayoutError(null);
+    try {
+      const res = await createPaymentAction({
+        partyId: selectedPartnerId,
+        direction: "OUT",
+        amount: payoutAmount,
+        method: payoutMethod,
+        date: new Date(payoutDate),
+        isPartnership: true,
+        partnershipId: selectedPartnerId,
+        notes: payoutNotes.trim() || `Partnership Settlement Payout for ${hubData?.partner.name}`,
+        autoAllocate: true,
+      });
+
+      if (res.success) {
+        setShowSettlementPayoutModal(false);
+        setPayoutNotes("");
+        await confirm.alert("Settlement payment recorded successfully.", { variant: "default" });
+        await loadHubData(selectedPartnerId, startDate, endDate);
+      } else {
+        setPayoutError(res.error || "Failed to record payment.");
+      }
+    } catch (e: any) {
+      setPayoutError(e.message || "An error occurred.");
+    } finally {
+      setSubmittingPayout(false);
+    }
+  }
 
   const selectedPartner = partners.find((p) => p.id === selectedPartnerId);
 
@@ -900,25 +1042,32 @@ export default function PartnershipClient({
             </select>
           </div>
 
-          {/* Action 1: Dedicated Purchase Intake */}
-          <Button
-            size="sm"
-            onClick={openIntakeModal}
-            className="bg-emerald-700 hover:bg-emerald-800 text-white text-xs gap-1.5 h-8 font-bold shadow-xs"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Partnership Intake
-          </Button>
+          {/* Action 0: Record Partner Settlement Payout */}
+          {canRecordSettlement && (
+            <Button
+              size="sm"
+              onClick={openSettlementPayoutModal}
+              className="bg-emerald-700 hover:bg-emerald-800 text-white text-xs gap-1.5 h-8 font-bold shadow-xs"
+              title="Record a settlement payment to Person B directly isolated in their partnership ledger"
+            >
+              <DollarSign className="h-3.5 w-3.5" />
+              Record Settlement Payment
+            </Button>
+          )}
 
-          {/* Action 2: Pull Stock to Shop */}
-          <Button
-            size="sm"
-            onClick={() => openPullModal()}
-            className="bg-indigo-700 hover:bg-indigo-800 text-white text-xs gap-1.5 h-8 font-bold shadow-xs"
-          >
-            <ArrowRightLeft className="h-3.5 w-3.5" />
-            Pull Stock to Shop
-          </Button>
+          {/* Action 1: Dedicated Purchase Intake */}
+          {canIntake && (
+            <Button
+              size="sm"
+              onClick={openIntakeModal}
+              className="bg-amber-700 hover:bg-amber-800 text-white text-xs gap-1.5 h-8 font-bold shadow-xs"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Partnership Intake
+            </Button>
+          )}
+
+
 
           {/* Action 3: Generate Settlement Statement */}
           <Button
@@ -932,38 +1081,44 @@ export default function PartnershipClient({
           </Button>
 
           {/* Action 4: Warehouse Stock Adjustment */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => openAdjustModalForProduct()}
-            className="text-xs gap-1.5 h-8 font-medium text-amber-900 border-amber-300 dark:border-amber-800 hover:bg-amber-50"
-          >
-            <Sliders className="h-3.5 w-3.5" />
-            Direct WH Adjustment
-          </Button>
+          {canAdjustStock && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => openAdjustModalForProduct()}
+              className="text-xs gap-1.5 h-8 font-medium text-amber-900 border-amber-300 dark:border-amber-800 hover:bg-amber-50"
+            >
+              <Sliders className="h-3.5 w-3.5" />
+              Direct WH Adjustment
+            </Button>
+          )}
 
           {/* Quick Create PO & PI for Partnership */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => router.push(`/purchase-orders?supplierId=${selectedPartnerId}&action=new`)}
-            className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold text-slate-800 dark:text-slate-200 shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800"
-            title="Create Purchase Order for this Partner"
-          >
-            <ShoppingCart className="h-3.5 w-3.5 text-blue-600" />
-            + PO
-          </Button>
+          {canCreatePO && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => router.push(`/purchase-orders?supplierId=${selectedPartnerId}&action=new`)}
+              className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold text-slate-800 dark:text-slate-200 shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800"
+              title="Create Purchase Order for this Partner"
+            >
+              <ShoppingCart className="h-3.5 w-3.5 text-blue-600" />
+              + New Shared PO
+            </Button>
+          )}
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => router.push(`/purchases?supplierId=${selectedPartnerId}&action=new`)}
-            className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold text-slate-800 dark:text-slate-200 shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800"
-            title="Create Purchase Invoice for this Partner"
-          >
-            <Receipt className="h-3.5 w-3.5 text-purple-600" />
-            + PI
-          </Button>
+          {canCreatePI && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => router.push(`/purchases?supplierId=${selectedPartnerId}&action=new`)}
+              className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold text-slate-800 dark:text-slate-200 shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800"
+              title="Create Purchase Invoice for this Partner"
+            >
+              <Receipt className="h-3.5 w-3.5 text-purple-600" />
+              + PI
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1136,6 +1291,18 @@ export default function PartnershipClient({
           <Receipt className="h-3.5 w-3.5" />
           Sales & Realized Margins ({hubData?.settlementLog.length || 0})
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("orders")}
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors flex items-center gap-2 ${
+            activeTab === "orders"
+              ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 shadow-xs"
+              : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+          }`}
+        >
+          <ShoppingCart className="h-3.5 w-3.5" />
+          Orders & Requisitions ({hubData?.purchaseOrders?.length || 0})
+        </button>
       </div>
 
       {/* ========================================================= */}
@@ -1154,14 +1321,56 @@ export default function PartnershipClient({
               </p>
             </div>
 
-            <div className="relative w-64 print:hidden">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-              <Input
-                value={productSearch}
-                onChange={(e) => setProductSearch(e.target.value)}
-                placeholder="Filter products or lots..."
-                className="h-8 pl-8 text-xs bg-white dark:bg-slate-950 font-medium"
-              />
+            <div className="flex flex-wrap items-center gap-2 print:hidden">
+              {/* Warehouse Filter */}
+              <select
+                value={filterWarehouseId}
+                onChange={(e) => setFilterWarehouseId(e.target.value)}
+                className="h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200"
+              >
+                <option value="all">All Warehouses</option>
+                {partnerWarehouses.map((wh) => (
+                  <option key={wh.id} value={wh.id}>
+                    {wh.name}
+                  </option>
+                ))}
+              </select>
+
+              {/* Lot Filter */}
+              <select
+                value={filterLotId}
+                onChange={(e) => setFilterLotId(e.target.value)}
+                className="h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200"
+              >
+                <option value="all">All Lots ({partnerLots.length})</option>
+                {partnerLots.map((lot) => (
+                  <option key={lot.id} value={lot.id}>
+                    Lot #{lot.lotNumber} ({lot.locationName})
+                  </option>
+                ))}
+              </select>
+
+              {/* Zero Stock Toggle */}
+              <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 font-medium cursor-pointer bg-slate-50 dark:bg-slate-800/60 px-2.5 py-1.5 rounded-md border border-slate-200 dark:border-slate-700">
+                <input
+                  type="checkbox"
+                  checked={showZeroStock}
+                  onChange={(e) => setShowZeroStock(e.target.checked)}
+                  className="rounded border-slate-300 text-amber-700 focus:ring-amber-600"
+                />
+                <span>Show Zero Stock</span>
+              </label>
+
+              {/* Search */}
+              <div className="relative w-56">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                <Input
+                  value={productSearch}
+                  onChange={(e) => setProductSearch(e.target.value)}
+                  placeholder="Filter products or lots..."
+                  className="h-8 pl-8 text-xs bg-white dark:bg-slate-950 font-medium"
+                />
+              </div>
             </div>
           </div>
 
@@ -1175,7 +1384,6 @@ export default function PartnershipClient({
                     <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right">Total Intake</th>
                     <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right">Avg Unit Cost</th>
                     <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right">Sold to Date</th>
-                    <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right font-bold text-amber-900 dark:text-amber-400">Shared WH Stock</th>
                     <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right font-bold text-emerald-900 dark:text-emerald-400">Shop Stock</th>
                     <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right">Sales Revenue</th>
                     <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right font-bold">Total Margin</th>
@@ -1185,13 +1393,13 @@ export default function PartnershipClient({
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {loading ? (
                     <tr>
-                      <td colSpan={10} className="py-10 text-center text-slate-500">
+                      <td colSpan={9} className="py-10 text-center text-slate-500">
                         Loading product breakdown...
                       </td>
                     </tr>
                   ) : filteredProducts.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="py-10 text-center text-slate-500">
+                      <td colSpan={9} className="py-10 text-center text-slate-500">
                         No products found. Click &quot;Partnership Intake&quot; to intake inventory into the shared warehouse.
                       </td>
                     </tr>
@@ -1235,9 +1443,6 @@ export default function PartnershipClient({
                             <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono">
                               {p.totalQtySold.toLocaleString()} {p.product.unit}
                             </td>
-                            <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono font-bold text-amber-900 dark:text-amber-400">
-                              {p.remainingInSharedWarehouse.toLocaleString()} {p.product.unit}
-                            </td>
                             <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono font-bold text-emerald-800 dark:text-emerald-400">
                               {p.remainingInShop.toLocaleString()} {p.product.unit}
                             </td>
@@ -1249,15 +1454,16 @@ export default function PartnershipClient({
                             </td>
                             <td className="py-2 px-3 text-center whitespace-nowrap print:hidden">
                               <div className="flex items-center justify-center gap-1">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => openPullModal(p.lots[0]?.id, p.product.id)}
-                                  disabled={p.remainingInSharedWarehouse <= 0}
-                                  className="h-7 text-[11px] px-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-200"
-                                >
-                                  Pull to Shop
-                                </Button>
+                                {canAdjustStock && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openAdjustModalForProduct(p.product.id, p.lots[0]?.id)}
+                                    className="h-7 text-[11px] px-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200"
+                                  >
+                                    Adjust
+                                  </Button>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -1265,7 +1471,7 @@ export default function PartnershipClient({
                           {/* Expandable Lot History Details */}
                           {isExpanded && (
                             <tr className="bg-amber-50/20 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-900">
-                              <td colSpan={10} className="py-2 px-6">
+                              <td colSpan={9} className="py-2 px-6">
                                 <div className="space-y-1.5 py-1">
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-bold text-amber-900 dark:text-amber-300 uppercase tracking-wider block">
@@ -1335,15 +1541,16 @@ export default function PartnershipClient({
                                               {lot.qtyRemainingInShop} {p.product.unit}
                                             </td>
                                             <td className="py-1.5 px-3 text-center print:hidden">
-                                              <Button
-                                                size="sm"
-                                                variant="outline"
-                                                onClick={() => openPullModal(lot.id, p.product.id)}
-                                                disabled={lot.qtyRemainingSharedWarehouse <= 0}
-                                                className="h-6 text-[10px] px-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-300"
-                                              >
-                                                Pull ({lot.qtyRemainingSharedWarehouse})
-                                              </Button>
+                                              {canAdjustStock && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  onClick={() => openAdjustModalForProduct(p.product.id, lot.id)}
+                                                  className="h-6 text-[10px] px-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300"
+                                                >
+                                                  Adjust
+                                                </Button>
+                                              )}
                                             </td>
                                           </tr>
                                         ))}
@@ -1381,7 +1588,7 @@ export default function PartnershipClient({
               </p>
             </div>
 
-            {/* Date range filters */}
+            {/* Date range & lot filters + Print Statement */}
             <div className="flex flex-wrap items-center gap-2 print:hidden">
               <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-600">
                 <Calendar className="h-3.5 w-3.5 text-slate-400" />
@@ -1413,6 +1620,42 @@ export default function PartnershipClient({
                   </Button>
                 )}
               </div>
+
+              {/* Lot Filter for Sales */}
+              <select
+                value={selectedLogLotId}
+                onChange={(e) => setSelectedLogLotId(e.target.value)}
+                className="h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200"
+              >
+                <option value="all">All Lot Batches</option>
+                {partnerLots.map((lot) => (
+                  <option key={lot.id} value={lot.id}>
+                    #{lot.lotNumber}
+                  </option>
+                ))}
+              </select>
+
+              {/* Print Statement Button */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const params = new URLSearchParams();
+                  if (startDate) params.set("from", startDate);
+                  if (endDate) params.set("to", endDate);
+                  if (selectedLogLotId && selectedLogLotId !== "all") {
+                    const foundLot = partnerLots.find((l) => l.id === selectedLogLotId);
+                    params.set("lotId", foundLot?.lotNumber || selectedLogLotId);
+                  }
+                  params.set("autoprint", "1");
+                  window.open(`/partnerships/${selectedPartnerId}/print-sales?${params.toString()}`, "_blank");
+                }}
+                className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200"
+                title="Open formatted A4 Landscape printable statement in new tab"
+              >
+                <Printer className="h-3.5 w-3.5 text-emerald-700" />
+                Print Statement
+              </Button>
             </div>
           </div>
 
@@ -1442,14 +1685,14 @@ export default function PartnershipClient({
                         Loading settlement log...
                       </td>
                     </tr>
-                  ) : !hubData?.settlementLog || hubData.settlementLog.length === 0 ? (
+                  ) : filteredSettlementLog.length === 0 ? (
                     <tr>
                       <td colSpan={12} className="py-10 text-center text-slate-500">
-                        No partner lot sales recorded in this period.
+                        No partner lot sales recorded for the selected filters.
                       </td>
                     </tr>
                   ) : (
-                    hubData.settlementLog.map((log) => (
+                    filteredSettlementLog.map((log) => (
                       <tr key={log.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/60 transition-colors">
                         <td className="py-2 px-3 border-r border-slate-200/60 font-mono text-slate-600 whitespace-nowrap">
                           {format(new Date(log.date), "dd/MM/yyyy")}
@@ -1493,28 +1736,237 @@ export default function PartnershipClient({
                     ))
                   )}
                 </tbody>
-                {hubData?.settlementLog && hubData.settlementLog.length > 0 && (
+                {filteredSettlementLog.length > 0 && (
                   <tfoot className="bg-slate-100 dark:bg-slate-800 border-t-2 border-slate-300 dark:border-slate-700 font-bold text-xs">
                     <tr>
                       <td colSpan={8} className="py-2.5 px-3 text-right uppercase tracking-wider text-slate-700 dark:text-slate-300">
                         Total Summary:
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono border-r border-slate-300 dark:border-slate-700">
-                        PKR {hubData.metrics.totalSalesRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        PKR {logTotals.totalSales.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono border-r border-slate-300 dark:border-slate-700 text-slate-600">
-                        PKR {hubData.metrics.totalCOGS.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        PKR {logTotals.totalCOGS.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono border-r border-slate-300 dark:border-slate-700 text-slate-800">
-                        PKR {hubData.metrics.totalRealizedProfit.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        PKR {logTotals.totalMargin.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono text-emerald-800 dark:text-emerald-400">
-                        PKR {hubData.metrics.partnerProfitShare.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        PKR {logTotals.totalBProfit.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                       </td>
                     </tr>
                   </tfoot>
                 )}
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* SECTION 3: ORDERS & REQUISITIONS TAB                      */}
+      {/* ========================================================= */}
+      {activeTab === "orders" && (
+        <div className="space-y-6">
+          {/* Purchase Orders Block */}
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                  <ShoppingCart className="h-4 w-4 text-blue-600" />
+                  Purchase Orders & Requisitions
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Shared orders placed with co-owner {selectedPartner?.name}, quantity requisitions, and conversion history.
+                </p>
+              </div>
+
+              <Button
+                size="sm"
+                onClick={() => router.push(`/purchase-orders?supplierId=${selectedPartnerId}&action=new`)}
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs gap-1.5 h-8 font-bold"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                New Shared Stock PO
+              </Button>
+            </div>
+
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xs overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+                    <tr>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700">Order #</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700">Date</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700">Type / Pricing</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700">Destination</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700">Items Summary</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center">Status</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700">Converted Invoices</th>
+                      <th className="py-2.5 px-3 text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {!hubData?.purchaseOrders || hubData.purchaseOrders.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="py-8 text-center text-slate-500">
+                          No purchase orders recorded for this partnership yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      hubData.purchaseOrders.map((po) => (
+                        <tr key={po.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/60 transition-colors">
+                          <td className="py-2 px-3 border-r border-slate-200/60 font-mono font-bold text-slate-900 dark:text-slate-100">
+                            {po.orderNo}
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60 text-slate-600">
+                            {format(new Date(po.date), "dd/MM/yyyy")}
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
+                                po.includePricing
+                                  ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                                  : "bg-amber-50 text-amber-800 border border-amber-200"
+                              }`}
+                            >
+                              {po.includePricing ? "Pricing Included" : "Quantities Only"}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60 text-slate-700">
+                            {po.locationName}
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60">
+                            <span className="font-semibold text-slate-800 dark:text-slate-200">
+                              {po.items.length} item(s)
+                            </span>{" "}
+                            <span className="text-[11px] text-slate-500">
+                              ({po.items.reduce((s, it) => s + it.quantity, 0).toLocaleString()} units)
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60 text-center">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
+                                po.status === "FULFILLED"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : po.status === "CANCELLED"
+                                  ? "bg-rose-100 text-rose-800"
+                                  : "bg-blue-100 text-blue-800"
+                              }`}
+                            >
+                              {po.status}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60">
+                            {po.invoices.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {po.invoices.map((inv) => (
+                                  <a
+                                    key={inv.id}
+                                    href={`/purchases?search=${inv.invoiceNo}`}
+                                    className="font-mono text-[11px] text-blue-700 hover:underline font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200"
+                                  >
+                                    {inv.invoiceNo}
+                                  </a>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 italic">None converted</span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <a
+                              href={`/purchase-orders?search=${po.orderNo}`}
+                              className="text-xs text-blue-700 hover:underline font-semibold"
+                            >
+                              View PO →
+                            </a>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* Linked Purchase Invoices Block */}
+          <div className="space-y-3">
+            <div>
+              <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                <Receipt className="h-4 w-4 text-purple-600" />
+                Co-Ownership Purchase Invoices
+              </h2>
+              <p className="text-xs text-slate-500">
+                Official purchase invoices billed to or from partner {selectedPartner?.name}, detailing financial payables and receipts.
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xs overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+                    <tr>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700">Invoice #</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700">Date</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right">Total Amount</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right">Paid Amount</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-right">Balance Due</th>
+                      <th className="py-2.5 px-3 border-r border-slate-200 dark:border-slate-700 text-center">Status</th>
+                      <th className="py-2.5 px-3 text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {!hubData?.purchaseInvoices || hubData.purchaseInvoices.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-slate-500">
+                          No purchase invoices logged for this partner yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      hubData.purchaseInvoices.map((pi) => (
+                        <tr key={pi.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/60 transition-colors">
+                          <td className="py-2 px-3 border-r border-slate-200/60 font-mono font-bold text-slate-900 dark:text-slate-100">
+                            {pi.invoiceNo}
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60 text-slate-600">
+                            {format(new Date(pi.date), "dd/MM/yyyy")}
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono font-bold text-slate-900 dark:text-slate-100">
+                            PKR {pi.totalAmount.toLocaleString()}
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono text-emerald-700">
+                            PKR {pi.paidAmount.toLocaleString()}
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono font-bold text-rose-700">
+                            PKR {pi.balanceAmount.toLocaleString()}
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200/60 text-center">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
+                                pi.status === "SETTLED" || pi.status === "PAID"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-amber-100 text-amber-800"
+                              }`}
+                            >
+                              {pi.status}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <a
+                              href={`/purchases?search=${pi.invoiceNo}`}
+                              className="text-xs text-blue-700 hover:underline font-semibold"
+                            >
+                              View PI →
+                            </a>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
@@ -1966,253 +2418,7 @@ export default function PartnershipClient({
         </div>
       )}
 
-      {/* ========================================================= */}
-      {/* MODAL 2: PULL STOCK TO SHOP WITH DYNAMIC LIABILITY CALC  */}
-      {/* ========================================================= */}
-      {/* ========================================================= */}
-      {/* MODAL 2: PULL STOCK TO SHOP (MULTI-PRODUCT TRANSFER)       */}
-      {/* ========================================================= */}
-      {showPullModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="w-full max-w-2xl bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-xl shadow-2xl p-5 overflow-hidden max-h-[92vh] flex flex-col">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-md bg-indigo-600 text-white">
-                  <ArrowRightLeft className="h-4 w-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                    Pull Stock from Shared Warehouse to Shop (Transfer)
-                  </h3>
-                  <p className="text-[11px] text-slate-500">
-                    Transfers multi-product inventory into shop floor with dynamic Person B liability calculation
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowPullModal(false)}
-                className="rounded p-1 text-slate-400 hover:text-slate-600"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
 
-            {pullError && (
-              <div className="mt-3 rounded bg-rose-50 border border-rose-200 p-2 text-xs text-rose-700 flex items-center gap-2">
-                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                <span>{pullError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handlePullSubmit} className="mt-3 space-y-3.5 text-xs flex-1 overflow-y-auto pr-1">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Destination Shop Location */}
-                <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Destination Location (Shop) *</Label>
-                  <select
-                    value={pullDestinationLocationId}
-                    onChange={(e) => setPullDestinationLocationId(e.target.value)}
-                    className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium"
-                    required
-                  >
-                    {locations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>
-                        {loc.name} ({loc.type})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Transfer Date */}
-                <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Transfer Date *</Label>
-                  <Input
-                    type="date"
-                    value={pullDate}
-                    onChange={(e) => setPullDate(e.target.value)}
-                    className="h-8 text-xs"
-                    required
-                  />
-                </div>
-              </div>
-
-              {/* Multi-Product Pull Items Table */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                      Transfer Product Lines
-                    </Label>
-                    <span className="text-[10px] text-slate-400 ml-2 font-mono">
-                      (Select lot, product, and transfer quantity)
-                    </span>
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={addPullItem}
-                    className="h-6 text-[11px] px-2 text-indigo-700 border-indigo-300"
-                  >
-                    <Plus className="h-3 w-3 mr-1" /> Add Product Line
-                  </Button>
-                </div>
-
-                <div className="border border-slate-200 dark:border-slate-800 rounded-md overflow-hidden">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead className="bg-slate-100 dark:bg-slate-800 text-[10px] font-bold uppercase text-slate-700 dark:text-slate-300">
-                      <tr>
-                        <th className="py-1.5 px-2">Source Lot *</th>
-                        <th className="py-1.5 px-2">Product *</th>
-                        <th className="py-1.5 px-2 w-24 text-right">Qty to Pull *</th>
-                        <th className="py-1.5 px-2 w-24 text-right">Unit Cost</th>
-                        <th className="py-1.5 px-2 w-28 text-right">A Owes B</th>
-                        <th className="py-1.5 px-2 w-8"></th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {pullItems.map((item, idx) => {
-                        const lot = hubData?.allLots?.find((l) => l.id === item.lotId);
-                        const cost = item.unitCost && item.unitCost > 0 ? item.unitCost : (lot?.unitCost || 0);
-                        const pShare = lot?.partnerSharePct != null ? lot.partnerSharePct : 100;
-                        const lineVal = (Number(item.quantity) || 0) * cost;
-                        const linePayable = lineVal * (pShare / 100);
-
-                        return (
-                          <tr key={idx}>
-                            <td className="p-1.5">
-                              <select
-                                value={item.lotId}
-                                onChange={(e) => updatePullItem(idx, "lotId", e.target.value)}
-                                className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs font-mono font-bold"
-                                required
-                              >
-                                <option value="">Select Lot</option>
-                                {hubData?.allLots?.map((l) => (
-                                  <option key={l.id} value={l.id}>
-                                    {l.lotNumber} ({l.partnerSharePct}% B / {l.clientSharePct}% A)
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="p-1.5">
-                              <select
-                                value={item.productId}
-                                onChange={(e) => updatePullItem(idx, "productId", e.target.value)}
-                                className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs"
-                                required
-                              >
-                                <option value="">Select Product</option>
-                                {hubData?.allProducts?.map((p) => (
-                                  <option key={p.id} value={p.id}>
-                                    {p.productNo} - {p.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="p-1.5 text-right">
-                              <Input
-                                type="number"
-                                min="0.0001"
-                                step="any"
-                                value={item.quantity}
-                                onChange={(e) => updatePullItem(idx, "quantity", parseFloat(e.target.value) || 0)}
-                                className="h-7 text-xs font-mono text-right"
-                                required
-                              />
-                            </td>
-                            <td className="p-1.5 text-right">
-                              <Input
-                                type="number"
-                                min="0"
-                                step="any"
-                                value={cost}
-                                onChange={(e) => updatePullItem(idx, "unitCost", parseFloat(e.target.value) || 0)}
-                                className="h-7 text-xs font-mono text-right"
-                                required
-                              />
-                            </td>
-                            <td className="p-1.5 text-right font-mono font-bold text-rose-700">
-                              PKR {linePayable.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                            </td>
-                            <td className="p-1.5 text-center">
-                              {pullItems.length > 1 && (
-                                <button
-                                  type="button"
-                                  onClick={() => removePullItem(idx)}
-                                  className="text-rose-500 hover:text-rose-700 p-1"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Dynamic Financial Liability Preview */}
-              <div className="p-3 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 dark:bg-indigo-950/30 space-y-2">
-                <div className="flex items-center justify-between text-[11px] font-bold text-indigo-900 dark:text-indigo-300 uppercase tracking-tight">
-                  <span>Dynamic Liability Calculation:</span>
-                  <span>Formula: Sum(Qty × Cost × Partner%)</span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-xs font-mono border-y border-indigo-200/60 dark:border-indigo-800/60 py-2">
-                  <div>
-                    <span className="text-[10px] text-slate-500 block font-sans">Total Shop Stock Valuation:</span>
-                    <strong>PKR {pullSummaryMetrics.totalValuation.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-500 block font-sans">Total Liability Owed to Partner B:</span>
-                    <strong className="text-rose-700">
-                      PKR {pullSummaryMetrics.totalPayable.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                    </strong>
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-tight">
-                  Person A&apos;s shop receives units at full unit cost under the shop lot. Person A&apos;s payable liability to Person B reflects only Person B&apos;s ownership portion.
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold">Notes / Purpose (Optional)</Label>
-                <Input
-                  value={pullNotes}
-                  onChange={(e) => setPullNotes(e.target.value)}
-                  placeholder="e.g. Multi-product transfer for shop order fulfillment"
-                  className="h-8 text-xs"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowPullModal(false)}
-                  className="h-8 text-xs"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={submittingPull}
-                  className="bg-indigo-700 hover:bg-indigo-800 text-white h-8 text-xs font-bold shadow-xs px-4"
-                >
-                  {submittingPull ? "Pulling Stock..." : "Confirm Stock Pull to Shop"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* ========================================================= */}
       {/* MODAL 3: SETTLEMENT STATEMENT REPORT & EXPORT             */}
@@ -2481,17 +2687,25 @@ export default function PartnershipClient({
       )}
 
       {/* ========================================================= */}
-      {/* MODAL 4: MANUAL SHARED WAREHOUSE STOCK ADJUSTMENT         */}
+      {/* MODAL 4: BULK SHARED WAREHOUSE STOCK ADJUSTMENT          */}
       {/* ========================================================= */}
       {showAdjustModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="w-full max-w-lg bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-xl shadow-2xl p-5 overflow-hidden">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+          <div className="w-full max-w-3xl bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            {/* Sticky Header */}
+            <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 shrink-0 bg-white dark:bg-slate-900 z-10">
               <div className="flex items-center gap-2">
-                <ArrowRightLeft className="h-4 w-4 text-amber-700" />
-                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                  Shared Warehouse Stock Adjustment
-                </h3>
+                <div className="p-1.5 rounded-md bg-amber-600 text-white">
+                  <Sliders className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                    Bulk Shared Warehouse Stock Adjustment
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Adjust multiple products and lots directly in the shared warehouse (removals / direct sales / additions)
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
@@ -2502,107 +2716,371 @@ export default function PartnershipClient({
               </button>
             </div>
 
-            <p className="text-[11px] text-slate-500 mt-2">
-              Log direct removals (e.g. bulk sales or write-offs) or additions occurring directly out of the shared warehouse without passing through Person A&apos;s shop.
-            </p>
+            {/* Scrollable Form Body */}
+            <form onSubmit={handleAdjustSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+              <div className="p-4 overflow-y-auto flex-1 space-y-4">
+                {adjustError && (
+                  <div className="rounded bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700 flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span>{adjustError}</span>
+                  </div>
+                )}
 
-            {adjustError && (
+                {/* Warehouse Location & Date Header */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <div className="space-y-1">
+                    <Label className="text-xs font-semibold">Warehouse Location *</Label>
+                    <select
+                      value={adjustLocationId}
+                      onChange={(e) => setAdjustLocationId(e.target.value)}
+                      className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium"
+                      required
+                    >
+                      <option value="">Select warehouse location</option>
+                      {locations.map((loc) => (
+                        <option key={loc.id} value={loc.id}>
+                          {loc.name} ({loc.type})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs font-semibold">Adjustment Date *</Label>
+                    <Input
+                      type="date"
+                      value={adjustDate}
+                      onChange={(e) => setAdjustDate(e.target.value)}
+                      className="h-8 text-xs bg-white dark:bg-slate-950"
+                      required
+                    />
+                  </div>
+                </div>
+
+                {/* Adjustment Items List */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                      Adjustment Line Items ({adjustItems.length})
+                    </Label>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={addAdjustItem}
+                      className="h-7 text-xs gap-1 border-amber-300 text-amber-900 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40"
+                    >
+                      <Plus className="h-3 w-3" />
+                      Add Item
+                    </Button>
+                  </div>
+
+                  <div className="space-y-2">
+                    {adjustItems.map((item, idx) => {
+                      const prodEntry = hubData?.productBreakdown.find((p) => p.product.id === item.productId);
+                      const lotOptions = prodEntry?.lots || [];
+                      const selectedLot = lotOptions.find((l) => l.id === item.warehouseLotId);
+                      const availInWH = selectedLot ? selectedLot.qtyRemainingSharedWarehouse : (prodEntry?.remainingInSharedWarehouse ?? 0);
+
+                      return (
+                        <div
+                          key={item.id}
+                          className="p-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg space-y-2 shadow-xs"
+                        >
+                          <div className="flex items-center justify-between text-xs font-semibold text-slate-600 dark:text-slate-400">
+                            <span>Item #{idx + 1}</span>
+                            {adjustItems.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => removeAdjustItem(idx)}
+                                className="text-rose-600 hover:text-rose-800 text-[11px] flex items-center gap-0.5"
+                              >
+                                <Trash2 className="h-3 w-3" /> Remove
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 text-xs">
+                            {/* Product */}
+                            <div className="sm:col-span-4 space-y-1">
+                              <label className="text-[11px] font-medium text-slate-500">Product *</label>
+                              <select
+                                value={item.productId}
+                                onChange={(e) => updateAdjustItem(idx, "productId", e.target.value)}
+                                className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5 text-xs"
+                                required
+                              >
+                                <option value="">Select product</option>
+                                {hubData?.productBreakdown.map((pb) => (
+                                  <option key={pb.product.id} value={pb.product.id}>
+                                    {pb.product.productNo} - {pb.product.name} (Shared WH: {pb.remainingInSharedWarehouse} {pb.product.unit})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {/* Lot */}
+                            <div className="sm:col-span-4 space-y-1">
+                              <label className="text-[11px] font-medium text-slate-500">Lot Batch (Optional / Recommended)</label>
+                              <select
+                                value={item.warehouseLotId}
+                                onChange={(e) => updateAdjustItem(idx, "warehouseLotId", e.target.value)}
+                                className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1.5 text-xs font-mono"
+                              >
+                                <option value="">Auto / First Available Lot</option>
+                                {lotOptions.map((lot) => (
+                                  <option key={lot.id} value={lot.id}>
+                                    {lot.lotNumber} ({lot.equityBadge}) — Rem: {lot.qtyRemainingSharedWarehouse}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {/* Direction */}
+                            <div className="sm:col-span-2 space-y-1">
+                              <label className="text-[11px] font-medium text-slate-500">Direction</label>
+                              <select
+                                value={item.direction}
+                                onChange={(e) => updateAdjustItem(idx, "direction", e.target.value as "OUT" | "IN")}
+                                className={cn(
+                                  "w-full rounded border px-2 py-1.5 text-xs font-bold",
+                                  item.direction === "OUT"
+                                    ? "bg-rose-50 dark:bg-rose-950/40 text-rose-800 border-rose-300"
+                                    : "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 border-emerald-300"
+                                )}
+                              >
+                                <option value="OUT">- OUT</option>
+                                <option value="IN">+ IN</option>
+                              </select>
+                            </div>
+
+                            {/* Qty */}
+                            <div className="sm:col-span-2 space-y-1">
+                              <div className="flex items-center justify-between">
+                                <label className="text-[11px] font-medium text-slate-500">Qty *</label>
+                                {item.direction === "OUT" && (
+                                  <span className="text-[10px] text-amber-700 dark:text-amber-400 font-mono font-bold">
+                                    Avail: {availInWH}
+                                  </span>
+                                )}
+                              </div>
+                              <Input
+                                type="number"
+                                min="0.0001"
+                                step="any"
+                                value={item.quantity}
+                                onChange={(e) => updateAdjustItem(idx, "quantity", parseFloat(e.target.value) || 0)}
+                                className="h-7 text-xs font-mono"
+                                required
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Reason & Reference Notes */}
+                <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+                  <div className="space-y-1">
+                    <Label className="text-xs font-semibold">Reason (Mandatory) *</Label>
+                    <Input
+                      value={adjustReason}
+                      onChange={(e) => setAdjustReason(e.target.value)}
+                      placeholder="e.g. Sold 50 units directly to third-party buyer / physical count adjustment"
+                      className="h-8 text-xs"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs font-semibold">Reference Notes / Buyer Details</Label>
+                    <Input
+                      value={adjustNotes}
+                      onChange={(e) => setAdjustNotes(e.target.value)}
+                      placeholder="e.g. Third-party invoice #9182 / dispatch slip / damaged goods report"
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                </div>
+
+                {/* Recent Adjustments List with deletion option */}
+                {hubData?.recentAdjustments && hubData.recentAdjustments.length > 0 && (
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <h4 className="text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wider">
+                      Recent Adjustments (Click Trash to Revert)
+                    </h4>
+                    <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                      {hubData.recentAdjustments.map((adj) => (
+                        <div
+                          key={adj.id}
+                          className="flex items-center justify-between text-[11px] bg-slate-50 dark:bg-slate-800/60 p-2 rounded border border-slate-200 dark:border-slate-700"
+                        >
+                          <div className="flex-1 min-w-0 pr-2">
+                            <div className="font-semibold text-slate-800 dark:text-slate-200 truncate">
+                              {adj.productNo} - {adj.productName}
+                            </div>
+                            <div className="text-[10px] text-slate-500">
+                              {format(new Date(adj.date), "dd MMM yyyy")} | {adj.notes || "No notes"}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={cn(
+                                "font-mono font-bold text-[11px]",
+                                adj.quantity > 0 ? "text-emerald-700" : "text-rose-700"
+                              )}
+                            >
+                              {adj.quantity > 0 ? `+${adj.quantity}` : adj.quantity}
+                            </span>
+                            {canDeleteAdjustment && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => void handleDeleteAdjustment(adj.id, `${adj.productNo} (${adj.quantity})`)}
+                                className="h-6 w-6 p-0 text-rose-600 hover:text-rose-800 hover:bg-rose-50"
+                                title="Revert and delete adjustment"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Sticky Footer */}
+              <div className="p-3 border-t border-slate-200 dark:border-slate-800 shrink-0 bg-slate-50 dark:bg-slate-900/90 flex items-center justify-between z-10">
+                <span className="text-xs text-slate-500 font-mono">
+                  {adjustItems.length} line item(s) to process
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowAdjustModal(false)}
+                    className="h-8 text-xs"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={submittingAdjust}
+                    className="bg-amber-800 hover:bg-amber-700 text-white h-8 text-xs font-semibold shadow-xs px-4"
+                  >
+                    {submittingAdjust ? "Posting Bulk Adjustment..." : "Post Bulk Adjustment"}
+                  </Button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL 5: SETTLEMENT PAYOUT MODAL                          */}
+      {/* ========================================================= */}
+      {showSettlementPayoutModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-xl shadow-2xl p-5 overflow-hidden">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-md bg-emerald-600 text-white">
+                  <DollarSign className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                    Record Partner Settlement Payment
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Partner: <strong>{hubData?.partner.name}</strong>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettlementPayoutModal(false)}
+                className="rounded p-1 text-slate-400 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {payoutError && (
               <div className="mt-3 rounded bg-rose-50 border border-rose-200 p-2 text-xs text-rose-700 flex items-center gap-2">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                <span>{adjustError}</span>
+                <span>{payoutError}</span>
               </div>
             )}
 
-            <form onSubmit={handleAdjustSubmit} onKeyDown={handleFormEnterKeyDown} className="mt-3 space-y-3 text-xs">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleRecordSettlementPayout();
+              }}
+              className="mt-3 space-y-3 text-xs"
+            >
               <div className="space-y-1">
-                <Label className="text-xs font-semibold">Warehouse Location *</Label>
-                <select
-                  value={adjustLocationId}
-                  onChange={(e) => setAdjustLocationId(e.target.value)}
-                  className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium"
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold">Payment Amount (PKR) *</Label>
+                  <button
+                    type="button"
+                    onClick={() => setPayoutAmount(Math.max(0, hubData?.metrics?.netPayableToPartner || 0))}
+                    className="text-[10px] font-bold text-emerald-700 hover:underline"
+                  >
+                    Full Balance (PKR {(hubData?.metrics?.netPayableToPartner || 0).toLocaleString()})
+                  </button>
+                </div>
+                <Input
+                  type="number"
+                  min="0.01"
+                  step="any"
+                  value={payoutAmount}
+                  onChange={(e) => setPayoutAmount(parseFloat(e.target.value) || 0)}
+                  className="h-8 text-xs font-mono font-bold"
                   required
-                >
-                  <option value="">Select location</option>
-                  {locations.map((loc) => (
-                    <option key={loc.id} value={loc.id}>
-                      {loc.name} ({loc.type})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold">Product *</Label>
-                <select
-                  value={adjustProductId}
-                  onChange={(e) => setAdjustProductId(e.target.value)}
-                  className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium"
-                  required
-                >
-                  <option value="">Select product in this partnership</option>
-                  {hubData?.productBreakdown.map((item) => (
-                    <option key={item.product.id} value={item.product.id}>
-                      {item.product.productNo} - {item.product.name} (In Shared WH: {item.remainingInSharedWarehouse} {item.product.unit})
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Direction *</Label>
+                  <Label className="text-xs font-semibold">Payment Method *</Label>
                   <select
-                    value={adjustDirection}
-                    onChange={(e) => setAdjustDirection(e.target.value as "OUT" | "IN")}
-                    className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium font-bold text-amber-900"
+                    value={payoutMethod}
+                    onChange={(e) => setPayoutMethod(e.target.value as any)}
+                    className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-xs font-semibold"
                   >
-                    <option value="OUT">- Decrement (Direct Sale / Removal)</option>
-                    <option value="IN">+ Increment (Addition / Correction)</option>
+                    <option value="CASH">CASH</option>
+                    <option value="BANK">BANK Transfer</option>
+                    <option value="CHEQUE">CHEQUE</option>
+                    <option value="OTHER">OTHER</option>
                   </select>
                 </div>
 
                 <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Quantity *</Label>
+                  <Label className="text-xs font-semibold">Date *</Label>
                   <Input
-                    type="number"
-                    min="0.0001"
-                    step="any"
-                    value={adjustQuantity}
-                    onChange={(e) => setAdjustQuantity(parseFloat(e.target.value) || 0)}
-                    className="h-8 text-xs font-mono"
+                    type="date"
+                    value={payoutDate}
+                    onChange={(e) => setPayoutDate(e.target.value)}
+                    className="h-8 text-xs"
                     required
                   />
                 </div>
               </div>
 
               <div className="space-y-1">
-                <Label className="text-xs font-semibold">Date *</Label>
+                <Label className="text-xs font-semibold">Notes / Bank Ref / Cheque #</Label>
                 <Input
-                  type="date"
-                  value={adjustDate}
-                  onChange={(e) => setAdjustDate(e.target.value)}
-                  className="h-8 text-xs"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold">Reason (Mandatory) *</Label>
-                <Input
-                  value={adjustReason}
-                  onChange={(e) => setAdjustReason(e.target.value)}
-                  placeholder="e.g. Sold 50 units directly to third-party buyer"
-                  className="h-8 text-xs"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold">Reference Notes / Buyer Details</Label>
-                <Input
-                  value={adjustNotes}
-                  onChange={(e) => setAdjustNotes(e.target.value)}
-                  placeholder="e.g. Third-party invoice #9182 / dispatch slip"
+                  value={payoutNotes}
+                  onChange={(e) => setPayoutNotes(e.target.value)}
+                  placeholder="e.g. Online transfer ref #558291"
                   className="h-8 text-xs"
                 />
               </div>
@@ -2612,7 +3090,7 @@ export default function PartnershipClient({
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => setShowAdjustModal(false)}
+                  onClick={() => setShowSettlementPayoutModal(false)}
                   className="h-8 text-xs"
                 >
                   Cancel
@@ -2620,58 +3098,13 @@ export default function PartnershipClient({
                 <Button
                   type="submit"
                   size="sm"
-                  disabled={submittingAdjust}
-                  className="bg-amber-800 hover:bg-amber-700 text-white h-8 text-xs font-semibold"
+                  disabled={submittingPayout}
+                  className="bg-emerald-700 hover:bg-emerald-800 text-white h-8 text-xs font-bold"
                 >
-                  {submittingAdjust ? "Posting..." : "Post WH Adjustment"}
+                  {submittingPayout ? "Recording..." : "Record Payment"}
                 </Button>
               </div>
             </form>
-
-            {/* Recent Adjustments in Modal */}
-            {hubData?.recentAdjustments && hubData.recentAdjustments.length > 0 && (
-              <div className="mt-4 pt-3 border-t border-slate-200 dark:border-slate-800">
-                <h4 className="text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wider">
-                  Recent Adjustments (Click Delete to Revert)
-                </h4>
-                <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
-                  {hubData.recentAdjustments.map((adj) => (
-                    <div
-                      key={adj.id}
-                      className="flex items-center justify-between text-[11px] bg-slate-50 dark:bg-slate-800/60 p-2 rounded border border-slate-200 dark:border-slate-700"
-                    >
-                      <div className="flex-1 min-w-0 pr-2">
-                        <div className="font-semibold text-slate-800 dark:text-slate-200 truncate">
-                          {adj.productNo} - {adj.productName}
-                        </div>
-                        <div className="text-[10px] text-slate-500">
-                          {format(new Date(adj.date), "dd MMM yyyy")} | {adj.notes || "No notes"}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={cn(
-                            "font-mono font-bold text-[11px]",
-                            adj.quantity > 0 ? "text-emerald-700" : "text-rose-700"
-                          )}
-                        >
-                          {adj.quantity > 0 ? `+${adj.quantity}` : adj.quantity}
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => void handleDeleteAdjustment(adj.id, `${adj.productNo} (${adj.quantity})`)}
-                          className="h-6 w-6 p-0 text-rose-600 hover:text-rose-800 hover:bg-rose-50"
-                          title="Revert and delete adjustment"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </div>
       )}

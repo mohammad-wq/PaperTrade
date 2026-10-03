@@ -17,6 +17,9 @@ import { listInventoryAction } from "@/actions/parties";
 import { StockMovementType } from "@prisma/client";
 import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type MovementRow = {
   id: string;
@@ -32,6 +35,16 @@ type MovementRow = {
 };
 
 export default function StockMovementsPage() {
+  const router = useRouter();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "stock-movements", "view", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [movements, setMovements] = useState<MovementRow[]>([]);
   const [products, setProducts] = useState<Array<{ id: string; productNo: string; name: string }>>([]);
   const [locations, setLocations] = useState<Array<{ id: string; name: string }>>([]);

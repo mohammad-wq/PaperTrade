@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useRef } from "react";
 import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { canPerformAction } from "@/lib/auth/permissions";
 import {
   Settings,
   Save,
@@ -46,8 +48,16 @@ type DatabaseStats = {
 };
 
 export default function SettingsPage() {
+  const router = useRouter();
   const { data: session } = useSession();
   const isOwner = session?.user?.role === "OWNER";
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "settings", "view", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
 
   const [businessName, setBusinessName] = useState("");
   const [businessAddress, setBusinessAddress] = useState("");

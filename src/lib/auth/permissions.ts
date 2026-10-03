@@ -16,6 +16,7 @@ export const MODULE_DEFINITIONS = [
   { key: "products", label: "Products", routes: ["/products"] },
   { key: "parties", label: "Parties", routes: ["/parties"] },
   { key: "inventory", label: "Inventory", routes: ["/inventory"] },
+  { key: "partnerships", label: "Partnerships", routes: ["/partnerships"] },
   { key: "sales", label: "Sales", routes: ["/sales"] },
   { key: "purchases", label: "Purchases", routes: ["/purchases"] },
   { key: "delivery-orders", label: "Delivery Orders", routes: ["/delivery-orders"] },
@@ -103,7 +104,16 @@ export function canAccessPath(role: Role, pathname: string, permissions?: UserPe
     return true;
   }
 
+  if (moduleKey === "users") {
+    return false;
+  }
+
   const normalizedPermissions = normalizeUserPermissions(permissions, false);
+
+  if (moduleKey === "partnerships") {
+    return Boolean(normalizedPermissions.partnerships?.view || normalizedPermissions.inventory?.view);
+  }
+
   return Boolean(normalizedPermissions[moduleKey]?.view);
 }
 
@@ -122,5 +132,10 @@ export function canPerformAction(
   }
 
   const normalizedPermissions = normalizeUserPermissions(permissions, false);
+
+  if (moduleKey === "partnerships") {
+    return Boolean(normalizedPermissions.partnerships?.[action] || normalizedPermissions.inventory?.[action]);
+  }
+
   return Boolean(normalizedPermissions[moduleKey]?.[action]);
 }

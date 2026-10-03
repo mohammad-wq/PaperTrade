@@ -1,4 +1,4 @@
-import { requireSession } from "@/lib/auth/session";
+import { assertPageAccess } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { notFound } from "next/navigation";
 import Link from "next/link";
@@ -16,7 +16,7 @@ export default async function SaleInvoiceDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requireSession();
+  await assertPageAccess("/sales");
   const { id } = await params;
 
   const invoice = await prisma.saleInvoice.findUnique({
@@ -76,6 +76,16 @@ export default async function SaleInvoiceDetailPage({
             >
               {invoice.status}
             </span>
+            {invoice.deliveryOrder && (
+              <Link
+                href={`/delivery-orders?search=${invoice.deliveryOrder.doNo}`}
+                className="inline-flex items-center gap-1 text-[11px] font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200 dark:border-blue-800 px-2.5 py-0.5 rounded-full transition-colors"
+                title="View linked Delivery Order"
+              >
+                <Truck className="h-3 w-3" />
+                Linked DO #{invoice.deliveryOrder.doNo}
+              </Link>
+            )}
           </div>
         </div>
 

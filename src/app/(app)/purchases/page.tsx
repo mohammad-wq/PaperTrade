@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo, useRef, createRef } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   ShoppingCart,
   Plus,
@@ -114,11 +114,19 @@ type WarehouseLotOption = {
 };
 
 export default function PurchasesPage() {
+  const router = useRouter();
   const confirm = useConfirm();
   const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "purchases", "view", (session.user as any).permissions);
   const canCreate = !session?.user ? false : canPerformAction(session.user.role, "purchases", "create", (session.user as any).permissions);
   const canUpdate = !session?.user ? false : canPerformAction(session.user.role, "purchases", "update", (session.user as any).permissions);
   const canDelete = !session?.user ? false : canPerformAction(session.user.role, "purchases", "delete", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
   const [invoices, setInvoices] = useState<PurchaseInvoiceRow[]>([]);
   const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
@@ -242,17 +250,26 @@ export default function PurchasesPage() {
             setSupplierType("REGISTERED");
             setSupplierId(parsed.supplierId);
           }
-          if (parsed.locationId) setLocationId(parsed.locationId);
+          // Set invoice destination and header location to Main Retail Shop
+          const shop = dbLocations.find((l) => l.name.toLowerCase().includes("shop") || l.type === "SHOP");
+          const targetLoc = parsed.destinationLocationId || (shop ? shop.id : parsed.locationId) || parsed.locationId;
+          if (targetLoc) setLocationId(targetLoc);
+
           if (parsed.purchaseOrderId) setPurchaseOrderId(parsed.purchaseOrderId);
           if (Array.isArray(parsed.items) && parsed.items.length > 0) {
             setItems(
-              parsed.items.map((item: any) => ({
-                productId: item.productId || "",
-                locationId: item.destinationLocationId || parsed.locationId || "",
-                warehouseLotId: item.warehouseLotId || "",
-                quantity: Number(item.quantity) || 1,
-                unitCost: Number(item.unitCost) || 0,
-              }))
+              parsed.items.map((item: any) => {
+                const prod = products.find((p) => p.id === item.productId);
+                const cost = Number(item.unitCost) > 0 ? Number(item.unitCost) : (prod?.costPrice || 0);
+                return {
+                  productId: item.productId || "",
+                  locationId: item.destinationLocationId || targetLoc || "",
+                  warehouseLotId: item.warehouseLotId || "",
+                  sourceWarehouseLotId: item.sourceWarehouseLotId || item.warehouseLotId || "",
+                  quantity: Number(item.quantity) || 1,
+                  unitCost: cost,
+                };
+              })
             );
           }
         }
@@ -260,7 +277,7 @@ export default function PurchasesPage() {
         console.error("Failed to load draft_from_po in purchases", e);
       }
     }
-  }, [searchParams]);
+  }, [searchParams, dbLocations, products]);
 
   // Pre-posting PDF preview
   async function handlePreviewPdf() {
@@ -499,7 +516,7 @@ export default function PurchasesPage() {
     setItems(updated);
   }
 
-  function handleProductChange(index: number, pId: string) {
+  function handleProductChange(index: number, pId: string, jumpToQty = false) {
     const product = products.find((p) => p.id === pId);
     const updated = [...items];
     updated[index].productId = pId;
@@ -507,6 +524,12 @@ export default function PurchasesPage() {
       updated[index].unitCost = product.costPrice || 0;
     }
     setItems(updated);
+    if (jumpToQty || pId) {
+      setTimeout(() => {
+        qtyRefs.current[index]?.current?.focus();
+        qtyRefs.current[index]?.current?.select();
+      }, 50);
+    }
   }
 
   function handleLotChange(index: number, lotId: string) {
@@ -1278,11 +1301,11 @@ export default function PurchasesPage() {
                               sublabel: `Unit: ${p.unit} | Cost: PKR ${p.costPrice}`,
                             }))}
                             value={item.productId}
-                            onChange={(val) => handleProductChange(idx, val)}
+                            onChange={(val) => handleProductChange(idx, val, true)}
                             inputRef={productRefs.current[idx]}
                             onEnterPress={() => {
-                              locationRefs.current[idx]?.current?.focus();
-                              locationRefs.current[idx]?.current?.select();
+                              qtyRefs.current[idx]?.current?.focus();
+                              qtyRefs.current[idx]?.current?.select();
                             }}
                             placeholder="Select product..."
                             className="w-full text-xs"
@@ -1379,6 +1402,18 @@ export default function PurchasesPage() {
                             placeholder="Qty"
                             required
                           />
+                          {(() => {
+                            const p = products.find((pr) => pr.id === item.productId);
+                            const w = (p as any)?.packetWeight || (p as any)?.reamWeight || 0;
+                            if (w > 0 && item.quantity > 0) {
+                              return (
+                                <span className="text-[10px] text-amber-700 font-mono block text-right mt-0.5">
+                                  {((item.quantity || 0) * w).toFixed(2)} kg
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
 
                         {/* Unit Cost */}
@@ -1654,6 +1689,24 @@ export default function PurchasesPage() {
 
                 {/* 3-Figure Summary Box */}
                 <div className="md:col-span-5 rounded-xl bg-amber-50/60 p-3 border border-amber-200/80 space-y-1.5 text-xs font-mono">
+                  {/* Physical Totals Readout */}
+                  <div className="flex justify-between items-center text-slate-600 border-b border-amber-200/80 pb-1">
+                    <span>Physical Totals:</span>
+                    <span className="font-bold text-slate-800 text-[11px]">
+                      {items.reduce((s, it) => s + (it.quantity || 0), 0).toLocaleString()} pkts •{" "}
+                      {items.reduce((s, it) => {
+                        const p = products.find((pr) => pr.id === it.productId);
+                        const w = (p as any)?.packetWeight || (p as any)?.reamWeight || 0;
+                        return s + (it.quantity || 0) * w;
+                      }, 0).toFixed(2)} kg{" "}
+                      ({(items.reduce((s, it) => {
+                        const p = products.find((pr) => pr.id === it.productId);
+                        const w = (p as any)?.packetWeight || (p as any)?.reamWeight || 0;
+                        return s + (it.quantity || 0) * w;
+                      }, 0) / 1000).toFixed(3)} T)
+                    </span>
+                  </div>
+
                   <div className="flex justify-between text-slate-600">
                     <span>Subtotal:</span>
                     <span className="font-bold text-slate-900">

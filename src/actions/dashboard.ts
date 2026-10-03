@@ -5,6 +5,8 @@ import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { startOfDay, endOfDay } from "date-fns";
 import { StockMovementType } from "@prisma/client";
+import { userError } from "@/lib/errors";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 import { unstable_cache } from "next/cache";
 
@@ -174,14 +176,24 @@ export const getCachedDashboardMetrics = unstable_cache(
 
 export async function getDashboardMetricsAction() {
   return runAction("dashboard.metrics", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "dashboard", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view dashboard metrics.");
+    }
     return getCachedDashboardMetrics();
   });
 }
 
 export async function getReceivablesPayablesBreakdownAction() {
   return runAction("dashboard.receivablesPayablesBreakdown", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "dashboard", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "ledger", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "reports", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view receivables and payables.");
+    }
 
     // 1. Fetch all non-deleted parties
     const parties = await prisma.party.findMany({

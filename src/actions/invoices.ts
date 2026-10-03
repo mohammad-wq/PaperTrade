@@ -13,6 +13,7 @@ import { purchaseInvoiceSchema, updatePurchaseInvoiceSchema } from "@/schemas/pu
 import { AccountType, InvoiceStatus, PartyType, PaymentMethod, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { getActiveFinancialYear, getNextAtomicSequence, updateInvoiceSettlementStatus } from "@/lib/financial-year";
+import { consumeAdvanceCreditsForInvoice } from "@/lib/payment-allocation";
 import { z } from "zod";
 
 export async function listSaleInvoicesAction() {
@@ -38,26 +39,34 @@ export async function listSaleInvoicesAction() {
       },
     });
 
-    return invoices.map((inv) => ({
-      ...inv,
-      totalAmount: Number(inv.totalAmount),
-      amountPaid: Number(inv.amountPaid),
-      freightCharges: Number(inv.freightCharges ?? 0),
-      balanceDue: Number(inv.totalAmount) - Number(inv.amountPaid),
-      items: inv.items.map((item) => ({
-        ...item,
-        quantity: Number(item.quantity),
-        unitPrice: Number(item.unitPrice),
-        unitCost: item.unitCost != null ? Number(item.unitCost) : 0,
-        lineTotal: Number(item.lineTotal),
-        warehouseLot: item.warehouseLot
-          ? {
-              ...item.warehouseLot,
-              unitCost: item.warehouseLot.unitCost != null ? Number(item.warehouseLot.unitCost) : null,
-            }
-          : null,
-      })),
-    }));
+    return invoices.map((inv) => {
+      const totalAmount = Number(inv.totalAmount);
+      const paidAmount = Number(inv.paidAmount ?? inv.amountPaid ?? 0);
+      const balanceDue = inv.balanceAmount != null && Number(inv.balanceAmount) >= 0 ? Number(inv.balanceAmount) : Math.max(0, totalAmount - paidAmount);
+      const paymentStatus = inv.paymentStatus || (balanceDue <= 0.001 ? "PAID" : paidAmount > 0.001 ? "PARTIAL" : "UNPAID");
+      return {
+        ...inv,
+        totalAmount,
+        amountPaid: paidAmount,
+        paidAmount,
+        balanceDue,
+        paymentStatus,
+        freightCharges: Number(inv.freightCharges ?? 0),
+        items: inv.items.map((item) => ({
+          ...item,
+          quantity: Number(item.quantity),
+          unitPrice: Number(item.unitPrice),
+          unitCost: item.unitCost != null ? Number(item.unitCost) : 0,
+          lineTotal: Number(item.lineTotal),
+          warehouseLot: item.warehouseLot
+            ? {
+                ...item.warehouseLot,
+                unitCost: item.warehouseLot.unitCost != null ? Number(item.warehouseLot.unitCost) : null,
+              }
+            : null,
+        })),
+      };
+    });
   });
 }
 
@@ -466,14 +475,42 @@ export async function createSaleInvoiceAction(raw: unknown) {
             createdById: session.user.id,
           },
         });
+
+        await tx.invoicePaymentAllocation.create({
+          data: {
+            paymentId: payment.id,
+            saleInvoiceId: invoice.id,
+            amount: paidAmount,
+          },
+        });
       }
+
+      // Consume any existing unallocated advance credits for this customer
+      const advanceResult = await consumeAdvanceCreditsForInvoice(tx, {
+        invoiceId: invoice.id,
+        partyId: targetCustomerId,
+        direction: "IN",
+        totalAmount,
+        initialPaid: paidAmount,
+      });
+
+      await tx.saleInvoice.update({
+        where: { id: invoice.id },
+        data: {
+          paidAmount: advanceResult.paidAmount,
+          amountPaid: advanceResult.paidAmount,
+          balanceAmount: advanceResult.balanceDue,
+          paymentStatus: advanceResult.paymentStatus,
+          status: advanceResult.paymentStatus === "PAID" ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
+        },
+      });
 
       return {
         invoiceId: invoice.id,
         invoiceNo: invoice.invoiceNo,
         totalAmount,
-        amountPaid: paidAmount,
-        balanceDue: totalAmount - paidAmount,
+        amountPaid: advanceResult.paidAmount,
+        balanceDue: advanceResult.balanceDue,
         creditWarning,
       };
     });
@@ -952,14 +989,46 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             createdById: session.user.id,
           },
         });
+
+        await tx.invoicePaymentAllocation.create({
+          data: {
+            paymentId: payment.id,
+            saleInvoiceId: existing.id,
+            amount: paidAmount,
+          },
+        });
       }
+
+      // Update the SaleInvoice row itself
+      await tx.saleInvoice.update({
+        where: { id: existing.id },
+        data: {
+          customerId: targetCustomerId,
+          locationId: fallbackLocationId,
+          date: input.date,
+          totalAmount,
+          freightCharges: freight,
+          walkInName: input.walkInName?.trim() || null,
+          notes: finalNotes || null,
+          isPartnership: isPartnershipTx,
+          partnershipId,
+        },
+      });
+
+      // Recalculate settlement & payment status considering all payments & allocations
+      await updateInvoiceSettlementStatus(tx, existing.id, "SALE");
+
+      const refreshed = await tx.saleInvoice.findUnique({
+        where: { id: existing.id },
+        select: { paidAmount: true, balanceAmount: true, paymentStatus: true, status: true },
+      });
 
       return {
         invoiceId: existing.id,
         invoiceNo: existing.invoiceNo,
         totalAmount,
-        amountPaid: paidAmount,
-        balanceDue: totalAmount - paidAmount,
+        amountPaid: Number(refreshed?.paidAmount ?? paidAmount),
+        balanceDue: Number(refreshed?.balanceAmount ?? (totalAmount - paidAmount)),
       };
     });
 
@@ -994,21 +1063,29 @@ export async function listPurchaseInvoicesAction() {
       },
     });
 
-    return invoices.map((inv) => ({
-      ...inv,
-      totalAmount: Number(inv.totalAmount),
-      amountPaid: Number(inv.amountPaid || 0),
-      balanceDue: Math.max(0, Number(inv.totalAmount) - Number(inv.amountPaid || 0)),
-      freightCharges: Number(inv.freightCharges || 0),
-      partnerSharePct: inv.partnerSharePct != null ? Number(inv.partnerSharePct) : null,
-      clientSharePct: inv.clientSharePct != null ? Number(inv.clientSharePct) : null,
-      items: inv.items.map((item) => ({
-        ...item,
-        quantity: Number(item.quantity),
-        unitCost: Number(item.unitCost),
-        lineTotal: Number(item.lineTotal),
-      })),
-    }));
+    return invoices.map((inv) => {
+      const totalAmount = Number(inv.totalAmount);
+      const paidAmount = Number(inv.paidAmount ?? inv.amountPaid ?? 0);
+      const balanceDue = inv.balanceAmount != null && Number(inv.balanceAmount) >= 0 ? Number(inv.balanceAmount) : Math.max(0, totalAmount - paidAmount);
+      const paymentStatus = inv.paymentStatus || (balanceDue <= 0.001 ? "PAID" : paidAmount > 0.001 ? "PARTIAL" : "UNPAID");
+      return {
+        ...inv,
+        totalAmount,
+        amountPaid: paidAmount,
+        paidAmount,
+        balanceDue,
+        paymentStatus,
+        freightCharges: Number(inv.freightCharges || 0),
+        partnerSharePct: inv.partnerSharePct != null ? Number(inv.partnerSharePct) : null,
+        clientSharePct: inv.clientSharePct != null ? Number(inv.clientSharePct) : null,
+        items: inv.items.map((item) => ({
+          ...item,
+          quantity: Number(item.quantity),
+          unitCost: Number(item.unitCost),
+          lineTotal: Number(item.lineTotal),
+        })),
+      };
+    });
   });
 }
 
@@ -1094,11 +1171,13 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           })
         : null;
 
+      const isSupplierBeneficiary = Boolean(supplierParty?.isPartner || supplierParty?.isBeneficiary);
       const isPartnershipTx = Boolean(
         input.isPartnership ||
-        input.partnershipId
+        input.partnershipId ||
+        isSupplierBeneficiary
       );
-      const partnershipId = input.partnershipId || (isPartnershipTx && supplierParty?.isPartner ? supplierParty.id : null);
+      const partnershipId = input.partnershipId || (isPartnershipTx && targetSupplierId ? targetSupplierId : null);
 
       // Fetch any referenced warehouse lots to determine equity splits
       const referencedLotIds = input.items.map((i) => i.warehouseLotId || (i as any).sourceWarehouseLotId).filter(Boolean) as string[];
@@ -1123,6 +1202,137 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         ? Number(input.clientSharePct)
         : (100 - defaultPartnerSharePct);
 
+      // Resolve receiving partner lot at destination location for each item
+      const resolvedItems: Array<{
+        productId: string;
+        locationId: string;
+        warehouseLotId: string | null;
+        srcLot: any | null;
+        quantity: number;
+        unitCost: number;
+        lineTotal: number;
+      }> = [];
+
+      for (const item of input.items) {
+        const itemLoc = (item as any).locationId || fallbackLocationId;
+        const srcLotId = (item as any).sourceWarehouseLotId || item.warehouseLotId || input.warehouseLotId;
+        const srcLot = srcLotId ? lotMap.get(srcLotId) : null;
+        const partnerIdForLot = partnershipId || srcLot?.partnerId || (isSupplierBeneficiary ? targetSupplierId : null);
+
+        let finalLotId = item.warehouseLotId || input.warehouseLotId || null;
+
+        if (isPartnershipTx && partnerIdForLot) {
+          if (srcLot) {
+            if (srcLot.locationId === itemLoc) {
+              finalLotId = srcLot.id;
+              if (!srcLot.partnerId) {
+                await tx.warehouseLot.update({
+                  where: { id: srcLot.id },
+                  data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
+                });
+              }
+            } else {
+              // Ensure receiving Shop location has a corresponding partner lot with the same lot number
+              let receivingLot = await tx.warehouseLot.findFirst({
+                where: {
+                  locationId: itemLoc,
+                  lotNumber: srcLot.lotNumber,
+                },
+              });
+              if (!receivingLot) {
+                receivingLot = await tx.warehouseLot.create({
+                  data: {
+                    locationId: itemLoc,
+                    partnerId: partnerIdForLot,
+                    lotNumber: srcLot.lotNumber,
+                    description: `Partner lot from ${srcLot.location?.name || "Warehouse"} [Lot ${srcLot.lotNumber}]`,
+                    unitCost: item.unitCost,
+                    partnerSharePct: srcLot.partnerSharePct ?? defaultPartnerSharePct,
+                    clientSharePct: srcLot.clientSharePct ?? defaultClientSharePct,
+                  },
+                });
+              } else if (!receivingLot.partnerId) {
+                receivingLot = await tx.warehouseLot.update({
+                  where: { id: receivingLot.id },
+                  data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
+                });
+              }
+              finalLotId = receivingLot.id;
+            }
+          } else if (finalLotId) {
+            const givenLot = await tx.warehouseLot.findUnique({ where: { id: finalLotId } });
+            if (givenLot) {
+              if (givenLot.locationId === itemLoc) {
+                if (!givenLot.partnerId) {
+                  await tx.warehouseLot.update({
+                    where: { id: givenLot.id },
+                    data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
+                  });
+                }
+              } else {
+                let receivingLot = await tx.warehouseLot.findFirst({
+                  where: { locationId: itemLoc, lotNumber: givenLot.lotNumber },
+                });
+                if (!receivingLot) {
+                  receivingLot = await tx.warehouseLot.create({
+                    data: {
+                      locationId: itemLoc,
+                      partnerId: partnerIdForLot,
+                      lotNumber: givenLot.lotNumber,
+                      description: `Partner lot [Lot ${givenLot.lotNumber}]`,
+                      unitCost: item.unitCost,
+                      partnerSharePct: defaultPartnerSharePct,
+                      clientSharePct: defaultClientSharePct,
+                    },
+                  });
+                } else if (!receivingLot.partnerId) {
+                  receivingLot = await tx.warehouseLot.update({
+                    where: { id: receivingLot.id },
+                    data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
+                  });
+                }
+                finalLotId = receivingLot.id;
+              }
+            }
+          } else {
+            // Auto-assign or create a partner lot at the receiving location
+            const defaultLotNum = `${supplierParty?.name?.replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase() || "PARTNER"}-SHOP`;
+            let receivingLot = await tx.warehouseLot.findFirst({
+              where: { locationId: itemLoc, lotNumber: defaultLotNum },
+            });
+            if (!receivingLot) {
+              receivingLot = await tx.warehouseLot.create({
+                data: {
+                  locationId: itemLoc,
+                  partnerId: partnerIdForLot,
+                  lotNumber: defaultLotNum,
+                  description: `Partner inventory for ${supplierParty?.name || "Partner"} at ${itemLoc}`,
+                  unitCost: item.unitCost,
+                  partnerSharePct: defaultPartnerSharePct,
+                  clientSharePct: defaultClientSharePct,
+                },
+              });
+            } else if (!receivingLot.partnerId) {
+              receivingLot = await tx.warehouseLot.update({
+                where: { id: receivingLot.id },
+                data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
+              });
+            }
+            finalLotId = receivingLot.id;
+          }
+        }
+
+        resolvedItems.push({
+          productId: item.productId,
+          locationId: itemLoc,
+          warehouseLotId: finalLotId,
+          srcLot,
+          quantity: item.quantity,
+          unitCost: item.unitCost,
+          lineTotal: item.quantity * item.unitCost,
+        });
+      }
+
       const invoice = await tx.purchaseInvoice.create({
         data: {
           invoiceNo: formattedNumber,
@@ -1143,33 +1353,17 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           notes: input.notes || null,
           createdById: session.user.id,
           items: {
-            create: input.items.map((item) => ({
+            create: resolvedItems.map((item) => ({
               productId: item.productId,
-              locationId: (item as any).locationId || fallbackLocationId,
-              warehouseLotId: item.warehouseLotId || input.warehouseLotId || null,
+              locationId: item.locationId,
+              warehouseLotId: item.warehouseLotId,
               quantity: item.quantity,
               unitCost: item.unitCost,
-              lineTotal: item.quantity * item.unitCost,
+              lineTotal: item.lineTotal,
             })),
           },
         },
       });
-
-      // Update lots with unitCost and partnerId if supplier is a partner/beneficiary
-      const isSupplierBeneficiary = supplierParty?.isPartner || supplierParty?.isBeneficiary;
-
-      for (const item of input.items) {
-        const lotId = item.warehouseLotId || input.warehouseLotId;
-        if (lotId) {
-          await tx.warehouseLot.update({
-            where: { id: lotId },
-            data: {
-              unitCost: item.unitCost,
-              ...(isSupplierBeneficiary ? { partnerId: targetSupplierId } : {}),
-            },
-          });
-        }
-      }
 
       // Update PO status if linked and check if stock was already fulfilled
       let alreadyFulfilledByPO = false;
@@ -1190,43 +1384,39 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
 
       // Create stock movements at receiving location only if not already fulfilled
       if (!alreadyFulfilledByPO) {
-        for (const item of input.items) {
-          const itemLoc = (item as any).locationId || fallbackLocationId;
-          const srcLotId = (item as any).sourceWarehouseLotId || item.warehouseLotId || input.warehouseLotId;
-          const srcLot = srcLotId ? lotMap.get(srcLotId) : null;
-
+        for (const item of resolvedItems) {
           // If stock was pulled from Shared Warehouse into Shop (different location):
           // Decrement the available quantity in the Shared Warehouse location
-          if (srcLot && srcLot.locationId !== itemLoc) {
+          if (item.srcLot && item.srcLot.locationId !== item.locationId) {
             await tx.stockMovement.create({
               data: {
                 productId: item.productId,
-                locationId: srcLot.locationId,
-                warehouseLotId: srcLot.id,
+                locationId: item.srcLot.locationId,
+                warehouseLotId: item.srcLot.id,
                 type: StockMovementType.TRANSFER_OUT,
                 quantity: item.quantity,
                 referenceType: "PARTNERSHIP_PULL",
                 referenceId: invoice.invoiceNo,
                 createdById: session.user.id,
                 createdAt: input.date,
-                notes: `Stock pull to ${itemLoc} via ${invoice.invoiceNo}`,
+                notes: `Stock pull to ${item.locationId} via ${invoice.invoiceNo}`,
               },
             });
           }
 
-          // Person A's shop receives the units at full unit cost under the designated shop lot
+          // Ingest inventory under the designated partner shop lot
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: itemLoc,
-              warehouseLotId: item.warehouseLotId || input.warehouseLotId || null,
+              locationId: item.locationId,
+              warehouseLotId: item.warehouseLotId,
               type: StockMovementType.PURCHASE_IN,
               quantity: item.quantity,
               referenceType: "PURCHASE_INVOICE",
               referenceId: invoice.id,
               createdById: session.user.id,
               createdAt: input.date,
-              notes: `Purchase Invoice ${invoice.invoiceNo}`,
+              notes: `Purchase Invoice ${invoice.invoiceNo}${item.warehouseLotId ? " (Partner Lot)" : ""}`,
             },
           });
         }
@@ -1397,12 +1587,42 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
             },
           });
         }
+
+        await tx.invoicePaymentAllocation.create({
+          data: {
+            paymentId: payment.id,
+            purchaseInvoiceId: invoice.id,
+            amount: paidAmount,
+          },
+        });
       }
+
+      // Consume any existing unallocated advance credits for this supplier
+      const advanceResult = await consumeAdvanceCreditsForInvoice(tx, {
+        invoiceId: invoice.id,
+        partyId: targetSupplierId!,
+        direction: "OUT",
+        totalAmount,
+        initialPaid: paidAmount,
+      });
+
+      await tx.purchaseInvoice.update({
+        where: { id: invoice.id },
+        data: {
+          paidAmount: advanceResult.paidAmount,
+          amountPaid: advanceResult.paidAmount,
+          balanceAmount: advanceResult.balanceDue,
+          paymentStatus: advanceResult.paymentStatus,
+          status: advanceResult.paymentStatus === "PAID" ? InvoiceStatus.SETTLED : InvoiceStatus.OPEN,
+        },
+      });
 
       return {
         invoiceId: invoice.id,
         invoiceNo: invoice.invoiceNo,
         totalAmount,
+        amountPaid: advanceResult.paidAmount,
+        balanceDue: advanceResult.balanceDue,
       };
     });
 
@@ -1438,6 +1658,7 @@ export async function deletePurchaseInvoiceAction(raw: unknown) {
       await tx.payment.deleteMany({ where: { purchaseInvoiceId: id } });
       await tx.ledgerEntry.deleteMany({ where: { referenceType: "PURCHASE_INVOICE", referenceId: id } });
       await tx.stockMovement.deleteMany({ where: { referenceType: "PURCHASE_INVOICE", referenceId: id } });
+      await tx.invoicePaymentAllocation.deleteMany({ where: { purchaseInvoiceId: id } });
       await tx.purchaseInvoiceItem.deleteMany({ where: { invoiceId: id } });
       await tx.purchaseInvoice.delete({ where: { id } });
       return { id, invoiceNo: existing.invoiceNo };
@@ -1831,15 +2052,45 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
             },
           });
         }
+
+        await tx.invoicePaymentAllocation.create({
+          data: {
+            paymentId: payment.id,
+            purchaseInvoiceId: existing.id,
+            amount: paidAmount,
+          },
+        });
       }
+
+      // Update PurchaseInvoice fields
+      await tx.purchaseInvoice.update({
+        where: { id: existing.id },
+        data: {
+          supplierId: targetSupplierId!,
+          locationId: fallbackLocationId,
+          date: input.date,
+          totalAmount,
+          freightCharges: freight,
+          notes: input.notes || null,
+          isPartnership: isPartnershipTx,
+          partnershipId,
+        },
+      });
 
       // 9. Update settlement status
       await updateInvoiceSettlementStatus(tx, existing.id, "PURCHASE");
+
+      const refreshed = await tx.purchaseInvoice.findUnique({
+        where: { id: existing.id },
+        select: { paidAmount: true, balanceAmount: true, paymentStatus: true, status: true },
+      });
 
       return {
         invoiceId: existing.id,
         invoiceNo: existing.invoiceNo,
         totalAmount,
+        amountPaid: Number(refreshed?.paidAmount ?? paidAmount),
+        balanceDue: Number(refreshed?.balanceAmount ?? (totalAmount - paidAmount)),
       };
     });
 
@@ -1881,7 +2132,8 @@ export async function deleteSaleInvoiceAction(raw: unknown) {
       // 3. Reverse SALE_OUT stock movements (restores inventory)
       await tx.stockMovement.deleteMany({ where: { referenceType: "SALE_INVOICE", referenceId: id } });
 
-      // 4. Delete items, then the invoice itself
+      // 4. Delete allocations, items, then the invoice itself
+      await tx.invoicePaymentAllocation.deleteMany({ where: { saleInvoiceId: id } });
       await tx.saleInvoiceItem.deleteMany({ where: { invoiceId: id } });
       await tx.saleInvoice.delete({ where: { id } });
 

@@ -169,11 +169,12 @@ export async function listPurchaseOrdersAction() {
 
     return orders.map((order) => ({
       ...order,
+      includePricing: order.includePricing,
       items: order.items.map((item) => ({
         ...item,
         quantity: Number(item.quantity),
-        unitCost: Number(item.unitCost),
-        lineTotal: Number(item.lineTotal),
+        unitCost: item.unitCost !== null ? Number(item.unitCost) : null,
+        lineTotal: item.lineTotal !== null ? Number(item.lineTotal) : null,
       })),
     }));
   });
@@ -243,6 +244,7 @@ export async function createPurchaseOrderAction(raw: unknown) {
           locationId: effectiveLocationId,
           date: input.date,
           status: input.status,
+          includePricing: input.includePricing ?? true,
           isPartnership: input.isPartnership ?? false,
           partnershipId: input.partnershipId ?? null,
           notes: input.notes || null,
@@ -253,8 +255,8 @@ export async function createPurchaseOrderAction(raw: unknown) {
               destinationLocationId: item.destinationLocationId || effectiveLocationId || null,
               warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
-              unitCost: item.unitCost,
-              lineTotal: item.quantity * item.unitCost,
+              unitCost: (input.includePricing ?? true) ? (item.unitCost ?? null) : null,
+              lineTotal: (input.includePricing ?? true) && item.unitCost != null ? item.quantity * item.unitCost : null,
             })),
           },
         },
@@ -266,7 +268,7 @@ export async function createPurchaseOrderAction(raw: unknown) {
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: item.destinationLocationId || input.locationId,
+              locationId: item.destinationLocationId || effectiveLocationId,
               warehouseLotId: item.warehouseLotId || null,
               type: StockMovementType.PURCHASE_IN,
               quantity: item.quantity,
@@ -301,6 +303,7 @@ const updatePurchaseOrderSchema = z.object({
   locationId: z.string().optional().nullable().or(z.literal("")),
   date: z.coerce.date(),
   status: z.nativeEnum(PurchaseOrderStatus).default(PurchaseOrderStatus.DRAFT),
+  includePricing: z.boolean().optional(),
   isPartnership: z.boolean().optional(),
   partnershipId: z.string().optional().nullable(),
   notes: z.string().trim().max(1000).optional().or(z.literal("")),
@@ -356,6 +359,7 @@ export async function updatePurchaseOrderAction(raw: unknown) {
       }
 
       await tx.purchaseOrderItem.deleteMany({ where: { orderId: existing.id } });
+      const effectiveIncludePricing = input.includePricing !== undefined ? input.includePricing : existing.includePricing;
       const updated = await tx.purchaseOrder.update({
         where: { id: existing.id },
         data: {
@@ -363,6 +367,7 @@ export async function updatePurchaseOrderAction(raw: unknown) {
           locationId: effectiveLocationId,
           date: input.date,
           status: input.status,
+          includePricing: effectiveIncludePricing,
           isPartnership: input.isPartnership !== undefined ? input.isPartnership : existing.isPartnership,
           partnershipId: input.partnershipId !== undefined ? input.partnershipId : existing.partnershipId,
           notes: input.notes || null,
@@ -372,8 +377,8 @@ export async function updatePurchaseOrderAction(raw: unknown) {
               destinationLocationId: item.destinationLocationId || effectiveLocationId || null,
               warehouseLotId: item.warehouseLotId || null,
               quantity: item.quantity,
-              unitCost: item.unitCost,
-              lineTotal: item.quantity * item.unitCost,
+              unitCost: effectiveIncludePricing ? (item.unitCost ?? null) : null,
+              lineTotal: effectiveIncludePricing && item.unitCost != null ? item.quantity * item.unitCost : null,
             })),
           },
         },
@@ -384,7 +389,7 @@ export async function updatePurchaseOrderAction(raw: unknown) {
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
-              locationId: item.destinationLocationId || input.locationId,
+              locationId: item.destinationLocationId || effectiveLocationId,
               warehouseLotId: item.warehouseLotId || null,
               type: StockMovementType.PURCHASE_IN,
               quantity: item.quantity,
@@ -912,5 +917,9 @@ export async function listLocationsAction() {
       select: { id: true, name: true, address: true, type: true },
     });
   });
+}
+
+export async function dispatchDeliveryOrderAction(id: string) {
+  return updateDeliveryOrderStatusAction({ id, status: DeliveryOrderStatus.DISPATCHED });
 }
 

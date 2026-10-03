@@ -1,6 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 import {
   Calculator,
   Scale,
@@ -47,6 +50,16 @@ import {
 } from "@/lib/paper-math";
 
 export default function PaperCalculatorPage() {
+  const router = useRouter();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "calculator", "view", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [activeTab, setActiveTab] = useState<"gsm" | "pricing" | "logistics" | "reel">("gsm");
 
   // Tab 1: GSM & Weight

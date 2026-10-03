@@ -31,6 +31,7 @@ import { getPartyDetailsAction, adjustPartyBalanceAction } from "@/actions/parti
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { PartyType, Role } from "@prisma/client";
 import { formatDate } from "@/lib/utils";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type PartyData = {
   id: string;
@@ -99,6 +100,13 @@ function PartyDetailContent() {
   const { data: session } = useSession();
   const partyId = params.id as string;
   const isOwner = session?.user?.role === Role.OWNER;
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "parties", "view", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
 
   const [party, setParty] = useState<PartyData | null>(null);
   const [ledgerEntries, setLedgerEntries] = useState<LedgerItem[]>([]);

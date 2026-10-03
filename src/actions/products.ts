@@ -10,13 +10,21 @@ import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { revalidatePath } from "next/cache";
-import { Unit } from "@prisma/client";
+import { Unit, StockMovementType } from "@prisma/client";
 
 const deleteProductSchema = z.object({ id: z.string().min(1, "Product is required") });
 
 export async function listProductsAction() {
   return runAction("products.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "products", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "sales", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "purchases", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view products.");
+    }
     const [products, stockSums] = await Promise.all([
       prisma.product.findMany({
         where: { deletedAt: null },
@@ -97,7 +105,10 @@ export async function listQualitiesAction() {
 
 export async function createCategoryAction(rawName: string) {
   return runAction("categories.create", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "products", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to create categories.");
+    }
     const name = (rawName || "").trim();
     if (!name || name.length < 2) {
       throw userError("Category name must be at least 2 characters.");
@@ -115,7 +126,10 @@ export async function createCategoryAction(rawName: string) {
 
 export async function createQualityAction(rawName: string) {
   return runAction("qualities.create", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "products", "create", (session.user as any).permissions)) {
+      throw userError("You do not have permission to create qualities.");
+    }
     const name = (rawName || "").trim();
     if (!name || name.length < 2) {
       throw userError("Quality name must be at least 2 characters.");

@@ -16,7 +16,10 @@ export async function listExpensesAction(filters?: {
   endDate?: string;
 }) {
   return runAction("expenses.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "expenses", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view expenses.");
+    }
 
     const where: any = {};
     if (filters?.category) {

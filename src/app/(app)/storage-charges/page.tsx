@@ -23,6 +23,9 @@ import { listLocationsAction } from "@/actions/orders";
 import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type StorageChargeRow = {
   id: string;
@@ -36,7 +39,18 @@ type StorageChargeRow = {
 };
 
 export default function StorageChargesPage() {
+  const router = useRouter();
   const confirm = useConfirm();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "storage-charges", "view", (session.user as any).permissions);
+  const canCreate = !session?.user ? false : canPerformAction(session.user.role, "storage-charges", "create", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [charges, setCharges] = useState<StorageChargeRow[]>([]);
   const [locations, setLocations] = useState<Array<{ id: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
@@ -94,7 +108,7 @@ export default function StorageChargesPage() {
   // Keyboard shortcuts: F2/Insert opens modal, Esc closes, / focuses search
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "F2" || e.key === "Insert") {
+      if ((e.key === "F2" || e.key === "Insert") && canCreate) {
         e.preventDefault();
         setShowPostModal(true);
       } else if (e.key === "Escape" && showPostModal) {
@@ -270,15 +284,17 @@ export default function StorageChargesPage() {
             <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-emerald-700" />
             Export CSV
           </Button>
-          <Button
-            type="button"
-            onClick={() => setShowPostModal(true)}
-            size="sm"
-            className="h-8 bg-amber-800 hover:bg-amber-700 text-white text-xs shadow-xs font-semibold"
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            Post Storage Charge <span className="ml-1 opacity-70 text-[10px] font-mono">[F2]</span>
-          </Button>
+          {canCreate && (
+            <Button
+              type="button"
+              onClick={() => setShowPostModal(true)}
+              size="sm"
+              className="h-8 bg-amber-800 hover:bg-amber-700 text-white text-xs shadow-xs font-semibold"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              Post Storage Charge <span className="ml-1 opacity-70 text-[10px] font-mono">[F2]</span>
+            </Button>
+          )}
         </div>
       </div>
 

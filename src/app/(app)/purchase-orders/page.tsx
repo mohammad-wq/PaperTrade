@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo, useRef, createRef } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   Layers,
   Plus,
@@ -30,7 +30,7 @@ import {
   updatePurchaseOrderStatusAction,
 } from "@/actions/orders";
 import { listLocationsAction } from "@/actions/locations";
-import { listPartiesAction } from "@/actions/parties";
+import { listPartiesAction, listInventoryAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
 import { PurchaseOrderStatus } from "@prisma/client";
@@ -41,6 +41,8 @@ import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf } from "@/lib/print-pdf";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type PORow = {
   id: string;
@@ -48,6 +50,7 @@ type PORow = {
   sequenceNo?: number | null;
   date: Date;
   status: PurchaseOrderStatus;
+  includePricing: boolean;
   notes: string | null;
   financialYear?: { id: string; label: string; isActive?: boolean } | null;
   supplier: { id: string; name: string; phone: string | null };
@@ -55,8 +58,8 @@ type PORow = {
   items: Array<{
     id: string;
     quantity: number;
-    unitCost: number;
-    lineTotal: number;
+    unitCost: number | null;
+    lineTotal: number | null;
     destinationLocationId?: string | null;
     warehouseLotId?: string | null;
     destinationLocation?: { id: string; name: string } | null;
@@ -72,6 +75,9 @@ type PartyOption = {
   balance?: number;
   phone?: string | null;
   address?: string | null;
+  isPartner?: boolean;
+  isBeneficiary?: boolean;
+  partnerWarehouseId?: string | null;
 };
 
 type ProductOption = {
@@ -91,7 +97,21 @@ type LineItem = {
 };
 
 export default function PurchaseOrdersPage() {
+  const router = useRouter();
   const confirm = useConfirm();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "purchase-orders", "view", (session.user as any).permissions);
+  const canCreate = !session?.user ? false : canPerformAction(session.user.role, "purchase-orders", "create", (session.user as any).permissions);
+  const canUpdate = !session?.user ? false : canPerformAction(session.user.role, "purchase-orders", "update", (session.user as any).permissions);
+  const canDelete = !session?.user ? false : canPerformAction(session.user.role, "purchase-orders", "delete", (session.user as any).permissions);
+  const canCreatePurchaseInvoice = !session?.user ? false : canPerformAction(session.user.role, "purchases", "create", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [orders, setOrders] = useState<PORow[]>([]);
   const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
@@ -118,7 +138,7 @@ export default function PurchaseOrdersPage() {
   const handleSubmitRef = useRef<(e: React.FormEvent) => Promise<void>>(async () => {});
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "F2" || e.key === "Insert") {
+      if ((e.key === "F2" || e.key === "Insert") && canCreate) {
         e.preventDefault();
         setIsDialogOpen(true);
       } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
@@ -149,6 +169,9 @@ export default function PurchaseOrdersPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [includePricing, setIncludePricing] = useState(true);
+  const [isSourceSharedStock, setIsSourceSharedStock] = useState(false);
+  const [inventory, setInventory] = useState<any[]>([]);
 
   const searchParams = useSearchParams();
 
@@ -160,6 +183,9 @@ export default function PurchaseOrdersPage() {
     if (paramSupplier) {
       setSupplierId(paramSupplier);
       setSupplierType("REGISTERED");
+      if (searchParams.get("partnerId")) {
+        setIsSourceSharedStock(true);
+      }
       setIsDialogOpen(true);
     }
     if (searchParams.get("fromInvoice") === "1") {
@@ -193,7 +219,7 @@ export default function PurchaseOrdersPage() {
     setPreviewLoading(true);
     try {
       const selectedLoc = dbLocations.find((l) => l.id === locationId);
-      const totalCost = items.reduce((sum, i) => sum + (i.quantity || 0) * (i.unitCost || 0), 0);
+      const totalCost = includePricing ? items.reduce((sum, i) => sum + (i.quantity || 0) * (i.unitCost || 0), 0) : null;
 
       let partyName = "Market Vendor";
       let partyPhone: string | null = null;
@@ -217,7 +243,8 @@ export default function PurchaseOrdersPage() {
         partyName,
         partyPhone,
         locationName: selectedLoc?.name || "Shop",
-        totalAmount: totalCost,
+        totalAmount: includePricing ? totalCost : null,
+        hidePricing: !includePricing,
         amountPaid: 0,
         notes: notes || null,
         items: items.map((item) => {
@@ -227,8 +254,8 @@ export default function PurchaseOrdersPage() {
             specs: prod?.unit || "Unit",
             quantity: item.quantity,
             unit: prod?.unit || "Unit",
-            unitPrice: item.unitCost,
-            lineTotal: (item.quantity || 0) * (item.unitCost || 0),
+            unitPrice: includePricing ? item.unitCost : null,
+            lineTotal: includePricing ? (item.quantity || 0) * (item.unitCost || 0) : null,
           };
         }),
       };
@@ -261,12 +288,13 @@ export default function PurchaseOrdersPage() {
   async function loadData(isBackground = false) {
     if (!isBackground) setLoading(true);
     try {
-      const [poRes, partyRes, prodRes, locRes, lotRes] = await Promise.all([
+      const [poRes, partyRes, prodRes, locRes, lotRes, invRes] = await Promise.all([
         listPurchaseOrdersAction(),
         listPartiesAction(),
         listProductsAction(),
         listLocationsAction(),
         listWarehouseLotsAction(undefined, false),
+        listInventoryAction(),
       ]);
 
       if (poRes.success && poRes.data) {
@@ -289,6 +317,9 @@ export default function PurchaseOrdersPage() {
       }
       if (lotRes.success && lotRes.data) {
         setWarehouseLots(lotRes.data as any);
+      }
+      if (invRes.success && invRes.data) {
+        setInventory(invRes.data as any[]);
       }
     } finally {
       if (!isBackground) setLoading(false);
@@ -377,6 +408,12 @@ export default function PurchaseOrdersPage() {
 
   function addItem() {
     const nextIdx = items.length;
+    while (productRefs.current.length <= nextIdx) productRefs.current.push(React.createRef<HTMLInputElement>());
+    while (locationRefs.current.length <= nextIdx) locationRefs.current.push(React.createRef<HTMLInputElement>());
+    while (lotRefs.current.length <= nextIdx) lotRefs.current.push(React.createRef<HTMLInputElement>());
+    while (qtyRefs.current.length <= nextIdx) qtyRefs.current.push(React.createRef<HTMLInputElement>());
+    while (costRefs.current.length <= nextIdx) costRefs.current.push(React.createRef<HTMLInputElement>());
+
     setItems((prev) => [
       ...prev,
       { productId: "", quantity: 1, unitCost: 0, destinationLocationId: locationId || "", warehouseLotId: "" },
@@ -384,7 +421,7 @@ export default function PurchaseOrdersPage() {
     setTimeout(() => {
       productRefs.current[nextIdx]?.current?.focus();
       productRefs.current[nextIdx]?.current?.select();
-    }, 60);
+    }, 50);
   }
 
   function removeItem(index: number) {
@@ -400,6 +437,8 @@ export default function PurchaseOrdersPage() {
     setLocationId("");
     setOrderDate(getLocalDateTimeInputValue());
     setNotes("");
+    setIncludePricing(true);
+    setIsSourceSharedStock(false);
     setItems([{ productId: "", quantity: 1, unitCost: 0, destinationLocationId: "", warehouseLotId: "" }]);
     setFormError(null);
   }
@@ -413,11 +452,13 @@ export default function PurchaseOrdersPage() {
     setLocationId(order.location.id);
     setOrderDate(getLocalDateTimeInputValue(order.date));
     setNotes(order.notes || "");
+    setIncludePricing(order.includePricing);
+    setIsSourceSharedStock(Boolean((order as any).isPartnership));
     setItems(
       order.items.map((item) => ({
         productId: item.product.id,
         quantity: item.quantity,
-        unitCost: item.unitCost,
+        unitCost: item.unitCost ?? 0,
         destinationLocationId: item.destinationLocationId || order.location.id,
         warehouseLotId: item.warehouseLotId || item.warehouseLot?.id || "",
       }))
@@ -427,19 +468,34 @@ export default function PurchaseOrdersPage() {
   }
 
   function handleCreatePurchaseInvoiceFromPO(po: PORow) {
+    // When converting a PO to a Purchase Invoice, set the invoice destination and header location to the Main Retail Shop (destinationLocationId), not the source Partnership Warehouse.
+    const shopLoc = dbLocations.find((l) => l.name.toLowerCase().includes("shop") || l.type === "SHOP") ?? dbLocations[0];
+    const destinationShopId = po.items.find((i: any) => i.destinationLocationId)?.destinationLocationId || shopLoc?.id || po.location?.id || "";
+
     const payload = {
       purchaseOrderId: po.id,
       supplierId: po.supplier?.id || null,
       supplierName: po.supplier?.name || "",
-      locationId: po.location?.id || (po as any).locationId || "",
-      items: po.items.map((item: any) => ({
-        productId: item.product?.id || item.productId || "",
-        destinationLocationId: item.destinationLocationId || po.location?.id || undefined,
-        warehouseLotId: item.warehouseLotId || item.warehouseLot?.id || undefined,
-        quantity: item.quantity,
-        unitCost: item.unitCost,
-        unit: item.product?.unit || "",
-      })),
+      locationId: destinationShopId,
+      destinationLocationId: destinationShopId,
+      includePricing: po.includePricing,
+      isPartnership: Boolean((po as any).isPartnership || po.supplier?.isBeneficiary || po.supplier?.isPartner),
+      items: po.items.map((item: any) => {
+        const prod = products.find((p) => p.id === (item.product?.id || item.productId));
+        // Invoice Price Fallback for Unpriced POs: Pre-populate with product's master cost price or batch intake cost
+        const fallbackCost = prod?.costPrice || item.unitCost || 0;
+        const resolvedCost = po.includePricing ? (item.unitCost ?? fallbackCost) : fallbackCost;
+
+        return {
+          productId: item.product?.id || item.productId || "",
+          destinationLocationId: destinationShopId,
+          warehouseLotId: item.warehouseLotId || item.warehouseLot?.id || undefined,
+          sourceWarehouseLotId: item.warehouseLotId || item.warehouseLot?.id || undefined,
+          quantity: item.quantity,
+          unitCost: resolvedCost,
+          unit: item.product?.unit || prod?.unit || "",
+        };
+      }),
     };
     try {
       sessionStorage.setItem("draft_from_po", JSON.stringify(payload));
@@ -536,6 +592,9 @@ export default function PurchaseOrdersPage() {
         locationId: locationId || effectiveLoc,
         date: new Date(orderDate),
         status: isEditing ? (orders.find((o) => o.id === editingOrderId)?.status ?? PurchaseOrderStatus.DRAFT) : PurchaseOrderStatus.DRAFT,
+        includePricing,
+        isPartnership: isSourceSharedStock,
+        partnershipId: isSourceSharedStock && selectedSupplier?.id ? selectedSupplier.id : undefined,
         notes,
         items: items.map((i) => ({
           productId: i.productId,
@@ -602,16 +661,18 @@ export default function PurchaseOrdersPage() {
             </span>
           </div>
 
-          <Button
-            onClick={() => {
-              if (!locationId && locations.length > 0) setLocationId(locations[0].id);
-              setIsDialogOpen(true);
-            }}
-            className="h-8 bg-sky-800 hover:bg-sky-900 text-white text-xs font-bold shadow-xs px-3"
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            Create Purchase Order <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
-          </Button>
+          {canCreate && (
+            <Button
+              onClick={() => {
+                if (!locationId && locations.length > 0) setLocationId(locations[0].id);
+                setIsDialogOpen(true);
+              }}
+              className="h-8 bg-sky-800 hover:bg-sky-900 text-white text-xs font-bold shadow-xs px-3"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              Create Purchase Order <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -707,7 +768,6 @@ export default function PurchaseOrdersPage() {
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {filteredOrders.map((order) => {
-                  const total = order.items.reduce((s, i) => s + i.lineTotal, 0);
                   return (
                     <tr key={order.id} className="hover:bg-sky-50/60 dark:hover:bg-slate-800/60 transition-colors even:bg-slate-50/40 dark:even:bg-slate-900/40">
                       <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap">
@@ -743,7 +803,10 @@ export default function PurchaseOrdersPage() {
                         {order.items.length}
                       </td>
                       <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-right whitespace-nowrap font-bold text-slate-900 dark:text-slate-100">
-                        PKR {total.toLocaleString()}
+                        {order.includePricing
+                          ? `PKR ${order.items.reduce((s, i) => s + (i.lineTotal ?? 0), 0).toLocaleString()}`
+                          : <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">Qty Only</span>
+                        }
                       </td>
                       <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-center whitespace-nowrap">
                         {getStatusBadge(order.status)}
@@ -764,34 +827,36 @@ export default function PurchaseOrdersPage() {
                             <Printer className="h-3 w-3 mr-1" />
                             Print
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => handleCreatePurchaseInvoiceFromPO(order)}
-                            className="h-6 px-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
-                            title="Create Purchase Invoice from this PO"
-                          >
-                            <ShoppingCart className="h-3 w-3 mr-1" />
-                            + Invoice
-                          </Button>
-                          {order.status === PurchaseOrderStatus.DRAFT && (
+                          {canCreatePurchaseInvoice && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleCreatePurchaseInvoiceFromPO(order)}
+                              className="h-6 px-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                              title="Create Purchase Invoice from this PO"
+                            >
+                              <ShoppingCart className="h-3 w-3 mr-1" />
+                              + Invoice
+                            </Button>
+                          )}
+                          {canUpdate && order.status === PurchaseOrderStatus.DRAFT && (
                             <Button size="sm" variant="ghost" onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.SENT)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
                               <Send className="h-3 w-3 mr-1" />
                               Sent
                             </Button>
                           )}
-                          {(order.status === PurchaseOrderStatus.SENT || order.status === PurchaseOrderStatus.DRAFT) && (
+                          {canUpdate && (order.status === PurchaseOrderStatus.SENT || order.status === PurchaseOrderStatus.DRAFT) && (
                             <Button size="sm" variant="ghost" onClick={() => handleStatusChange(order.id, PurchaseOrderStatus.FULFILLED)} className="h-6 px-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40">
                               <CheckCircle2 className="h-3 w-3 mr-1" />
                               Receive
                             </Button>
                           )}
-                          {(order.status === PurchaseOrderStatus.DRAFT || order.status === PurchaseOrderStatus.SENT) && (
+                          {canUpdate && (order.status === PurchaseOrderStatus.DRAFT || order.status === PurchaseOrderStatus.SENT) && (
                             <Button size="sm" variant="ghost" onClick={() => openEditPurchaseOrder(order)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
                               Edit
                             </Button>
                           )}
-                          {(order.status === PurchaseOrderStatus.DRAFT || order.status === PurchaseOrderStatus.SENT) && (
+                          {canDelete && (order.status === PurchaseOrderStatus.DRAFT || order.status === PurchaseOrderStatus.SENT) && (
                             <Button size="sm" variant="ghost" onClick={() => handleDeletePurchaseOrder(order)} className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40">
                               Delete
                             </Button>
@@ -842,12 +907,30 @@ export default function PurchaseOrdersPage() {
                 <h2 className="text-lg font-bold text-slate-900">{editingOrderId ? "Edit Purchase Order" : "New Purchase Order"}</h2>
                 <p className="text-xs text-slate-500">Draft order to send to paper mills or suppliers</p>
               </div>
-              <button
-                onClick={() => setIsDialogOpen(false)}
-                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
+              <div className="flex items-center gap-3">
+                {/* Include Pricing Toggle */}
+                <button
+                  type="button"
+                  onClick={() => setIncludePricing((v) => !v)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all ${
+                    includePricing
+                      ? "bg-emerald-50 border-emerald-300 text-emerald-800"
+                      : "bg-slate-100 border-slate-300 text-slate-600"
+                  }`}
+                  title="Toggle to include or exclude pricing/rates in this purchase order"
+                >
+                  <span className={`inline-block h-3.5 w-3.5 rounded border-2 transition-all flex-shrink-0 ${
+                    includePricing ? "bg-emerald-600 border-emerald-600" : "border-slate-400 bg-white"
+                  }`} />
+                  {includePricing ? "Include Pricing / Rates" : "Qty Only (No Rates)"}
+                </button>
+                <button
+                  onClick={() => setIsDialogOpen(false)}
+                  className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
             </div>
 
             {formError && (
@@ -935,6 +1018,32 @@ export default function PurchaseOrdersPage() {
                       className="w-full text-xs"
                       inputClassName="h-8 text-xs font-medium"
                     />
+
+                    {/* Partner Shared Stock Toggle */}
+                    {(selectedSupplier?.isBeneficiary || selectedSupplier?.isPartner) && (
+                      <div className="mt-2 p-2 rounded-md bg-amber-50/80 border border-amber-200 text-xs">
+                        <label className="flex items-center gap-2 cursor-pointer font-bold text-amber-950">
+                          <input
+                            type="checkbox"
+                            checked={isSourceSharedStock}
+                            onChange={(e) => {
+                              setIsSourceSharedStock(e.target.checked);
+                              if (e.target.checked) {
+                                const shop = dbLocations.find((l) => l.name.toLowerCase() === "shop") ?? dbLocations[0];
+                                if (shop) setLocationId(shop.id);
+                              }
+                            }}
+                            className="rounded border-amber-300 text-amber-800 focus:ring-amber-600"
+                          />
+                          <span>Source from Shared / Partner Stock (Co-Ownership Requisition)</span>
+                        </label>
+                        {isSourceSharedStock && (
+                          <p className="text-[10px] text-amber-800 mt-1">
+                            Requisition will pull stock from partner lots into Shop. Upon conversion to PI, partner payable is isolated in their partnership equity ledger.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-1">
@@ -1040,16 +1149,37 @@ export default function PurchaseOrdersPage() {
                     return (
                       <div
                         key={idx}
-                        className="grid gap-2 sm:grid-cols-[1.2fr_130px_110px_80px_90px_85px_32px] items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50"
+                        className={`grid gap-2 items-center rounded-lg border border-slate-100 p-2.5 bg-slate-50/50 ${
+                          includePricing
+                            ? "sm:grid-cols-[1.2fr_130px_110px_80px_90px_85px_32px]"
+                            : "sm:grid-cols-[1.2fr_130px_110px_80px_32px]"
+                        }`}
                       >
                         {/* Product */}
                         <div>
                           <SearchCombobox
-                            options={products.map((p) => ({
-                              id: p.id,
-                              label: `${p.productNo} - ${p.name}`,
-                              sublabel: p.unit,
-                            }))}
+                            options={products.map((p) => {
+                              let availText = "";
+                              if (item.warehouseLotId) {
+                                const lotInv = inventory.find((inv) => inv.productId === p.id && inv.lotId === item.warehouseLotId);
+                                const count = lotInv ? lotInv.available : 0;
+                                availText = ` (Lot Avail: ${count} ${p.unit})`;
+                              } else if (isSourceSharedStock) {
+                                const partnerInv = inventory.filter(
+                                  (inv) => inv.productId === p.id && (inv.stockCategory === "BENEFICIARY" || inv.beneficiaryId === supplierId)
+                                );
+                                const count = partnerInv.reduce((sum, inv) => sum + (inv.available || 0), 0);
+                                availText = ` (Shared Stock: ${count} ${p.unit})`;
+                              } else if (inventory.length > 0) {
+                                const count = inventory.filter((inv) => inv.productId === p.id).reduce((sum, inv) => sum + (inv.available || 0), 0);
+                                availText = ` (Avail: ${count} ${p.unit})`;
+                              }
+                              return {
+                                id: p.id,
+                                label: `${p.productNo} - ${p.name}${availText}`,
+                                sublabel: p.unit,
+                              };
+                            })}
                             value={item.productId}
                             onChange={(val) => handleProductChange(idx, val)}
                             inputRef={productRefs.current[idx]}
@@ -1091,10 +1221,16 @@ export default function PurchaseOrdersPage() {
                           <SearchCombobox
                             options={[
                               { id: "", label: "No Lot" },
-                              ...lineLots.map((lot) => ({
-                                id: lot.id,
-                                label: `#${lot.lotNumber}`,
-                              })),
+                              ...lineLots.map((lot) => {
+                                const invRow = item.productId
+                                  ? inventory.find((inv) => inv.productId === item.productId && inv.lotId === lot.id)
+                                  : null;
+                                const count = invRow ? invRow.available : (lot.currentStock ?? 0);
+                                return {
+                                  id: lot.id,
+                                  label: `#${lot.lotNumber} (${count} avail)`,
+                                };
+                              }),
                             ]}
                             value={item.warehouseLotId || ""}
                             onChange={(val) => handleItemLotChange(idx, val)}
@@ -1120,8 +1256,17 @@ export default function PurchaseOrdersPage() {
                             onKeyDown={(e) => {
                               if (e.key === "Enter") {
                                 e.preventDefault();
-                                costRefs.current[idx]?.current?.focus();
-                                costRefs.current[idx]?.current?.select();
+                                if (includePricing) {
+                                  costRefs.current[idx]?.current?.focus();
+                                  costRefs.current[idx]?.current?.select();
+                                } else {
+                                  if (idx === items.length - 1) {
+                                    addItem();
+                                  } else {
+                                    productRefs.current[idx + 1]?.current?.focus();
+                                    productRefs.current[idx + 1]?.current?.select();
+                                  }
+                                }
                               }
                             }}
                             className="h-8 text-xs text-right font-mono"
@@ -1131,6 +1276,7 @@ export default function PurchaseOrdersPage() {
                         </div>
 
                         {/* Unit Cost */}
+                        {includePricing && (
                         <div>
                           <Input
                             ref={costRefs.current[idx]}
@@ -1152,13 +1298,15 @@ export default function PurchaseOrdersPage() {
                             }}
                             className="h-8 text-xs text-right font-mono"
                             placeholder="Unit Cost"
-                            required
                           />
                         </div>
+                        )}
 
+                        {includePricing && (
                         <div className="text-right text-xs font-semibold text-slate-800">
                           PKR {(((item.quantity || 0) * (item.unitCost || 0))).toFixed(2)}
                         </div>
+                        )}
 
                         <button
                           type="button"
@@ -1197,10 +1345,19 @@ export default function PurchaseOrdersPage() {
                   />
                 </div>
 
+                {includePricing && (
                 <div className="w-full sm:w-60 rounded-xl bg-sky-50/50 p-3 border border-sky-100 space-y-1 text-right">
                   <p className="text-xs text-sky-800">Estimated Total</p>
                   <p className="text-xl font-bold text-sky-950">PKR {orderSubtotal.toLocaleString()}</p>
                 </div>
+                )}
+                {!includePricing && (
+                <div className="w-full sm:w-60 rounded-xl bg-slate-50 p-3 border border-slate-200 space-y-1 text-right">
+                  <p className="text-xs text-slate-500">Quantity-Only Order</p>
+                  <p className="text-sm font-semibold text-slate-700">{items.reduce((s, i) => s + i.quantity, 0).toFixed(0)} units ordered</p>
+                  <p className="text-[10px] text-slate-400">No pricing printed on PO</p>
+                </div>
+                )}
               </div>
 
               <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-4">

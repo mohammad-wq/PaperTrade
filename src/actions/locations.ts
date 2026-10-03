@@ -8,7 +8,7 @@ import { userError } from "@/lib/errors";
 import { LocationType, Role } from "@prisma/client";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { revalidatePath } from "next/cache";
-import { revalidateLocations } from "@/lib/cached-lookups";
+import { revalidateLocations, revalidateWarehouseLots } from "@/lib/cached-lookups";
 
 const locationSchema = z.object({
   id: z.string().optional(),

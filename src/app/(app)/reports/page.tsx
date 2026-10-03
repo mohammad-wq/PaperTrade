@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 import {
   BarChart3,
   Calendar,
@@ -187,7 +189,17 @@ type PartyStatementData = {
 };
 
 export default function ReportsPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "reports", "view", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [tab, setTab] = useState<"PL" | "CASH" | "BS" | "PARTY">("PL");
 
   useEffect(() => {

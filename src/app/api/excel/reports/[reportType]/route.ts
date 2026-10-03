@@ -14,6 +14,7 @@ import {
   buildPartyStatementExcel,
 } from "@/lib/excel-reports";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,20 @@ export async function GET(
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
+  const { reportType } = await params;
+
+  // 1.5 Enforce permissions
+  const role = session.user.role;
+  const permissions = (session.user as any).permissions;
+  const isLedgerReport = reportType === "party-statement";
+  const hasAccess = isLedgerReport
+    ? canPerformAction(role, "ledger", "view", permissions) || canPerformAction(role, "parties", "view", permissions)
+    : canPerformAction(role, "reports", "view", permissions);
+
+  if (!hasAccess) {
+    return new NextResponse("Forbidden: You do not have permission to export this report.", { status: 403 });
+  }
+
   // 2. Rate limit Excel generation: 30 requests per minute
   const clientIp = getClientIp(request.headers);
   const rateLimit = checkRateLimit(`report_excel:${session.user.id || clientIp}`, 30, 60 * 1000);
@@ -37,7 +52,6 @@ export async function GET(
     });
   }
 
-  const { reportType } = await params;
   const searchParams = request.nextUrl.searchParams;
   const startDate = searchParams.get("startDate") || undefined;
   const endDate = searchParams.get("endDate") || undefined;

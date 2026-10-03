@@ -2,12 +2,14 @@ import { listInventoryAction } from "@/actions/parties";
 import { getCachedLocations, getCachedWarehouseLots } from "@/lib/cached-lookups";
 import InventoryClient from "./inventory-client";
 import { Suspense } from "react";
+import { assertPageAccess } from "@/lib/auth/session";
 
 import { serializeDecimals } from "@/lib/serialization";
 
 export const dynamic = "force-dynamic";
 
 export default async function InventoryPage() {
+  await assertPageAccess("/inventory");
   const [invRes, lots, locs] = await Promise.all([
     listInventoryAction(),
     getCachedWarehouseLots(),

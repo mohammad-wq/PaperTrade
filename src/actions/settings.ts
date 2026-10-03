@@ -1,7 +1,7 @@
 "use server";
 
 import { parseInput, runAction } from "@/actions/_helpers";
-import { requireRole } from "@/lib/auth/session";
+import { requireRole, requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { settingsSchema } from "@/schemas/settings";
 import { Role } from "@prisma/client";

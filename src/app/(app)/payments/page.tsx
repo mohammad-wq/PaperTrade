@@ -37,6 +37,9 @@ import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf } from "@/lib/print-pdf";
 import { handleFormEnterKeyDown } from "@/lib/keyboard-nav";
 import { simulateFifoAllocation, InvoiceAllocationItem } from "@/lib/payment-allocation-calc";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type PaymentSplitRow = {
   id: string;
@@ -102,7 +105,21 @@ type SplitEntry = {
 };
 
 export default function PaymentsPage() {
+  const router = useRouter();
   const confirm = useConfirm();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "payments", "view", (session.user as any).permissions);
+  const canCreate = !session?.user ? false : canPerformAction(session.user.role, "payments", "create", (session.user as any).permissions);
+  const canUpdate = !session?.user ? false : canPerformAction(session.user.role, "payments", "update", (session.user as any).permissions);
+  const canDelete = !session?.user ? false : canPerformAction(session.user.role, "payments", "delete", (session.user as any).permissions);
+  const canCreateExpense = !session?.user ? false : canPerformAction(session.user.role, "expenses", "create", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [parties, setParties] = useState<PartyOption[]>([]);
   const [saleInvoices, setSaleInvoices] = useState<InvoiceOption[]>([]);
@@ -127,7 +144,7 @@ export default function PaymentsPage() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "F2" || e.key === "Insert") {
+      if ((e.key === "F2" || e.key === "Insert") && canCreate) {
         e.preventDefault();
         setIsDialogOpen(true);
       } else if (
@@ -148,7 +165,7 @@ export default function PaymentsPage() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isDialogOpen]);
+  }, [isDialogOpen, canCreate]);
 
   // Support URL search parameters ?direction=IN/OUT and ?action=new
   useEffect(() => {
@@ -212,10 +229,10 @@ export default function PaymentsPage() {
         setParties(partyRes.data as PartyOption[]);
       }
       if (sInvRes.success && sInvRes.data) {
-        setSaleInvoices(sInvRes.data as InvoiceOption[]);
+        setSaleInvoices(sInvRes.data as unknown as InvoiceOption[]);
       }
       if (pInvRes.success && pInvRes.data) {
-        setPurchaseInvoices(pInvRes.data as InvoiceOption[]);
+        setPurchaseInvoices(pInvRes.data as unknown as InvoiceOption[]);
       }
     } finally {
       if (!isBackground) setLoading(false);
@@ -286,7 +303,7 @@ export default function PaymentsPage() {
         totalDue: Math.max(0, rawDue),
         allocatedNow: 0,
         newBalance: Math.max(0, rawDue),
-        newStatus: rawDue <= 0.001 ? "PAID" : paid > 0 ? "PARTIAL" : "UNPAID",
+        newStatus: (rawDue <= 0.001 ? "PAID" : paid > 0 ? "PARTIAL" : "UNPAID") as "PAID" | "PARTIAL" | "UNPAID",
       };
     }).filter((inv) => inv.totalDue > 0.001);
 
@@ -637,22 +654,26 @@ export default function PaymentsPage() {
             </span>
           </div>
 
-          <Button
-            variant="outline"
-            onClick={() => setIsExpenseDialogOpen(true)}
-            className="h-8 border-amber-300 text-amber-900 hover:bg-amber-50 text-xs font-semibold shadow-xs px-2.5"
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            Misc Expense
-          </Button>
+          {(canCreateExpense || canCreate) && (
+            <Button
+              variant="outline"
+              onClick={() => setIsExpenseDialogOpen(true)}
+              className="h-8 border-amber-300 text-amber-900 hover:bg-amber-50 text-xs font-semibold shadow-xs px-2.5"
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              Misc Expense
+            </Button>
+          )}
 
-          <Button
-            onClick={() => setIsDialogOpen(true)}
-            className="h-8 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold shadow-xs px-3"
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            Record Payment <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
-          </Button>
+          {canCreate && (
+            <Button
+              onClick={() => setIsDialogOpen(true)}
+              className="h-8 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold shadow-xs px-3"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              Record Payment <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -901,26 +922,30 @@ export default function PaymentsPage() {
                     </td>
                     <td className="py-2 px-3 text-center whitespace-nowrap">
                       <div className="flex items-center justify-center gap-1">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openPaymentEditor(p)}
-                          className="h-7 text-[10px] gap-1 border-sky-200 text-sky-700 hover:bg-sky-50 font-medium px-2"
-                          title="Edit payment"
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleDeletePayment(p)}
-                          className="h-7 text-[10px] gap-1 border-rose-200 text-rose-700 hover:bg-rose-50 font-medium px-2"
-                          title="Delete payment"
-                        >
-                          Delete
-                        </Button>
+                        {canUpdate && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openPaymentEditor(p)}
+                            className="h-7 text-[10px] gap-1 border-sky-200 text-sky-700 hover:bg-sky-50 font-medium px-2"
+                            title="Edit payment"
+                          >
+                            Edit
+                          </Button>
+                        )}
+                        {canDelete && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleDeletePayment(p)}
+                            className="h-7 text-[10px] gap-1 border-rose-200 text-rose-700 hover:bg-rose-50 font-medium px-2"
+                            title="Delete payment"
+                          >
+                            Delete
+                          </Button>
+                        )}
                         <Button
                           type="button"
                           variant="outline"

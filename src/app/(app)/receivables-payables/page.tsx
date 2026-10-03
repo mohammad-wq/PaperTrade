@@ -26,6 +26,9 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { getReceivablesPayablesBreakdownAction } from "@/actions/dashboard";
 import { useRealtimeListener } from "@/hooks/use-realtime";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type ReceivableParty = {
   id: string;
@@ -65,6 +68,16 @@ type BreakdownData = {
 };
 
 export default function ReceivablesPayablesPage() {
+  const router = useRouter();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "ledger", "view", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [data, setData] = useState<BreakdownData | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"receivables" | "payables">("receivables");

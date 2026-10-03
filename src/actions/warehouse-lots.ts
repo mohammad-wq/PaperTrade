@@ -11,6 +11,7 @@ import { revalidatePath } from "next/cache";
 import { getLotStockOnHand } from "@/lib/stock";
 
 import { revalidateWarehouseLots } from "@/lib/cached-lookups";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 const createLotSchema = z.object({
   locationId: z.string().min(1, "Location is required"),
@@ -100,7 +101,13 @@ export async function listWarehouseLotsAction(
 
 export async function createWarehouseLotAction(raw: unknown) {
   return runAction("warehouseLots.create", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "inventory", "create", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "partnerships", "create", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to create warehouse lots.");
+    }
     const input = parseInput(createLotSchema, raw);
 
     const location = await prisma.location.findUnique({
@@ -163,7 +170,13 @@ export async function createWarehouseLotAction(raw: unknown) {
 
 export async function updateWarehouseLotAction(raw: unknown) {
   return runAction("warehouseLots.update", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "partnerships", "update", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to update warehouse lots.");
+    }
     const input = parseInput(updateLotSchema, raw);
 
     const lot = await prisma.warehouseLot.findUnique({

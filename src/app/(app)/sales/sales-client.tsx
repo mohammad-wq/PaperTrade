@@ -109,6 +109,8 @@ type ProductOption = {
   category?: { id: string; name: string } | null;
   retailPrice: number;
   wholesalePrice: number;
+  packetWeight?: number;
+  reamWeight?: number;
 };
 
 type StockInfo = {
@@ -133,6 +135,8 @@ type CommittedLineItem = {
   locationType: string;
   warehouseLotId?: string | null;
   lotNumber?: string | null;
+  packetWeight?: number;
+  reamWeight?: number;
 };
 
 export default function SalesClient({
@@ -610,6 +614,8 @@ export default function SalesClient({
         locationType: itLoc?.type || "SHOP",
         warehouseLotId: it.warehouseLot?.id || it.warehouseLotId || null,
         lotNumber: it.warehouseLot?.lotNumber || null,
+        packetWeight: prod?.packetWeight || 0,
+        reamWeight: prod?.reamWeight || 0,
       };
     });
 
@@ -865,16 +871,18 @@ export default function SalesClient({
   }
 
   // Select product into the active entry row
-  function handleSelectProduct(prod: ProductOption) {
+  function handleSelectProduct(prod: ProductOption, skipToQty = false) {
     setMatchedProduct(prod);
     setActiveCodeInput(`${prod.productNo} - ${prod.name}`);
     setShowTypeahead(false);
     setActiveRowError(null);
     setActiveRate(String(prod.retailPrice));
 
-    // Focus Location selector first so location can be specified for this product
     setTimeout(() => {
-      if (itemLocationInputRef.current) {
+      if (skipToQty) {
+        qtyInputRef.current?.focus();
+        qtyInputRef.current?.select();
+      } else if (itemLocationInputRef.current) {
         itemLocationInputRef.current.focus();
         itemLocationInputRef.current.select();
       } else if (isItemLocationWarehouse && locationLots.length > 0 && lotComboboxInputRef.current) {
@@ -894,7 +902,7 @@ export default function SalesClient({
 
       // If user navigated typeahead dropdown
       if (showTypeahead && typeaheadMatches.length > 0 && typeaheadMatches[typeaheadIndex]) {
-        handleSelectProduct(typeaheadMatches[typeaheadIndex]);
+        handleSelectProduct(typeaheadMatches[typeaheadIndex], true);
         return;
       }
 
@@ -914,9 +922,10 @@ export default function SalesClient({
       );
 
       if (exact) {
-        handleSelectProduct(exact);
+        // Fast numeric SKU jump: Enter directly jumps to Quantity
+        handleSelectProduct(exact, true);
       } else if (typeaheadMatches.length > 0) {
-        handleSelectProduct(typeaheadMatches[0]);
+        handleSelectProduct(typeaheadMatches[0], true);
       } else {
         // Pattern 3: Show immediate non-disruptive inline error without popup
         setActiveRowError("Product not found. Enter a valid Code or Name.");
@@ -1012,6 +1021,8 @@ export default function SalesClient({
         locationType: finalLoc?.type || "SHOP",
         warehouseLotId: activeLotId || null,
         lotNumber: matchedLot ? matchedLot.lotNumber : null,
+        packetWeight: matchedProduct.packetWeight || 0,
+        reamWeight: matchedProduct.reamWeight || 0,
       },
     ]);
 
@@ -1836,6 +1847,11 @@ export default function SalesClient({
                                 onChange={(e) => updateCommittedItemQuantity(idx, parseFloat(e.target.value) || 0)}
                                 className="h-6 w-20 text-right px-1.5 py-0 text-xs font-mono font-bold bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 inline-block"
                               />
+                              {((item.packetWeight || item.reamWeight || 0) > 0) && (
+                                <div className="text-[9px] text-slate-400 font-mono mt-0.5">
+                                  {(item.quantity * (item.packetWeight || item.reamWeight || 0)).toFixed(2)} kg
+                                </div>
+                              )}
                             </td>
                             <td className="py-1 px-1 border-r border-slate-100 dark:border-slate-800 text-right text-slate-700 dark:text-slate-300">
                               <Input
@@ -2071,6 +2087,11 @@ export default function SalesClient({
                             onKeyDown={handleQtyKeyDown}
                             className="h-7 text-xs text-right bg-white dark:bg-slate-900 font-mono font-bold"
                           />
+                          {matchedProduct && (matchedProduct.packetWeight || matchedProduct.reamWeight) ? (
+                            <div className="text-[9px] text-slate-400 font-mono text-right mt-0.5">
+                              {((parseFloat(activeQty) || 0) * (matchedProduct.packetWeight || matchedProduct.reamWeight || 0)).toFixed(2)} kg
+                            </div>
+                          ) : null}
                         </td>
 
                         {/* Rate Input */}
@@ -2325,6 +2346,16 @@ export default function SalesClient({
 
                 {/* Subtotal & 3-Figure Readout */}
                 <div className="sm:col-span-5 bg-slate-50 dark:bg-slate-800/80 p-3 rounded border border-slate-200 dark:border-slate-700 flex flex-col justify-between space-y-1.5 font-mono text-xs">
+                  {/* Weight & Tonnage Metrics */}
+                  <div className="flex justify-between items-center text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 pb-1">
+                    <span>Physical Totals:</span>
+                    <span className="font-bold text-slate-800 dark:text-slate-200 text-[11px]">
+                      {committedItems.reduce((s, it) => s + (it.quantity || 0), 0).toLocaleString()} pkts •{" "}
+                      {committedItems.reduce((s, it) => s + (it.quantity || 0) * (it.packetWeight || it.reamWeight || 0), 0).toFixed(2)} kg{" "}
+                      ({(committedItems.reduce((s, it) => s + (it.quantity || 0) * (it.packetWeight || it.reamWeight || 0), 0) / 1000).toFixed(3)} T)
+                    </span>
+                  </div>
+
                   <div className="flex justify-between text-slate-600 dark:text-slate-400">
                     <span>Subtotal:</span>
                     <span className="font-bold text-slate-900 dark:text-slate-100">

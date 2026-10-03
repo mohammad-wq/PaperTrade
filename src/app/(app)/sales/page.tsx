@@ -5,10 +5,12 @@ import { getCachedLocations, getCachedWarehouseLots } from "@/lib/cached-lookups
 import SalesClient from "./sales-client";
 import { Suspense } from "react";
 import { serializeDecimals } from "@/lib/serialization";
+import { assertPageAccess } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
 export default async function SalesPage() {
+  await assertPageAccess("/sales");
   const [invRes, partyRes, prodRes, stockRes, locations, lots] = await Promise.all([
     listSaleInvoicesAction(),
     listPartiesAction(),

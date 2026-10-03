@@ -22,6 +22,7 @@ import { format } from "date-fns";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { formatDateTime } from "@/lib/utils";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,20 @@ export async function GET(
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
+  const { reportType } = await params;
+
+  // 1.5 Enforce permissions
+  const role = session.user.role;
+  const permissions = (session.user as any).permissions;
+  const isLedgerReport = reportType === "party-statement" || reportType === "general-ledger";
+  const hasAccess = isLedgerReport
+    ? canPerformAction(role, "ledger", "view", permissions) || canPerformAction(role, "parties", "view", permissions)
+    : canPerformAction(role, "reports", "view", permissions);
+
+  if (!hasAccess) {
+    return new NextResponse("Forbidden: You do not have permission to access this report.", { status: 403 });
+  }
+
   // 2. Rate limit PDF generation (CPU intensive): 20 requests per minute
   const clientIp = getClientIp(request.headers);
   const rateLimit = checkRateLimit(`report_pdf:${session.user.id || clientIp}`, 20, 60 * 1000);
@@ -45,7 +60,6 @@ export async function GET(
     });
   }
 
-  const { reportType } = await params;
   const searchParams = request.nextUrl.searchParams;
   const isDownload = searchParams.get("download") === "true";
 

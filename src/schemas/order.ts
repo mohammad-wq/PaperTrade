@@ -6,7 +6,7 @@ export const purchaseOrderItemSchema = z.object({
   destinationLocationId: z.string().trim().optional().nullable().or(z.literal("")),
   warehouseLotId: z.string().trim().optional().nullable().or(z.literal("")),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
-  unitCost: z.coerce.number().min(0, "Unit cost must be 0 or greater"),
+  unitCost: z.coerce.number().min(0, "Unit cost must be 0 or greater").optional().nullable(),
 });
 
 export const purchaseOrderSchema = z
@@ -20,6 +20,7 @@ export const purchaseOrderSchema = z
     locationId: z.string().optional().nullable().or(z.literal("")),
     date: z.coerce.date(),
     status: z.nativeEnum(PurchaseOrderStatus).default(PurchaseOrderStatus.DRAFT),
+    includePricing: z.boolean().default(true),
     isPartnership: z.boolean().default(false),
     partnershipId: z.string().optional().nullable(),
     notes: z.string().trim().max(1000).optional().or(z.literal("")),

@@ -1,4 +1,4 @@
-import { requireSession } from "@/lib/auth/session";
+import { assertPageAccess } from "@/lib/auth/session";
 import { listPartnersAction, getPartnershipHubDataAction } from "@/actions/partnerships";
 import PartnershipClient from "./partnership-client";
 
@@ -7,7 +7,7 @@ export default async function PartnershipsPage({
 }: {
   searchParams?: Promise<{ partnerId?: string }>;
 }) {
-  await requireSession();
+  await assertPageAccess("/partnerships");
   const sp = searchParams ? await searchParams : {};
 
   const partnersRes = await listPartnersAction();

@@ -3,8 +3,20 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/options";
 import { renderDocumentPdfKit } from "@/lib/pdfkit-generator";
 import { format } from "date-fns";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
+
+const DOC_TYPE_TO_MODULE: Record<string, string> = {
+  "sale-invoice": "sales",
+  "purchase-order": "purchase-orders",
+  "delivery-order": "delivery-orders",
+  "purchase-invoice": "purchases",
+  "sale-return": "returns",
+  "purchase-return": "returns",
+  "payment-receipt": "payments",
+  "payment": "payments",
+};
 
 const toNumber = (value: unknown, fallback = 0) => {
   const numeric = typeof value === "number" ? value : Number(value ?? 0);
@@ -38,6 +50,16 @@ export async function POST(request: NextRequest) {
       notes = null,
       items = [],
     } = body;
+
+    const moduleKey = DOC_TYPE_TO_MODULE[type] || "sales";
+    const role = (session.user as any).role;
+    const permissions = (session.user as any).permissions;
+    if (
+      !canPerformAction(role, moduleKey, "view", permissions) &&
+      !canPerformAction(role, moduleKey, "create", permissions)
+    ) {
+      return new NextResponse("Forbidden", { status: 403 });
+    }
 
     const safeFormatDate = (val?: string | null | Date) => {
       if (!val) return format(new Date(), "dd-MM-yyyy h:mm a");

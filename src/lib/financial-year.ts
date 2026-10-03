@@ -207,23 +207,30 @@ export async function updateInvoiceSettlementStatus(
       include: {
         payments: true,
         returns: true,
+        allocations: true,
       },
     });
 
     if (!invoice) return;
 
     const totalAmount = Number(invoice.totalAmount);
-    const totalPayments = invoice.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const directPayments = invoice.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const allocatedPayments = invoice.allocations.reduce((sum, a) => sum + Number(a.amount), 0);
+    const totalPayments = Math.max(directPayments, allocatedPayments);
     const totalReturns = invoice.returns.reduce((sum, r) => sum + Number(r.totalAmount), 0);
     const totalSettled = totalPayments + totalReturns;
-    const balanceDue = totalAmount - totalSettled;
+    const balanceDue = Math.max(0, totalAmount - totalSettled);
 
-    const newStatus = balanceDue <= 0 ? "SETTLED" : "OPEN";
+    const newStatus = balanceDue <= 0.001 ? "SETTLED" : "OPEN";
+    const paymentStatus = balanceDue <= 0.001 ? "PAID" : totalPayments > 0.001 ? "PARTIAL" : "UNPAID";
 
     await tx.saleInvoice.update({
       where: { id: invoiceId },
       data: {
+        paidAmount: totalPayments,
         amountPaid: totalPayments,
+        balanceAmount: balanceDue,
+        paymentStatus,
         status: invoice.status === "CANCELLED" ? "CANCELLED" : newStatus,
       },
     });
@@ -233,22 +240,30 @@ export async function updateInvoiceSettlementStatus(
       include: {
         payments: true,
         returns: true,
+        allocations: true,
       },
     });
 
     if (!invoice) return;
 
     const totalAmount = Number(invoice.totalAmount);
-    const totalPayments = invoice.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const directPayments = invoice.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const allocatedPayments = invoice.allocations.reduce((sum, a) => sum + Number(a.amount), 0);
+    const totalPayments = Math.max(directPayments, allocatedPayments);
     const totalReturns = invoice.returns.reduce((sum, r) => sum + Number(r.totalAmount), 0);
     const totalSettled = totalPayments + totalReturns;
-    const balanceDue = totalAmount - totalSettled;
+    const balanceDue = Math.max(0, totalAmount - totalSettled);
 
-    const newStatus = balanceDue <= 0 ? "SETTLED" : "OPEN";
+    const newStatus = balanceDue <= 0.001 ? "SETTLED" : "OPEN";
+    const paymentStatus = balanceDue <= 0.001 ? "PAID" : totalPayments > 0.001 ? "PARTIAL" : "UNPAID";
 
     await tx.purchaseInvoice.update({
       where: { id: invoiceId },
       data: {
+        paidAmount: totalPayments,
+        amountPaid: totalPayments,
+        balanceAmount: balanceDue,
+        paymentStatus,
         status: invoice.status === "CANCELLED" ? "CANCELLED" : newStatus,
       },
     });

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo, useRef, createRef } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   Truck,
   Plus,
@@ -41,6 +41,8 @@ import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf } from "@/lib/print-pdf";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type DORow = {
   id: string;
@@ -104,7 +106,20 @@ type LineItem = {
 };
 
 export default function DeliveryOrdersPage() {
+  const router = useRouter();
   const confirm = useConfirm();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "delivery-orders", "view", (session.user as any).permissions);
+  const canCreate = !session?.user ? false : canPerformAction(session.user.role, "delivery-orders", "create", (session.user as any).permissions);
+  const canUpdate = !session?.user ? false : canPerformAction(session.user.role, "delivery-orders", "update", (session.user as any).permissions);
+  const canDelete = !session?.user ? false : canPerformAction(session.user.role, "delivery-orders", "delete", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [orders, setOrders] = useState<DORow[]>([]);
   const [customers, setCustomers] = useState<PartyOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
@@ -140,7 +155,7 @@ export default function DeliveryOrdersPage() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "F2" || e.key === "Insert") {
+      if ((e.key === "F2" || e.key === "Insert") && canCreate) {
         e.preventDefault();
         setIsDialogOpen(true);
       } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
@@ -737,16 +752,18 @@ export default function DeliveryOrdersPage() {
             </span>
           </div>
 
-          <Button
-            onClick={() => {
-              if (!locationId && locations.length > 0) setLocationId(locations[0].id);
-              setIsDialogOpen(true);
-            }}
-            className="h-8 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold shadow-xs px-3"
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            Create Delivery Order <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
-          </Button>
+          {canCreate && (
+            <Button
+              onClick={() => {
+                if (!locationId && locations.length > 0) setLocationId(locations[0].id);
+                setIsDialogOpen(true);
+              }}
+              className="h-8 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold shadow-xs px-3"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              Create Delivery Order <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -910,12 +927,12 @@ export default function DeliveryOrdersPage() {
                           <Printer className="h-3 w-3 mr-1" />
                           Print
                         </Button>
-                        {(order.status === DeliveryOrderStatus.DRAFT || order.status === DeliveryOrderStatus.DISPATCHED) && (
+                        {canUpdate && (order.status === DeliveryOrderStatus.DRAFT || order.status === DeliveryOrderStatus.DISPATCHED) && (
                           <Button size="sm" variant="ghost" onClick={() => openEditDeliveryOrder(order)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
                             Edit
                           </Button>
                         )}
-                        {(order.status === DeliveryOrderStatus.DRAFT || order.status === DeliveryOrderStatus.DISPATCHED) && (
+                        {canDelete && (order.status === DeliveryOrderStatus.DRAFT || order.status === DeliveryOrderStatus.DISPATCHED) && (
                           <Button size="sm" variant="ghost" onClick={() => handleDeleteDeliveryOrder(order)} className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40">
                             Delete
                           </Button>

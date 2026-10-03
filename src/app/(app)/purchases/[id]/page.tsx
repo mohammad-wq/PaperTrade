@@ -1,4 +1,4 @@
-import { requireSession } from "@/lib/auth/session";
+import { assertPageAccess } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { notFound } from "next/navigation";
 import Link from "next/link";
@@ -16,7 +16,7 @@ export default async function PurchaseInvoiceDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requireSession();
+  await assertPageAccess("/purchases");
   const { id } = await params;
 
   const invoice = await prisma.purchaseInvoice.findUnique({
@@ -74,6 +74,16 @@ export default async function PurchaseInvoiceDetailPage({
             >
               {invoice.status}
             </span>
+            {invoice.purchaseOrder && (
+              <Link
+                href={`/purchase-orders?search=${invoice.purchaseOrder.orderNo}`}
+                className="inline-flex items-center gap-1 text-[11px] font-medium bg-amber-50 text-amber-800 hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2.5 py-0.5 rounded-full transition-colors"
+                title="View linked Purchase Order"
+              >
+                <ShoppingCart className="h-3 w-3" />
+                Sourced from PO #{invoice.purchaseOrder.orderNo}
+              </Link>
+            )}
           </div>
         </div>
 

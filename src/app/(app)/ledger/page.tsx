@@ -25,6 +25,8 @@ import { AccountType } from "@prisma/client";
 import { formatDateTime } from "@/lib/utils";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { format } from "date-fns";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type LedgerRow = {
   id: string;
@@ -34,12 +36,16 @@ type LedgerRow = {
   runningBalance: number;
   voucherType: string;
   docNo: string;
+  docLabel?: string;
+  cleanDescription?: string;
+  lineItems?: Array<{ productNo: string; name: string; quantity: number; unit: string }>;
   date: Date | string;
   description: string;
   referenceType: string;
   referenceId: string;
   party: { id: string; name: string; type: string; phone?: string | null } | null;
   createdBy: { name: string };
+  allocations?: Array<{ amount: number; docNo: string; date?: Date | string }>;
 };
 
 type SummaryVoucherRow = {
@@ -47,6 +53,9 @@ type SummaryVoucherRow = {
   date: Date;
   dateFormatted: string;
   tranNo: string;
+  docLabel?: string;
+  cleanDescription?: string;
+  lineItems?: Array<{ productNo: string; name: string; quantity: number; unit: string }>;
   description: string;
   debit: number;
   credit: number;
@@ -55,7 +64,120 @@ type SummaryVoucherRow = {
   referenceType: string;
   referenceId: string;
   party: { id: string; name: string; type: string; phone?: string | null } | null;
+  allocations?: Array<{ amount: number; docNo: string; date?: Date | string }>;
 };
+
+function ParticularsCell({
+  docLabel,
+  description,
+  cleanDescription,
+  lineItems,
+  allocations,
+}: {
+  docLabel?: string;
+  description?: string;
+  cleanDescription?: string;
+  lineItems?: Array<{ productNo: string; name: string; quantity: number; unit: string }>;
+  allocations?: Array<{ amount: number; docNo: string; date?: Date | string }>;
+}) {
+  let items = lineItems || [];
+  if (items.length === 0 && description && description.includes("[")) {
+    const rawMatches = description.match(/\[[^\]]+\][^•,\n]+(?:\([^)]+\))?/g);
+    if (rawMatches && rawMatches.length > 0) {
+      items = rawMatches.map((m) => {
+        const pMatch = m.match(/\[(.*?)\]\s*(.*?)(?:\s*\((.*?)\))?$/);
+        return {
+          productNo: pMatch ? pMatch[1] : "",
+          name: pMatch ? pMatch[2].trim() : m,
+          quantity: 0,
+          unit: pMatch && pMatch[3] ? pMatch[3] : "",
+        };
+      });
+    }
+  }
+
+  const primaryLabel = docLabel || description || "Transaction";
+  const hasItems = items.length > 0;
+  const secondaryText = cleanDescription && cleanDescription !== description ? cleanDescription : description;
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {/* Line 1: Bold / Medium text Transaction label with document number */}
+      <div className="font-semibold text-slate-900 dark:text-slate-100 text-xs">
+        {primaryLabel}
+      </div>
+
+      {/* Line 2: Muted / Subtle text Compact item list or clean description */}
+      {hasItems ? (
+        <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+          <span>
+            {items
+              .slice(0, 2)
+              .map((it) =>
+                it.quantity > 0
+                  ? `[${it.productNo}] ${it.name} (${it.quantity} ${it.unit})`
+                  : `[${it.productNo}] ${it.name}${it.unit ? ` (${it.unit})` : ""}`
+              )
+              .join(" • ")}
+          </span>
+          {items.length > 2 && (
+            <span className="relative group/more inline-block">
+              <span className="text-[10px] font-semibold text-indigo-700 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800 px-1.5 py-0.2 rounded cursor-pointer hover:bg-indigo-100">
+                +{items.length - 2} more
+              </span>
+              <div className="hidden group-hover/more:block absolute left-0 bottom-full mb-1 z-30 min-w-[280px] p-2.5 bg-slate-900 text-white rounded-lg shadow-xl border border-slate-700 text-left text-[11px] font-sans print:hidden">
+                <div className="font-bold text-slate-200 pb-1.5 border-b border-slate-700 mb-1.5 flex items-center justify-between">
+                  <span>Line Items ({items.length})</span>
+                </div>
+                <div className="space-y-1">
+                  {items.map((it, idx) => (
+                    <div key={idx} className="text-[10px] text-slate-300 font-mono">
+                      {it.quantity > 0
+                        ? `[${it.productNo}] ${it.name} (${it.quantity} ${it.unit})`
+                        : `[${it.productNo}] ${it.name}${it.unit ? ` (${it.unit})` : ""}`}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </span>
+          )}
+        </div>
+      ) : secondaryText ? (
+        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+          {secondaryText}
+        </span>
+      ) : null}
+
+      {/* Payment allocations (if any) */}
+      {allocations && allocations.length > 0 && (
+        <div className="mt-0.5">
+          <span className="relative group inline-block">
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 px-1.5 py-0.2 rounded cursor-default print:border-none">
+              <FileText className="h-2.5 w-2.5" />
+              Settled {allocations.length} {allocations.length === 1 ? "Invoice" : "Invoices"}
+            </span>
+            <div className="hidden group-hover:block absolute left-0 bottom-full mb-1 z-30 min-w-[220px] p-2 bg-slate-900 text-white rounded-lg shadow-xl border border-slate-700 text-left text-[11px] font-sans print:hidden">
+              <div className="font-bold text-slate-200 pb-1 border-b border-slate-700 mb-1 flex items-center justify-between">
+                <span>Settled Invoices</span>
+                <span className="text-[10px] text-slate-400">Allocated</span>
+              </div>
+              <div className="space-y-1">
+                {allocations.map((a, i) => (
+                  <div key={i} className="flex justify-between items-center text-[10px] font-mono">
+                    <span className="text-emerald-300 font-bold">{a.docNo}</span>
+                    <span className="text-slate-300">
+                      PKR {a.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function LedgerPage() {
   return (
@@ -75,6 +197,14 @@ function LedgerContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "ledger", "view", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
 
   const [entries, setEntries] = useState<LedgerRow[]>([]);
   const [totalDebit, setTotalDebit] = useState(0);
@@ -255,6 +385,7 @@ function LedgerContent() {
         debit: number;
         credit: number;
         party: LedgerRow["party"];
+        allocations?: Array<{ amount: number; docNo: string; date?: Date | string }>;
       }
     >();
 
@@ -310,11 +441,15 @@ function LedgerContent() {
           debit: Number(e.debit) || 0,
           credit: Number(e.credit) || 0,
           party: e.party,
+          allocations: e.allocations || [],
         });
       } else {
         const item = voucherMap.get(key)!;
         item.debit += Number(e.debit) || 0;
         item.credit += Number(e.credit) || 0;
+        if (e.allocations && e.allocations.length > 0) {
+          item.allocations = [...(item.allocations || []), ...e.allocations];
+        }
       }
     }
 
@@ -338,6 +473,7 @@ function LedgerContent() {
           minimumFractionDigits: 2,
           maximumFractionDigits: 2,
         })} ${drCr}`,
+        allocations: v.allocations,
       });
     }
 
@@ -786,15 +922,14 @@ function LedgerContent() {
                           <td className="py-2 px-3 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap font-bold text-slate-800 dark:text-slate-200 print:border-black print:text-black print:px-2 text-[11px]">
                             {row.tranNo}
                           </td>
-                          <td className="py-2 px-3 border-r border-slate-200/60 dark:border-slate-800 font-sans font-medium text-slate-800 dark:text-slate-200 print:border-black print:text-black print:px-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <span>{row.description}</span>
-                              {row.party && partyId === "ALL" && (
-                                <span className="text-[10px] text-slate-400 font-normal">
-                                  ({row.party.name})
-                                </span>
-                              )}
-                            </div>
+                          <td className="py-2 px-3 border-r border-slate-200/60 dark:border-slate-800 font-sans print:border-black print:text-black print:px-2">
+                            <ParticularsCell
+                              docLabel={row.docLabel || row.tranNo}
+                              description={row.description}
+                              cleanDescription={row.cleanDescription}
+                              lineItems={row.lineItems}
+                              allocations={row.allocations}
+                            />
                           </td>
                           <td className="py-2 px-3 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-emerald-700 dark:text-emerald-400 print:border-black print:text-black print:px-2">
                             {row.debit > 0
@@ -933,26 +1068,13 @@ function LedgerContent() {
                           {formatDateTime(entry.date)}
                         </td>
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-sans">
-                          <div className="flex flex-col">
-                            <div className="flex items-center gap-1.5">
-                              {entry.party ? (
-                                <span className="font-semibold text-emerald-800 dark:text-emerald-400">
-                                  {entry.party.name}{" "}
-                                  <span className="text-[10px] font-normal text-slate-500">[{entry.party.type}]</span>
-                                </span>
-                              ) : (
-                                <span className="text-slate-600 dark:text-slate-300 font-medium">General Account</span>
-                              )}
-                              <span className="text-[10px] px-1 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">
-                                {entry.accountType}
-                              </span>
-                            </div>
-                            {entry.description && (
-                              <span className="text-[11px] text-slate-600 dark:text-slate-400">
-                                {entry.description}
-                              </span>
-                            )}
-                          </div>
+                          <ParticularsCell
+                            docLabel={entry.docLabel}
+                            description={entry.description}
+                            cleanDescription={entry.cleanDescription}
+                            lineItems={entry.lineItems}
+                            allocations={entry.allocations}
+                          />
                         </td>
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-700 dark:text-slate-300 font-mono text-[11px]">
                           <span className="font-medium text-slate-800 dark:text-slate-200">

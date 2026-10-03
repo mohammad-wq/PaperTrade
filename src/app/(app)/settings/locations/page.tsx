@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { canPerformAction } from "@/lib/auth/permissions";
 import {
   MapPin,
   Plus,
@@ -71,11 +73,19 @@ type LotItem = {
 };
 
 export default function LocationsSettingsPage() {
+  const router = useRouter();
   const { data: session } = useSession();
   const confirm = useConfirm();
   const isOwner = session?.user?.role === "OWNER";
   const isManager = session?.user?.role === "MANAGER";
   const canDeactivateLots = isOwner || isManager;
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "settings", "view", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
 
   const [activeTab, setActiveTab] = useState<"LOCATIONS" | "LOTS">("LOCATIONS");
   const [locations, setLocations] = useState<LocationItem[]>([]);

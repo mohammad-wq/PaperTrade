@@ -7,8 +7,20 @@ import { format } from "date-fns";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { verifyDocShareToken } from "@/lib/tokens";
 import { formatSequenceDisplay } from "@/lib/financial-year";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
+
+const DOC_TYPE_TO_MODULE: Record<string, string> = {
+  "sale-invoice": "sales",
+  "purchase-order": "purchase-orders",
+  "delivery-order": "delivery-orders",
+  "purchase-invoice": "purchases",
+  "sale-return": "returns",
+  "purchase-return": "returns",
+  "payment-receipt": "payments",
+  "payment": "payments",
+};
 
 const toNumber = (value: unknown, fallback = 0) => {
   const numeric = typeof value === "number" ? value : Number(value ?? 0);
@@ -47,8 +59,22 @@ export async function GET(
   const isValidShareToken = token ? verifyDocShareToken(type, id, token) : false;
 
   const session = await getServerSession(authOptions);
-  if (!session?.user && !isValidShareToken) {
-    return new NextResponse("Unauthorized", { status: 401 });
+  if (!isValidShareToken) {
+    if (!session?.user) {
+      return new NextResponse("Unauthorized", { status: 401 });
+    }
+    const moduleKey = DOC_TYPE_TO_MODULE[type];
+    if (
+      moduleKey &&
+      !canPerformAction(
+        session.user.role,
+        moduleKey,
+        "view",
+        (session.user as any).permissions,
+      )
+    ) {
+      return new NextResponse("Forbidden", { status: 403 });
+    }
   }
 
   // Rate limit PDF generation to mitigate denial-of-service / scraping
@@ -167,7 +193,8 @@ export async function GET(
         partyAddress: po.supplier?.address || null,
         partyPhone: po.supplier?.phone || null,
         locationName: po.location?.name || "Warehouse",
-        totalAmount,
+        totalAmount: po.includePricing ? totalAmount : null,
+        hidePricing: !po.includePricing,
         notes: po.notes,
         signatures: { leftLabel: "Ordered By", rightLabel: "Approved By" },
         items: po.items.map((item) => ({
@@ -175,8 +202,8 @@ export async function GET(
           specs: formatSpecs(item.product),
           quantity: toItemNumber(item.quantity),
           unit: item.product?.unit || "Unit",
-          unitPrice: toItemNumber(item.unitCost),
-          lineTotal: toItemNumber(item.lineTotal, toItemNumber(item.quantity) * toItemNumber(item.unitCost)),
+          unitPrice: po.includePricing ? toItemNumber(item.unitCost) : null,
+          lineTotal: po.includePricing ? toItemNumber(item.lineTotal, toItemNumber(item.quantity) * toItemNumber(item.unitCost)) : null,
         })),
       });
     } else if (type === "delivery-order") {

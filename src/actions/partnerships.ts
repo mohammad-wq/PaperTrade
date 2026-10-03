@@ -10,10 +10,18 @@ import { StockMovementType, InvoiceStatus, AccountType } from "@prisma/client";
 import { getStockOnHand } from "@/lib/stock";
 import { generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
+import { canPerformAction } from "@/lib/auth/permissions";
+import { createPaymentAction } from "@/actions/payments";
 
 export async function listPartnersAction() {
   return runAction("partnerships.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "parties", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view partners.");
+    }
     // Return all parties marked as partner or beneficiary
     const partners = await prisma.party.findMany({
       where: {
@@ -38,20 +46,42 @@ export async function listPartnersAction() {
   });
 }
 
+const adjustSharedWarehouseStockItemSchema = z.object({
+  productId: z.string().min(1, "Product is required"),
+  warehouseLotId: z.string().optional().nullable(),
+  quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
+  direction: z.enum(["OUT", "IN"]).default("OUT"),
+  reason: z.string().trim().optional().nullable(),
+  notes: z.string().trim().optional().nullable(),
+});
+
 const adjustSharedWarehouseStockSchema = z.object({
   partnerId: z.string().min(1, "Partner ID is required"),
   locationId: z.string().min(1, "Warehouse location is required"),
-  productId: z.string().min(1, "Product is required"),
-  quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
-  direction: z.enum(["OUT", "IN"]).default("OUT"),
-  reason: z.string().trim().min(1, "Reason is required"),
+  reason: z.string().trim().optional().nullable(),
   notes: z.string().trim().optional().nullable(),
   date: z.coerce.date().default(() => new Date()),
-});
+  // Single adjustment fields for backward compatibility
+  productId: z.string().optional().nullable(),
+  warehouseLotId: z.string().optional().nullable(),
+  quantity: z.coerce.number().optional().nullable(),
+  direction: z.enum(["OUT", "IN"]).optional().nullable(),
+  // Bulk adjustment items
+  items: z.array(adjustSharedWarehouseStockItemSchema).optional().nullable(),
+}).refine(
+  (data) => (data.items && data.items.length > 0) || (data.productId && data.quantity && data.quantity > 0),
+  { message: "At least one product line item or adjustment item is required", path: ["items"] }
+);
 
 export async function adjustSharedWarehouseStockAction(raw: unknown) {
   return runAction("partnerships.adjustSharedStock", async () => {
     const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "update", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to adjust shared warehouse stock.");
+    }
     const input = parseInput(adjustSharedWarehouseStockSchema, raw);
 
     const partner = await prisma.party.findUnique({
@@ -66,52 +96,113 @@ export async function adjustSharedWarehouseStockAction(raw: unknown) {
     });
     if (!location) throw userError("Location not found.");
 
-    const product = await txProduct(input.productId);
-    if (!product) throw userError("Product not found.");
+    // Normalize items
+    const itemsToProcess: Array<{
+      productId: string;
+      warehouseLotId?: string | null;
+      quantity: number;
+      direction: "OUT" | "IN";
+      reason: string;
+      notes?: string | null;
+    }> = [];
 
-    // Check available stock if decremented
-    if (input.direction === "OUT") {
-      const current = await getStockOnHand(input.productId, input.locationId);
-      if (current < input.quantity) {
-        throw userError(
-          `Insufficient stock at ${location.name}. Available: ${current} ${product.unit}, Requested: ${input.quantity}`
-        );
+    if (input.items && input.items.length > 0) {
+      for (const it of input.items) {
+        itemsToProcess.push({
+          productId: it.productId,
+          warehouseLotId: it.warehouseLotId || undefined,
+          quantity: it.quantity,
+          direction: it.direction,
+          reason: it.reason?.trim() || input.reason?.trim() || "Warehouse stock adjustment",
+          notes: it.notes?.trim() || input.notes?.trim() || undefined,
+        });
       }
+    } else if (input.productId && input.quantity) {
+      itemsToProcess.push({
+        productId: input.productId,
+        warehouseLotId: input.warehouseLotId || undefined,
+        quantity: input.quantity,
+        direction: input.direction || "OUT",
+        reason: input.reason?.trim() || "Direct adjustment",
+        notes: input.notes?.trim() || undefined,
+      });
     }
 
-    const refNo = generateDocumentNumber("ADJ-SH");
-    const delta = input.direction === "IN" ? input.quantity : -input.quantity;
-    const desc = `Direct adjustment at ${location.name} (${input.direction}): ${input.reason}${input.notes ? ` — ${input.notes}` : ""} [Partner: ${partner.name}]`;
+    const createdMovements: string[] = [];
 
-    const movement = await prisma.stockMovement.create({
-      data: {
-        productId: input.productId,
-        locationId: input.locationId,
-        type: StockMovementType.ADJUSTMENT,
-        quantity: delta,
-        referenceType: "PARTNER_ADJUSTMENT",
-        referenceId: refNo,
-        createdById: session.user.id,
-        notes: desc,
-        createdAt: input.date,
-      },
+    await prisma.$transaction(async (tx) => {
+      for (const item of itemsToProcess) {
+        const product = await tx.product.findUnique({
+          where: { id: item.productId },
+          select: { id: true, name: true, unit: true },
+        });
+        if (!product) throw userError(`Product with ID ${item.productId} not found.`);
+
+        let lotRecord = null;
+        if (item.warehouseLotId) {
+          lotRecord = await tx.warehouseLot.findUnique({
+            where: { id: item.warehouseLotId },
+            select: { id: true, lotNumber: true, locationId: true },
+          });
+        }
+
+        // Check available stock if decremented
+        if (item.direction === "OUT") {
+          const current = await getStockOnHand(item.productId, input.locationId, undefined, item.warehouseLotId || undefined);
+          if (current < item.quantity) {
+            const lotDesc = lotRecord ? ` (Lot ${lotRecord.lotNumber})` : "";
+            throw userError(
+              `Insufficient stock for ${product.name}${lotDesc} at ${location.name}. Available: ${current} ${product.unit}, Requested: ${item.quantity}`
+            );
+          }
+        }
+
+        const delta = item.direction === "IN" ? item.quantity : -item.quantity;
+        const refNo = generateDocumentNumber(item.direction === "IN" ? "ADJ-IN" : "ADJ-OUT");
+        const lotInfo = lotRecord ? ` [Lot: ${lotRecord.lotNumber}]` : "";
+        const desc = `Direct adjustment at ${location.name} (${item.direction}${lotInfo}): ${item.reason}${item.notes ? ` — ${item.notes}` : ""} [Partner: ${partner.name}]`;
+
+        const movement = await tx.stockMovement.create({
+          data: {
+            productId: item.productId,
+            locationId: input.locationId,
+            warehouseLotId: item.warehouseLotId || null,
+            type: StockMovementType.ADJUSTMENT,
+            quantity: delta,
+            referenceType: "PARTNER_ADJUSTMENT",
+            referenceId: refNo,
+            createdById: session.user.id,
+            notes: desc,
+            createdAt: input.date ?? new Date(),
+          },
+        });
+
+        createdMovements.push(movement.id);
+      }
     });
 
     emitRealtimeEvent(["inventory", "stock-movements", "dashboard"], "create", "StockMovement", {
-      id: movement.id,
+      count: createdMovements.length,
+      partnerId: partner.id,
     });
 
     return {
       success: true,
-      movementId: movement.id,
-      availableStock: await getStockOnHand(input.productId, input.locationId),
+      movementCount: createdMovements.length,
+      movementIds: createdMovements,
     };
   });
 }
 
 export async function deleteSharedWarehouseAdjustmentAction(raw: unknown) {
   return runAction("partnerships.deleteAdjustment", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "delete", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "delete", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to delete shared warehouse adjustments.");
+    }
     const { id } = parseInput(z.object({ id: z.string().min(1) }), raw);
 
     const movement = await prisma.stockMovement.findUnique({
@@ -173,6 +264,12 @@ const partnershipPurchaseIntakeSchema = z
 export async function partnershipPurchaseIntakeAction(raw: unknown) {
   return runAction("partnerships.purchaseIntake", async () => {
     const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "create", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "purchases", "create", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to record partnership stock intake.");
+    }
     const input = parseInput(partnershipPurchaseIntakeSchema, raw);
 
     const partner = await prisma.party.findUnique({
@@ -377,6 +474,12 @@ const pullPartnershipStockToShopSchema = z.object({
 export async function pullPartnershipStockToShopAction(raw: unknown) {
   return runAction("partnerships.pullToShop", async () => {
     const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "update", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to pull partnership stock to shop.");
+    }
     const input = parseInput(pullPartnershipStockToShopSchema, raw);
 
     const partner = await prisma.party.findUnique({
@@ -679,7 +782,13 @@ export async function getPartnershipHubDataAction(
   filters?: { startDate?: string; endDate?: string; lotId?: string }
 ) {
   return runAction("partnerships.hubData", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view partnership hub data.");
+    }
 
     const partner = await prisma.party.findUnique({
       where: { id: partnerId },
@@ -753,6 +862,27 @@ export async function getPartnershipHubDataAction(
             location: true,
           },
         },
+      },
+      orderBy: { date: "desc" },
+    });
+
+    const purchaseOrders = await prisma.purchaseOrder.findMany({
+      where: {
+        OR: [
+          { partnershipId: partner.id },
+          { supplierId: partner.id, isPartnership: true },
+        ],
+      },
+      include: {
+        location: { select: { id: true, name: true } },
+        items: {
+          include: {
+            product: { select: { id: true, productNo: true, name: true, unit: true } },
+            warehouseLot: { select: { id: true, lotNumber: true } },
+            destinationLocation: { select: { id: true, name: true } },
+          },
+        },
+        invoices: { select: { id: true, invoiceNo: true, status: true, date: true, totalAmount: true } },
       },
       orderBy: { date: "desc" },
     });
@@ -1402,10 +1532,69 @@ export async function getPartnershipHubDataAction(
         unitCost: l.unitCost != null ? Number(l.unitCost) : 0,
       })),
       recentAdjustments,
+      purchaseOrders: purchaseOrders.map((po) => ({
+        id: po.id,
+        orderNo: po.orderNo,
+        date: po.date,
+        status: po.status,
+        includePricing: po.includePricing,
+        locationName: po.location?.name || "Warehouse",
+        items: po.items.map((it) => ({
+          id: it.id,
+          productNo: it.product.productNo,
+          productName: it.product.name,
+          quantity: Number(it.quantity),
+          unit: it.product.unit,
+          unitCost: it.unitCost != null ? Number(it.unitCost) : null,
+          destinationLocationName: it.destinationLocation?.name || null,
+          lotNumber: it.warehouseLot?.lotNumber || null,
+        })),
+        invoices: po.invoices.map((inv) => ({
+          id: inv.id,
+          invoiceNo: inv.invoiceNo,
+          status: inv.status,
+          date: inv.date,
+          totalAmount: Number(inv.totalAmount),
+        })),
+      })),
+      purchaseInvoices: purchaseInvoices.map((inv) => ({
+        id: inv.id,
+        invoiceNo: inv.invoiceNo,
+        date: inv.date,
+        status: inv.status,
+        totalAmount: Number(inv.totalAmount),
+        paidAmount: Number(inv.paidAmount ?? inv.amountPaid ?? 0),
+        balanceAmount: Number(inv.balanceAmount ?? 0),
+        purchaseOrderId: inv.purchaseOrderId,
+        items: inv.items.map((it) => ({
+          id: it.id,
+          productNo: it.product.productNo,
+          productName: it.product.name,
+          quantity: Number(it.quantity),
+          unitCost: Number(it.unitCost),
+          lineTotal: Number(it.lineTotal),
+          lotNumber: it.warehouseLot?.lotNumber || null,
+        })),
+      })),
       locations: {
         sharedWarehouse: sharedWarehouse ? { id: sharedWarehouse.id, name: sharedWarehouse.name } : null,
         shop: shopLocation ? { id: shopLocation.id, name: shopLocation.name } : null,
       },
     };
+  });
+}
+
+export const recordPartnershipIntakeAction = partnershipPurchaseIntakeAction;
+
+export async function recordPartnerSettlementAction(raw: unknown) {
+  return runAction("partnerships.recordSettlement", async () => {
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "update", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "payments", "create", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to record partner settlements.");
+    }
+    return createPaymentAction(raw);
   });
 }

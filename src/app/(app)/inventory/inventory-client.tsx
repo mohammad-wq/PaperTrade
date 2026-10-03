@@ -44,6 +44,8 @@ import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useRealtime } from "@/components/providers/realtime-provider";
 import { cn } from "@/lib/utils";
 import { handleFormEnterKeyDown } from "@/lib/keyboard-nav";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type InventoryRow = {
   productId: string;
@@ -95,6 +97,8 @@ export default function InventoryClient({
   initialLocations?: Array<{ id: string; name: string; type: "SHOP" | "WAREHOUSE" }>;
 }) {
   const router = useRouter();
+  const { data: session } = useSession();
+  const canUpdate = !session?.user ? false : canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions);
   const { broadcastLocalChange } = useRealtime();
   const [rows, setRows] = useState<InventoryRow[]>(initialInventory || []);
   const [allLots, setAllLots] = useState<LotItem[]>(initialLots || []);
@@ -401,10 +405,17 @@ export default function InventoryClient({
     [allLots, selectedLocationId]
   );
 
-  const nonZeroCount = useMemo(() => rows.filter((r) => r.available !== 0).length, [rows]);
-  const zeroCount = useMemo(() => rows.filter((r) => r.available === 0).length, [rows]);
-  const regularCount = useMemo(() => rows.filter((r) => r.stockCategory !== "BENEFICIARY").length, [rows]);
-  const beneficiaryCount = useMemo(() => rows.filter((r) => r.stockCategory === "BENEFICIARY").length, [rows]);
+  const locationScopedRows = useMemo(() => {
+    return rows.filter((row) => {
+      if (selectedLocationId !== "all" && row.locationId !== selectedLocationId) return false;
+      return true;
+    });
+  }, [rows, selectedLocationId]);
+
+  const nonZeroCount = useMemo(() => locationScopedRows.filter((r) => r.available !== 0).length, [locationScopedRows]);
+  const zeroCount = useMemo(() => locationScopedRows.filter((r) => r.available === 0).length, [locationScopedRows]);
+  const regularCount = useMemo(() => locationScopedRows.filter((r) => r.stockCategory !== "BENEFICIARY").length, [locationScopedRows]);
+  const beneficiaryCount = useMemo(() => locationScopedRows.filter((r) => r.stockCategory === "BENEFICIARY").length, [locationScopedRows]);
 
   const filteredRows = useMemo(() => {
     const search = debouncedQuery.trim().toLowerCase();
@@ -456,12 +467,12 @@ export default function InventoryClient({
   }, [rows, debouncedQuery, selectedLocationId, selectedLocationLots, selectedLotId, stockFilter, partnerStockFilter, activeTab]);
 
   const lowStockCount = useMemo(
-    () => rows.filter((r) => {
+    () => locationScopedRows.filter((r) => {
       if (r.reorderLevel === null) return false;
       const availableInPkts = r.unit === "REAM" ? r.available * 5 : r.unit === "SHEET" ? r.available / 100 : r.available;
       return availableInPkts <= r.reorderLevel;
     }).length,
-    [rows],
+    [locationScopedRows],
   );
 
   // Calculate total inventory weight in kg and tonnes
@@ -1004,63 +1015,67 @@ export default function InventoryClient({
           </div>
 
           {/* Action Buttons */}
-          <Button
-            type="button"
-            onClick={() => {
-              if (rows.length > 0 && !productId) {
-                setProductId(rows[0].productId);
-                setLocationId(rows[0].locationId);
-              }
-              setShowAdjustModal(true);
-            }}
-            className="h-8 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold shadow-xs px-2.5"
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            + Adjust
-          </Button>
+          {canUpdate && (
+            <>
+              <Button
+                type="button"
+                onClick={() => {
+                  if (rows.length > 0 && !productId) {
+                    setProductId(rows[0].productId);
+                    setLocationId(rows[0].locationId);
+                  }
+                  setShowAdjustModal(true);
+                }}
+                className="h-8 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold shadow-xs px-2.5"
+              >
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                + Adjust
+              </Button>
 
-          <Button
-            type="button"
-            onClick={() => {
-              if (rows.length > 0 && !transferProductId) {
-                setTransferProductId(rows[0].productId);
-                setFromLocationId(rows[0].locationId);
-                const other = locations.find((l) => l.id !== rows[0].locationId) || locations[0];
-                if (other) setToLocationId(other.id);
-              }
-              setShowTransferModal(true);
-            }}
-            variant="outline"
-            className="h-8 border-amber-300 text-amber-900 hover:bg-amber-50 text-xs font-semibold shadow-xs px-2.5"
-          >
-            <ArrowRightLeft className="mr-1 h-3.5 w-3.5 text-amber-700" />
-            ⇄ Transfer
-          </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  if (rows.length > 0 && !transferProductId) {
+                    setTransferProductId(rows[0].productId);
+                    setFromLocationId(rows[0].locationId);
+                    const other = locations.find((l) => l.id !== rows[0].locationId) || locations[0];
+                    if (other) setToLocationId(other.id);
+                  }
+                  setShowTransferModal(true);
+                }}
+                variant="outline"
+                className="h-8 border-amber-300 text-amber-900 hover:bg-amber-50 text-xs font-semibold shadow-xs px-2.5"
+              >
+                <ArrowRightLeft className="mr-1 h-3.5 w-3.5 text-amber-700" />
+                ⇄ Transfer
+              </Button>
 
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              if (!bulkAdjLocationId && locations.length > 0) setBulkAdjLocationId(locations[0].id);
-              setShowBulkAdjustModal(true);
-            }}
-            className="h-8 text-xs font-semibold border-slate-300 hover:bg-slate-50 px-2"
-          >
-            Bulk Adjust
-          </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  if (!bulkAdjLocationId && locations.length > 0) setBulkAdjLocationId(locations[0].id);
+                  setShowBulkAdjustModal(true);
+                }}
+                className="h-8 text-xs font-semibold border-slate-300 hover:bg-slate-50 px-2"
+              >
+                Bulk Adjust
+              </Button>
 
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              if (!bulkTrFromLocationId && locations.length > 0) setBulkTrFromLocationId(locations[0].id);
-              if (!bulkTrToLocationId && locations.length > 1) setBulkTrToLocationId(locations[1].id);
-              setShowBulkTransferModal(true);
-            }}
-            className="h-8 text-xs font-semibold border-slate-300 hover:bg-slate-50 px-2"
-          >
-            Bulk Transfer
-          </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  if (!bulkTrFromLocationId && locations.length > 0) setBulkTrFromLocationId(locations[0].id);
+                  if (!bulkTrToLocationId && locations.length > 1) setBulkTrToLocationId(locations[1].id);
+                  setShowBulkTransferModal(true);
+                }}
+                className="h-8 text-xs font-semibold border-slate-300 hover:bg-slate-50 px-2"
+              >
+                Bulk Transfer
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -1143,7 +1158,7 @@ export default function InventoryClient({
             onChange={(e) => setPartnerStockFilter(e.target.value as "ALL" | "REGULAR" | "BENEFICIARY")}
             className="h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200"
           >
-            <option value="ALL">All Stock ({rows.length})</option>
+            <option value="ALL">All Stock ({locationScopedRows.length})</option>
             <option value="REGULAR">Regular Stock Only ({regularCount})</option>
             <option value="BENEFICIARY">Beneficiary Stock Only ({beneficiaryCount})</option>
           </select>
@@ -1182,7 +1197,7 @@ export default function InventoryClient({
                   : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
               }`}
             >
-              All Items ({rows.length})
+              All Items ({locationScopedRows.length})
             </button>
           </div>
 
@@ -1429,26 +1444,30 @@ export default function InventoryClient({
                         </td>
                         <td className="py-1.5 px-2 whitespace-nowrap text-center print:hidden">
                           <div className="flex items-center justify-center gap-1">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => openAdjustForRow(row)}
-                              className="h-6 px-2 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 hover:text-emerald-900"
-                              title="Stock Adjustment"
-                            >
-                              + Adjust
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => openTransferForRow(row)}
-                              className="h-6 px-2 text-[11px] font-semibold text-amber-700 hover:bg-amber-50 hover:text-amber-900"
-                              title="Transfer to other location"
-                            >
-                              ⇄ Transfer
-                            </Button>
+                            {canUpdate && (
+                              <>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => openAdjustForRow(row)}
+                                  className="h-6 px-2 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 hover:text-emerald-900"
+                                  title="Stock Adjustment"
+                                >
+                                  + Adjust
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => openTransferForRow(row)}
+                                  className="h-6 px-2 text-[11px] font-semibold text-amber-700 hover:bg-amber-50 hover:text-amber-900"
+                                  title="Transfer to other location"
+                                >
+                                  ⇄ Transfer
+                                </Button>
+                              </>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1571,24 +1590,28 @@ export default function InventoryClient({
                     Reorder: <strong>{row.reorderLevel ?? "None"}</strong>
                   </span>
                   <div className="flex items-center gap-1">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => openAdjustForRow(row)}
-                      className="h-6 px-2 text-[11px] text-emerald-700 hover:bg-emerald-50"
-                    >
-                      + Adjust
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => openTransferForRow(row)}
-                      className="h-6 px-2 text-[11px] text-amber-700 hover:bg-amber-50"
-                    >
-                      ⇄ Transfer
-                    </Button>
+                    {canUpdate && (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => openAdjustForRow(row)}
+                          className="h-6 px-2 text-[11px] text-emerald-700 hover:bg-emerald-50"
+                        >
+                          + Adjust
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => openTransferForRow(row)}
+                          className="h-6 px-2 text-[11px] text-amber-700 hover:bg-amber-50"
+                        >
+                          ⇄ Transfer
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

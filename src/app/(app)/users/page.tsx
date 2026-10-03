@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   ShieldAlert,
   Plus,
@@ -70,7 +72,7 @@ const MODULE_CATEGORIES = [
   {
     name: "Inventory & Warehouses",
     description: "Real-time stock, tonnage tracking, and godown storage fees",
-    keys: ["inventory", "stock-movements", "storage-charges"],
+    keys: ["inventory", "partnerships", "stock-movements", "storage-charges"],
   },
   {
     name: "Finance & Accounting",
@@ -253,7 +255,16 @@ function CategorizedPermissionEditor({
 }
 
 export default function UsersPage() {
+  const router = useRouter();
   const confirm = useConfirm();
+  const { data: session } = useSession();
+
+  useEffect(() => {
+    if (session?.user && session.user.role !== Role.OWNER) {
+      router.replace("/dashboard");
+    }
+  }, [session, router]);
+
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -273,6 +284,9 @@ export default function UsersPage() {
   const [savingPermissions, setSavingPermissions] = useState(false);
 
   async function loadUsers() {
+    if (session?.user && session.user.role !== Role.OWNER) {
+      return;
+    }
     setLoading(true);
     try {
       const res = await listUsersAction();

@@ -4,6 +4,18 @@ import { authOptions } from "@/lib/auth/options";
 import { prisma } from "@/lib/db";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { generateDocShareToken } from "@/lib/tokens";
+import { canPerformAction } from "@/lib/auth/permissions";
+
+const DOC_TYPE_TO_MODULE: Record<string, string> = {
+  "sale-invoice": "sales",
+  "purchase-order": "purchase-orders",
+  "delivery-order": "delivery-orders",
+  "purchase-invoice": "purchases",
+  "sale-return": "returns",
+  "purchase-return": "returns",
+  "payment-receipt": "payments",
+  "payment": "payments",
+};
 
 export async function GET(request: NextRequest) {
   // 1. Enforce authentication
@@ -28,6 +40,13 @@ export async function GET(request: NextRequest) {
 
   if (!type || !id) {
     return NextResponse.json({ success: false, error: "Missing type or id" }, { status: 400 });
+  }
+
+  const moduleKey = DOC_TYPE_TO_MODULE[type];
+  const role = (session.user as any).role;
+  const permissions = (session.user as any).permissions;
+  if (moduleKey && !canPerformAction(role, moduleKey, "view", permissions)) {
+    return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
   }
 
   try {

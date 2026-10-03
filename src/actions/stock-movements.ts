@@ -4,6 +4,8 @@ import { runAction } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { StockMovementType } from "@prisma/client";
+import { userError } from "@/lib/errors";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 export async function listStockMovementsAction(filters?: {
   productId?: string;
@@ -13,7 +15,13 @@ export async function listStockMovementsAction(filters?: {
   endDate?: string;
 }) {
   return runAction("stockMovements.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "stock-movements", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view stock movements.");
+    }
 
     const where: Record<string, unknown> = {};
 

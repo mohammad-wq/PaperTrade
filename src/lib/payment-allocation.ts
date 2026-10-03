@@ -254,3 +254,72 @@ export async function reversePaymentAllocations(
     where: { paymentId },
   });
 }
+
+/**
+ * Auto-consume unallocated advance payment credits for a party when a new invoice is created/posted.
+ */
+export async function consumeAdvanceCreditsForInvoice(
+  tx: Prisma.TransactionClient,
+  params: {
+    invoiceId: string;
+    partyId: string;
+    direction: "IN" | "OUT";
+    totalAmount: number;
+    initialPaid: number;
+  },
+): Promise<{
+  paidAmount: number;
+  balanceDue: number;
+  paymentStatus: "PAID" | "PARTIAL" | "UNPAID";
+}> {
+  let currentPaid = Math.max(0, params.initialPaid);
+  let remainingDue = Math.max(0, params.totalAmount - currentPaid);
+
+  if (remainingDue <= 0.001) {
+    return { paidAmount: params.totalAmount, balanceDue: 0, paymentStatus: "PAID" };
+  }
+
+  // Find all unallocated or partially allocated payments for this party in the matching direction
+  const payments = await tx.payment.findMany({
+    where: {
+      partyId: params.partyId,
+      direction: params.direction,
+    },
+    orderBy: [{ date: "asc" }, { createdAt: "asc" }],
+    include: {
+      allocations: true,
+    },
+  });
+
+  for (const payment of payments) {
+    if (remainingDue <= 0.001) break;
+    const paymentTotal = Number(payment.amount);
+    const allocatedSum = payment.allocations.reduce((sum, a) => sum + Number(a.amount), 0);
+    const availableCredit = Math.max(0, paymentTotal - allocatedSum);
+
+    if (availableCredit > 0.001) {
+      const allocateNow = Math.min(availableCredit, remainingDue);
+      await tx.invoicePaymentAllocation.create({
+        data: {
+          paymentId: payment.id,
+          saleInvoiceId: params.direction === "IN" ? params.invoiceId : null,
+          purchaseInvoiceId: params.direction === "OUT" ? params.invoiceId : null,
+          amount: allocateNow,
+        },
+      });
+
+      currentPaid += allocateNow;
+      remainingDue = Math.max(0, params.totalAmount - currentPaid);
+    }
+  }
+
+  const finalDue = Math.max(0, params.totalAmount - currentPaid);
+  const finalStatus: "PAID" | "PARTIAL" | "UNPAID" =
+    finalDue <= 0.001 ? "PAID" : currentPaid > 0.001 ? "PARTIAL" : "UNPAID";
+
+  return {
+    paidAmount: currentPaid,
+    balanceDue: finalDue,
+    paymentStatus: finalStatus,
+  };
+}

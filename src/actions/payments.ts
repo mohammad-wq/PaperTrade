@@ -82,7 +82,10 @@ export async function previewPaymentAllocationAction(params: {
   manualAllocations?: Array<{ invoiceId: string; amount: number }>;
 }) {
   return runAction("payments.previewAllocation", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "payments", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view payment allocations.");
+    }
     if (!params.partyId) {
       return { allocations: [], totalAllocated: 0, unallocatedCredit: params.amount || 0 };
     }
@@ -673,3 +676,7 @@ export async function createPaymentAction(raw: unknown) {
     return result;
   });
 }
+
+export const createPaymentVoucherAction = createPaymentAction;
+export const deletePaymentVoucherAction = deletePaymentAction;
+export const voidPaymentVoucherAction = deletePaymentAction;

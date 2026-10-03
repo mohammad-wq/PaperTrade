@@ -24,7 +24,17 @@ const deletePartySchema = z.object({ id: z.string().min(1, "Party is required") 
 
 export async function listPartiesAction() {
   return runAction("parties.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "parties", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "sales", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "purchases", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "payments", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "partnerships", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "ledger", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view parties.");
+    }
     const parties = await prisma.party.findMany({
       where: { deletedAt: null },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
@@ -56,7 +66,13 @@ export async function listPartiesAction() {
 
 export async function getPartyDetailsAction(partyId: string, filterMode: "REGULAR" | "PARTNERSHIP" | "ALL" = "REGULAR") {
   return runAction("parties.getDetails", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "parties", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "ledger", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view party details.");
+    }
     const party = await prisma.party.findUnique({
       where: { id: partyId },
     });
@@ -149,7 +165,16 @@ export async function getPartyDetailsAction(partyId: string, filterMode: "REGULA
 
 export async function listInventoryAction() {
   return runAction("inventory.list", async () => {
-    await requireSession();
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "inventory", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "sales", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "purchases", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "delivery-orders", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "partnerships", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view inventory.");
+    }
     const [products, locations, rawMovements] = await Promise.all([
       prisma.product.findMany({
         where: { deletedAt: null, isActive: true },

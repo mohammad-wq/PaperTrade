@@ -24,6 +24,9 @@ import { format } from "date-fns";
 import { handleFormKeyDown } from "@/lib/keyboard-nav";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { canPerformAction } from "@/lib/auth/permissions";
 
 type ExpenseRow = {
   id: string;
@@ -50,7 +53,18 @@ const CATEGORY_LABELS: Record<ExpenseCategory, string> = {
 };
 
 export default function ExpensesPage() {
+  const router = useRouter();
   const confirm = useConfirm();
+  const { data: session } = useSession();
+  const canView = !session?.user ? true : canPerformAction(session.user.role, "expenses", "view", (session.user as any).permissions);
+  const canCreate = !session?.user ? false : canPerformAction(session.user.role, "expenses", "create", (session.user as any).permissions);
+
+  useEffect(() => {
+    if (session?.user && !canView) {
+      router.replace("/dashboard");
+    }
+  }, [session, canView, router]);
+
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -60,7 +74,7 @@ export default function ExpensesPage() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "F2" || e.key === "Insert") {
+      if ((e.key === "F2" || e.key === "Insert") && canCreate) {
         e.preventDefault();
         setIsDialogOpen(true);
       } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
@@ -70,7 +84,7 @@ export default function ExpensesPage() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [canCreate]);
 
   // Form State
   const [category, setCategory] = useState<ExpenseCategory>(ExpenseCategory.OTHER);
@@ -217,13 +231,15 @@ export default function ExpensesPage() {
             </span>
           </div>
 
-          <Button
-            onClick={() => setIsDialogOpen(true)}
-            className="h-8 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold shadow-xs px-3"
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            Record Expense <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
-          </Button>
+          {canCreate && (
+            <Button
+              onClick={() => setIsDialogOpen(true)}
+              className="h-8 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold shadow-xs px-3"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              Record Expense <span className="ml-1.5 text-[10px] opacity-75 font-mono">[F2]</span>
+            </Button>
+          )}
         </div>
       </div>
 
