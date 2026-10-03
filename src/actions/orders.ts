@@ -170,7 +170,7 @@ export async function listPurchaseOrdersAction() {
       orderBy: { date: "desc" },
       include: {
         financialYear: { select: { id: true, label: true, isActive: true } },
-        supplier: { select: { id: true, name: true, phone: true } },
+        supplier: { select: { id: true, name: true, phone: true, isPartner: true, isBeneficiary: true } },
         location: { select: { id: true, name: true } },
         items: {
           include: {

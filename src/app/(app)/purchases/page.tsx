@@ -51,6 +51,8 @@ type PurchaseInvoiceRow = {
   amountPaid: number;
   balanceDue: number;
   freightCharges?: number;
+  isPartnership?: boolean;
+  partnershipId?: string | null;
   supplier: { id: string; name: string; phone: string | null };
   location: { id: string; name: string };
   purchaseOrder?: { id: string; orderNo: string } | null;
@@ -166,6 +168,8 @@ export default function PurchasesPage() {
   const [supplierId, setSupplierId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [purchaseOrderId, setPurchaseOrderId] = useState("");
+  const [isPartnership, setIsPartnership] = useState(false);
+  const [partnershipId, setPartnershipId] = useState("");
   const [invoiceDate, setInvoiceDate] = useState(getLocalDateTimeInputValue());
   const [notes, setNotes] = useState("");
   const [amountPaid, setAmountPaid] = useState<string>("0");
@@ -216,6 +220,10 @@ export default function PurchasesPage() {
     if (paramSupplier) {
       setSupplierId(paramSupplier);
       setSupplierType("REGISTERED");
+      if (searchParams.get("partnerId")) {
+        setIsPartnership(true);
+        setPartnershipId(searchParams.get("partnerId") || "");
+      }
       setIsDialogOpen(true);
     }
     if (searchParams.get("fromInvoice") === "1") {
@@ -250,6 +258,8 @@ export default function PurchasesPage() {
             setSupplierType("REGISTERED");
             setSupplierId(parsed.supplierId);
           }
+          setIsPartnership(Boolean(parsed.isPartnership));
+          setPartnershipId(parsed.partnershipId || "");
           // Set invoice destination and header location to Main Retail Shop
           const shop = dbLocations.find((l) => l.name.toLowerCase().includes("shop") || l.type === "SHOP");
           const targetLoc = parsed.destinationLocationId || (shop ? shop.id : parsed.locationId) || parsed.locationId;
@@ -620,6 +630,8 @@ export default function PurchasesPage() {
     setSupplierId("");
     setLocationId("");
     setPurchaseOrderId("");
+    setIsPartnership(false);
+    setPartnershipId("");
     setInvoiceDate(getLocalDateTimeInputValue());
     setNotes("");
     setAmountPaid("0");
@@ -646,6 +658,8 @@ export default function PurchasesPage() {
     setOneTimeSupplierPhone("");
     setLocationId(invoice.location.id);
     setPurchaseOrderId(invoice.purchaseOrder?.id || "");
+    setIsPartnership(Boolean(invoice.isPartnership));
+    setPartnershipId(invoice.partnershipId || "");
     setInvoiceDate(new Date(invoice.date).toISOString().slice(0, 16));
     setNotes("");
     setAmountPaid(String(invoice.amountPaid || 0));
@@ -772,6 +786,8 @@ export default function PurchasesPage() {
         oneTimeSupplierPhone: supplierType === "ONE_TIME" ? (oneTimeSupplierPhone.trim() || null) : undefined,
         locationId: finalLocationId,
         purchaseOrderId: purchaseOrderId || null,
+        isPartnership,
+        partnershipId: partnershipId || null,
         date: new Date(invoiceDate),
         notes,
         amountPaid: numPaid,

@@ -1200,7 +1200,7 @@ export default function PartnershipClient({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => router.push(`/purchases?supplierId=${selectedPartnerId}&action=new`)}
+              onClick={() => router.push(`/purchases?partnerId=${selectedPartnerId}&action=new`)}
               className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold text-slate-800 dark:text-slate-200 shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800"
               title="Create Purchase Invoice for this Partner"
             >

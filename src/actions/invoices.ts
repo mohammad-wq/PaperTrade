@@ -1128,13 +1128,54 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         supplierName = supp.name;
       }
 
-      const fallbackLocationId =
+      const linkedPurchaseOrder = input.purchaseOrderId
+        ? await tx.purchaseOrder.findUnique({
+            where: { id: input.purchaseOrderId },
+            select: {
+              id: true,
+              status: true,
+              isPartnership: true,
+              partnershipId: true,
+              supplier: { select: { isPartner: true, isBeneficiary: true } },
+            },
+          })
+        : null;
+      if (input.purchaseOrderId && !linkedPurchaseOrder) {
+        throw userError("Purchase order not found.");
+      }
+      const isPartnershipPO = Boolean(
+        linkedPurchaseOrder?.isPartnership ||
+        linkedPurchaseOrder?.supplier.isPartner ||
+        linkedPurchaseOrder?.supplier.isBeneficiary,
+      );
+
+      let fallbackLocationId =
         input.locationId ||
         input.items.find((it: any) => it.locationId)?.locationId ||
         (await tx.location.findFirst({ select: { id: true } }))?.id;
 
       if (!fallbackLocationId) {
         throw userError("No stock location is configured in the system.");
+      }
+      if (isPartnershipPO) {
+        const shopLocation =
+          (await tx.location.findFirst({
+            where: {
+              name: { equals: "Main Retail Shop", mode: "insensitive" },
+              type: "SHOP",
+              isActive: true,
+              deletedAt: null,
+            },
+            select: { id: true },
+          })) ||
+          (await tx.location.findFirst({
+            where: { type: "SHOP", isActive: true, deletedAt: null },
+            select: { id: true },
+          }));
+        if (!shopLocation) {
+          throw userError("A Main Retail Shop location must be configured before converting this partnership PO.");
+        }
+        fallbackLocationId = shopLocation.id;
       }
 
       const freight = typeof input.freightCharges === "number" ? Math.max(0, input.freightCharges) : 0;
@@ -1159,9 +1200,13 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
       const isPartnershipTx = Boolean(
         input.isPartnership ||
         input.partnershipId ||
+        isPartnershipPO ||
         isSupplierBeneficiary
       );
-      const partnershipId = input.partnershipId || (isPartnershipTx && targetSupplierId ? targetSupplierId : null);
+      const partnershipId =
+        input.partnershipId ||
+        linkedPurchaseOrder?.partnershipId ||
+        (isPartnershipTx && targetSupplierId ? targetSupplierId : null);
 
       // Fetch any referenced warehouse lots to determine equity splits
       const referencedLotIds = input.items.map((i) => i.warehouseLotId || (i as any).sourceWarehouseLotId).filter(Boolean) as string[];
@@ -1203,7 +1248,9 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
       }> = [];
 
       for (const item of input.items) {
-        const itemLoc = (item as any).locationId || fallbackLocationId;
+        const itemLoc = isPartnershipPO
+          ? fallbackLocationId
+          : (item as any).locationId || fallbackLocationId;
         const srcLotId = (item as any).sourceWarehouseLotId || item.warehouseLotId || input.warehouseLotId;
         const srcLot = srcLotId ? lotMap.get(srcLotId) : null;
         const partnerIdForLot = partnershipId || srcLot?.partnerId || (isSupplierBeneficiary ? targetSupplierId : null);
@@ -1366,19 +1413,13 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
 
       // Update PO status if linked and check if stock was already fulfilled
       let alreadyFulfilledByPO = false;
-      if (input.purchaseOrderId) {
-        const linkedPO = await tx.purchaseOrder.findUnique({
+      if (linkedPurchaseOrder?.status === PurchaseOrderStatus.FULFILLED) {
+        alreadyFulfilledByPO = true;
+      } else if (input.purchaseOrderId) {
+        await tx.purchaseOrder.update({
           where: { id: input.purchaseOrderId },
-          select: { status: true },
+          data: { status: PurchaseOrderStatus.FULFILLED },
         });
-        if (linkedPO?.status === PurchaseOrderStatus.FULFILLED) {
-          alreadyFulfilledByPO = true;
-        } else {
-          await tx.purchaseOrder.update({
-            where: { id: input.purchaseOrderId },
-            data: { status: PurchaseOrderStatus.FULFILLED },
-          });
-        }
       }
 
       // Create stock movements at receiving location only if not already fulfilled

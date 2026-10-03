@@ -51,9 +51,17 @@ type PORow = {
   date: Date;
   status: PurchaseOrderStatus;
   includePricing: boolean;
+  isPartnership?: boolean;
+  partnershipId?: string | null;
   notes: string | null;
   financialYear?: { id: string; label: string; isActive?: boolean } | null;
-  supplier: { id: string; name: string; phone: string | null };
+  supplier: {
+    id: string;
+    name: string;
+    phone: string | null;
+    isPartner?: boolean;
+    isBeneficiary?: boolean;
+  };
   location: { id: string; name: string };
   items: Array<{
     id: string;
@@ -468,25 +476,34 @@ export default function PurchaseOrdersPage() {
   }
 
   function handleCreatePurchaseInvoiceFromPO(po: PORow) {
-    const shopLoc =
-      dbLocations.find((location) => location.name.trim().toLowerCase() === "main retail shop") ||
-      dbLocations.find((location) => location.type === "SHOP");
-    if (!shopLoc) {
+    const isPartnershipPO = Boolean(
+      po.isPartnership || po.supplier?.isPartner || po.supplier?.isBeneficiary,
+    );
+    const shopLoc = isPartnershipPO
+      ? dbLocations.find((location) => location.name.trim().toLowerCase() === "main retail shop") ||
+        dbLocations.find((location) => location.type === "SHOP")
+      : undefined;
+    if (isPartnershipPO && !shopLoc) {
       void confirm.alert("A Main Retail Shop location must be configured before converting this PO.", {
         variant: "destructive",
       });
       return;
     }
-    const destinationShopId = shopLoc.id;
+    const receivingLocationId =
+      shopLoc?.id ||
+      po.items.find((item) => item.destinationLocationId)?.destinationLocationId ||
+      po.location?.id ||
+      "";
 
     const payload = {
       purchaseOrderId: po.id,
       supplierId: po.supplier?.id || null,
       supplierName: po.supplier?.name || "",
-      locationId: destinationShopId,
-      destinationLocationId: destinationShopId,
+      locationId: receivingLocationId,
+      destinationLocationId: receivingLocationId,
       includePricing: po.includePricing,
-      isPartnership: Boolean((po as any).isPartnership || (po.supplier as any)?.isBeneficiary || (po.supplier as any)?.isPartner),
+      isPartnership: isPartnershipPO,
+      partnershipId: po.partnershipId || (isPartnershipPO ? po.supplier?.id : null),
       items: po.items.map((item: any) => {
         const prod = products.find((p) => p.id === (item.product?.id || item.productId));
         const intakeCost = Number(item.unitCost);
@@ -504,7 +521,7 @@ export default function PurchaseOrdersPage() {
 
         return {
           productId: item.product?.id || item.productId || "",
-          destinationLocationId: destinationShopId,
+          destinationLocationId: receivingLocationId,
           warehouseLotId: item.warehouseLotId || item.warehouseLot?.id || undefined,
           sourceWarehouseLotId: item.warehouseLotId || item.warehouseLot?.id || undefined,
           quantity: item.quantity,
