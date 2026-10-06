@@ -11,7 +11,50 @@ import { purchaseOrderSchema, purchaseOrderItemSchema, deliveryOrderSchema, deli
 import { DeliveryOrderStatus, PartyType, PurchaseOrderStatus, StockMovementType, Unit, Prisma } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { getActiveFinancialYear, getNextAtomicSequence } from "@/lib/financial-year";
+import {
+  postInflow,
+  postTransfer,
+  reverseMovement,
+  resolveOwnershipKey,
+  resolvePurchaseOwnership,
+  resolveSaleOwnership,
+} from "@/lib/inventoryCost.service";
 import { z } from "zod";
+
+async function postPurchaseOrderFulfillmentLayers(
+  tx: Prisma.TransactionClient,
+  order: { id: string; orderNo: string },
+  items: Array<{
+    productId: string;
+    destinationLocationId?: string | null;
+    warehouseLotId?: string | null;
+    quantity: number | Prisma.Decimal | any;
+    unitCost?: number | Prisma.Decimal | null;
+  }>,
+  defaultLocationId: string | null,
+) {
+  for (const item of items) {
+    const locationId = item.destinationLocationId || defaultLocationId;
+    if (!locationId) continue;
+    const qty = Number(item.quantity);
+    const unitCost =
+      item.unitCost != null && Number(item.unitCost) > 0 ? Number(item.unitCost) : null;
+    if (!unitCost) continue;
+    const ownership = await resolvePurchaseOwnership(tx, {
+      warehouseLotId: item.warehouseLotId,
+    });
+    await postInflow(tx, {
+      productId: item.productId,
+      locationId,
+      ownership,
+      quantity: qty,
+      unitCost,
+      movementType: "PURCHASE",
+      referenceType: "PURCHASE_ORDER",
+      referenceId: order.id,
+    });
+  }
+}
 
 async function resolveInternalTransferLocationId(
   tx: any,
@@ -146,10 +189,39 @@ async function createDeliveryOrderStockMovements(
         notes: `Transfer via DO ${order.doNo}`,
       },
     });
+
+    const ownership = await resolveSaleOwnership(tx, {
+      productId: item.productId,
+      locationId: sourceLocId,
+      warehouseLotId: item.warehouseLotId,
+      partnershipLotId: (item as any).partnershipLotId,
+      ownershipType: (item as any).ownershipType,
+      ownershipKey: (item as any).ownershipKey,
+    });
+    const ownershipKey = resolveOwnershipKey(ownership);
+    await postTransfer(tx, {
+      productId: item.productId,
+      fromLocationId: sourceLocId,
+      toLocationId: destinationLocationId,
+      ownership,
+      quantity: Number(item.quantity),
+      referenceType: "DELIVERY_ORDER",
+      referenceId: `${order.id}:${item.productId}`,
+    });
+    await tx.stockMovement.updateMany({
+      where: {
+        referenceType: "DELIVERY_ORDER",
+        referenceId: order.id,
+        productId: item.productId,
+      },
+      data: {
+        ownershipType: ownership.ownershipType,
+        ownershipKey,
+      },
+    });
+
   }
 }
-
-export { createDeliveryOrderStockMovements };
 
 export async function executeDeliveryOrderStockMovements(doId: string, userId: string) {
   const order = await prisma.deliveryOrder.findUnique({
@@ -294,6 +366,18 @@ export async function createPurchaseOrderAction(raw: unknown) {
             },
           });
         }
+        await postPurchaseOrderFulfillmentLayers(
+          tx,
+          order,
+          input.items.map((item) => ({
+            productId: item.productId,
+            destinationLocationId: item.destinationLocationId || effectiveLocationId,
+            warehouseLotId: item.warehouseLotId || null,
+            quantity: item.quantity,
+            unitCost: item.unitCost ?? null,
+          })),
+          effectiveLocationId,
+        );
       }
 
       return { id: order.id, orderNo: order.orderNo };
@@ -415,6 +499,18 @@ export async function updatePurchaseOrderAction(raw: unknown) {
             },
           });
         }
+        await postPurchaseOrderFulfillmentLayers(
+          tx,
+          updated,
+          input.items.map((item) => ({
+            productId: item.productId,
+            destinationLocationId: item.destinationLocationId || effectiveLocationId,
+            warehouseLotId: item.warehouseLotId || null,
+            quantity: item.quantity,
+            unitCost: item.unitCost ?? null,
+          })),
+          effectiveLocationId,
+        );
       }
 
       return { id: updated.id, orderNo: updated.orderNo };
@@ -514,6 +610,18 @@ export async function updatePurchaseOrderStatusAction(raw: unknown) {
               },
             });
           }
+          await postPurchaseOrderFulfillmentLayers(
+            tx,
+            order,
+            order.items.map((item) => ({
+              productId: item.productId,
+              destinationLocationId: (item as any).destinationLocationId || order.locationId,
+              warehouseLotId: (item as any).warehouseLotId || null,
+              quantity: item.quantity,
+              unitCost: item.unitCost ?? null,
+            })),
+            order.locationId,
+          );
         }
       }
 

@@ -23,6 +23,7 @@ import {
   simulateFifoAllocation,
   getOpenInvoicesForParty,
 } from "@/lib/payment-allocation";
+import { getPaymentDestination } from "@/lib/payment-destinations";
 
 export async function listPaymentsAction() {
   return runAction("payments.list", async () => {
@@ -185,7 +186,19 @@ const updatePaymentSchema = z.object({
 }).refine((value) => !(value.saleInvoiceId && value.purchaseInvoiceId), {
   message: "A payment cannot be linked to both a sale and a purchase invoice",
   path: ["saleInvoiceId"],
-});
+}).refine(
+  (data) => {
+    if (data.splits && data.splits.length > 0) {
+      const totalSplits = data.splits.reduce((acc, s) => acc + (Number(s.amount) || 0), 0);
+      return Math.abs(totalSplits - (Number(data.amount) || 0)) < 0.01;
+    }
+    return true;
+  },
+  {
+    message: "The sum of payment splits must exactly equal the total payment amount",
+    path: ["splits"],
+  }
+);
 
 export async function updatePaymentAction(raw: unknown) {
   return runAction("payments.update", async () => {
@@ -250,6 +263,82 @@ export async function updatePaymentAction(raw: unknown) {
         }
       }
 
+      // Validate split sum invariant
+      if (input.splits && input.splits.length > 0) {
+        const splitSum = input.splits.reduce((acc, s) => acc + (Number(s.amount) || 0), 0);
+        if (Math.abs(splitSum - input.amount) >= 0.01) {
+          throw userError(`The sum of payment splits (${splitSum}) must exactly equal the payment amount (${input.amount}).`);
+        }
+      }
+
+      // Validate invoice allocation limits (reject over-allocation / overpayment)
+      if (input.saleInvoiceId) {
+        const inv = await tx.saleInvoice.findUnique({
+          where: { id: input.saleInvoiceId },
+          select: { id: true, invoiceNo: true, totalAmount: true, paidAmount: true, amountPaid: true, customerId: true },
+        });
+        if (!inv) throw userError("Linked sale invoice not found.");
+        if (inv.customerId !== input.partyId) throw userError("Linked sale invoice does not belong to the selected customer.");
+        const due = Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount ?? inv.amountPaid ?? 0));
+        if (totalAmount > due + 0.01) {
+          throw userError(`Payment amount (PKR ${totalAmount}) exceeds the outstanding balance (PKR ${due}) for invoice ${inv.invoiceNo}.`);
+        }
+      } else if (input.purchaseInvoiceId) {
+        const inv = await tx.purchaseInvoice.findUnique({
+          where: { id: input.purchaseInvoiceId },
+          select: { id: true, invoiceNo: true, totalAmount: true, paidAmount: true, amountPaid: true, supplierId: true },
+        });
+        if (!inv) throw userError("Linked purchase invoice not found.");
+        if (inv.supplierId !== input.partyId) throw userError("Linked purchase invoice does not belong to the selected supplier.");
+        const due = Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount ?? inv.amountPaid ?? 0));
+        if (totalAmount > due + 0.01) {
+          throw userError(`Payment amount (PKR ${totalAmount}) exceeds the outstanding balance (PKR ${due}) for invoice ${inv.invoiceNo}.`);
+        }
+      }
+
+      if (input.manualAllocations && input.manualAllocations.length > 0) {
+        let manualTotal = 0;
+        for (const alloc of input.manualAllocations) {
+          if (alloc.amount < 0) throw userError("Allocated amount cannot be negative.");
+          manualTotal += alloc.amount;
+          if (direction === "IN") {
+            const inv = await tx.saleInvoice.findUnique({
+              where: { id: alloc.invoiceId },
+              select: { id: true, invoiceNo: true, totalAmount: true, paidAmount: true, amountPaid: true, customerId: true },
+            });
+            if (!inv) throw userError("Invoice not found for manual allocation.");
+            if (inv.customerId !== input.partyId) throw userError(`Invoice ${inv.invoiceNo} does not belong to the selected customer.`);
+            const due = Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount ?? inv.amountPaid ?? 0));
+            if (alloc.amount > due + 0.01) {
+              throw userError(`Allocated amount (PKR ${alloc.amount}) exceeds outstanding balance (PKR ${due}) for invoice ${inv.invoiceNo}.`);
+            }
+          } else {
+            const inv = await tx.purchaseInvoice.findUnique({
+              where: { id: alloc.invoiceId },
+              select: { id: true, invoiceNo: true, totalAmount: true, paidAmount: true, amountPaid: true, supplierId: true },
+            });
+            if (!inv) throw userError("Invoice not found for manual allocation.");
+            if (inv.supplierId !== input.partyId) throw userError(`Invoice ${inv.invoiceNo} does not belong to the selected supplier.`);
+            const due = Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount ?? inv.amountPaid ?? 0));
+            if (alloc.amount > due + 0.01) {
+              throw userError(`Allocated amount (PKR ${alloc.amount}) exceeds outstanding balance (PKR ${due}) for invoice ${inv.invoiceNo}.`);
+            }
+          }
+        }
+        if (manualTotal > totalAmount + 0.01) {
+          throw userError(`Total manual allocations (PKR ${manualTotal}) cannot exceed total payment amount (PKR ${totalAmount}).`);
+        }
+      }
+
+      const splitsToRecord: Array<{ method: PaymentMethod; amount: number; reference: string | null }> =
+        input.splits && input.splits.length > 0
+          ? input.splits.map((s) => ({
+              method: (s.method ?? PaymentMethod.CASH) as PaymentMethod,
+              amount: s.amount,
+              reference: s.reference || null,
+            }))
+          : [{ method: (input.method ?? PaymentMethod.CASH) as PaymentMethod, amount: totalAmount, reference: null }];
+
       const updatedPayment = await tx.payment.update({
         where: { id: input.id },
         data: {
@@ -263,35 +352,27 @@ export async function updatePaymentAction(raw: unknown) {
           method: primaryMethod,
           date: input.date,
           notes: input.notes || null,
-          ...(input.splits && input.splits.length > 0
-            ? {
-                splits: {
-                  create: input.splits.map((s) => ({
-                    method: s.method,
-                    amount: s.amount,
-                    reference: s.reference || null,
-                  })),
-                },
-              }
-            : {}),
+          splits: {
+            create: splitsToRecord.map((s) => ({
+              method: s.method,
+              amount: s.amount,
+              reference: s.reference || null,
+            })),
+          },
         },
       });
-
-      const splitsToRecord =
-        input.splits && input.splits.length > 0
-          ? input.splits
-          : [{ method: input.method, amount: totalAmount, reference: null }];
 
       if (direction === "IN") {
         const party = await tx.party.findUnique({ where: { id: input.partyId } });
         if (!party) throw userError("Party not found.");
 
         for (const split of splitsToRecord) {
+          const dest = getPaymentDestination(split.method);
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
               partyId: null,
-              accountType: AccountType.CASH,
+              accountType: dest.accountType,
               debit: split.amount,
               credit: 0,
               isPartnership,
@@ -299,7 +380,7 @@ export async function updatePaymentAction(raw: unknown) {
               referenceType: "PAYMENT",
               referenceId: updatedPayment.id,
               date: input.date,
-              description: `Receipt #${updatedPayment.receiptNo} from ${party.name} (${split.method})${refDesc}`,
+              description: `Receipt #${updatedPayment.receiptNo} from ${party.name} (${dest.accountName})${refDesc}`,
               createdById: session.user.id,
             },
           });
@@ -342,11 +423,12 @@ export async function updatePaymentAction(raw: unknown) {
         });
 
         for (const split of splitsToRecord) {
+          const dest = getPaymentDestination(split.method);
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
               partyId: null,
-              accountType: AccountType.CASH,
+              accountType: dest.accountType,
               debit: 0,
               credit: split.amount,
               isPartnership,
@@ -354,7 +436,7 @@ export async function updatePaymentAction(raw: unknown) {
               referenceType: "PAYMENT",
               referenceId: updatedPayment.id,
               date: input.date,
-              description: `Payment Voucher #${updatedPayment.receiptNo} to ${party.name} (${split.method})${refDesc}`,
+              description: `Payment Voucher #${updatedPayment.receiptNo} to ${party.name} (${dest.accountName})${refDesc}`,
               createdById: session.user.id,
             },
           });
@@ -376,20 +458,20 @@ export async function updatePaymentAction(raw: unknown) {
           manualAllocations: input.manualAllocations,
         });
       } else if (input.saleInvoiceId) {
-        await tx.saleInvoice.update({
-          where: { id: input.saleInvoiceId },
+        await tx.invoicePaymentAllocation.create({
           data: {
-            paidAmount: { increment: totalAmount },
-            amountPaid: { increment: totalAmount },
+            paymentId: updatedPayment.id,
+            saleInvoiceId: input.saleInvoiceId,
+            amount: totalAmount,
           },
         });
         await updateInvoiceSettlementStatus(tx, input.saleInvoiceId, "SALE");
       } else if (input.purchaseInvoiceId) {
-        await tx.purchaseInvoice.update({
-          where: { id: input.purchaseInvoiceId },
+        await tx.invoicePaymentAllocation.create({
           data: {
-            paidAmount: { increment: totalAmount },
-            amountPaid: { increment: totalAmount },
+            paymentId: updatedPayment.id,
+            purchaseInvoiceId: input.purchaseInvoiceId,
+            amount: totalAmount,
           },
         });
         await updateInvoiceSettlementStatus(tx, input.purchaseInvoiceId, "PURCHASE");
@@ -529,6 +611,82 @@ export async function createPaymentAction(raw: unknown) {
         }
       }
 
+      // Validate split sum invariant
+      if (input.splits && input.splits.length > 0) {
+        const splitSum = input.splits.reduce((acc, s) => acc + (Number(s.amount) || 0), 0);
+        if (Math.abs(splitSum - input.amount) >= 0.01) {
+          throw userError(`The sum of payment splits (${splitSum}) must exactly equal the payment amount (${input.amount}).`);
+        }
+      }
+
+      // Validate invoice allocation limits (reject over-allocation / overpayment)
+      if (input.saleInvoiceId) {
+        const inv = await tx.saleInvoice.findUnique({
+          where: { id: input.saleInvoiceId },
+          select: { id: true, invoiceNo: true, totalAmount: true, paidAmount: true, amountPaid: true, customerId: true },
+        });
+        if (!inv) throw userError("Linked sale invoice not found.");
+        if (inv.customerId !== input.partyId) throw userError("Linked sale invoice does not belong to the selected customer.");
+        const due = Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount ?? inv.amountPaid ?? 0));
+        if (totalAmount > due + 0.01) {
+          throw userError(`Payment amount (PKR ${totalAmount}) exceeds the outstanding balance (PKR ${due}) for invoice ${inv.invoiceNo}.`);
+        }
+      } else if (input.purchaseInvoiceId) {
+        const inv = await tx.purchaseInvoice.findUnique({
+          where: { id: input.purchaseInvoiceId },
+          select: { id: true, invoiceNo: true, totalAmount: true, paidAmount: true, amountPaid: true, supplierId: true },
+        });
+        if (!inv) throw userError("Linked purchase invoice not found.");
+        if (inv.supplierId !== input.partyId) throw userError("Linked purchase invoice does not belong to the selected supplier.");
+        const due = Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount ?? inv.amountPaid ?? 0));
+        if (totalAmount > due + 0.01) {
+          throw userError(`Payment amount (PKR ${totalAmount}) exceeds the outstanding balance (PKR ${due}) for invoice ${inv.invoiceNo}.`);
+        }
+      }
+
+      if (input.manualAllocations && input.manualAllocations.length > 0) {
+        let manualTotal = 0;
+        for (const alloc of input.manualAllocations) {
+          if (alloc.amount < 0) throw userError("Allocated amount cannot be negative.");
+          manualTotal += alloc.amount;
+          if (direction === "IN") {
+            const inv = await tx.saleInvoice.findUnique({
+              where: { id: alloc.invoiceId },
+              select: { id: true, invoiceNo: true, totalAmount: true, paidAmount: true, amountPaid: true, customerId: true },
+            });
+            if (!inv) throw userError("Invoice not found for manual allocation.");
+            if (inv.customerId !== input.partyId) throw userError(`Invoice ${inv.invoiceNo} does not belong to the selected customer.`);
+            const due = Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount ?? inv.amountPaid ?? 0));
+            if (alloc.amount > due + 0.01) {
+              throw userError(`Allocated amount (PKR ${alloc.amount}) exceeds outstanding balance (PKR ${due}) for invoice ${inv.invoiceNo}.`);
+            }
+          } else {
+            const inv = await tx.purchaseInvoice.findUnique({
+              where: { id: alloc.invoiceId },
+              select: { id: true, invoiceNo: true, totalAmount: true, paidAmount: true, amountPaid: true, supplierId: true },
+            });
+            if (!inv) throw userError("Invoice not found for manual allocation.");
+            if (inv.supplierId !== input.partyId) throw userError(`Invoice ${inv.invoiceNo} does not belong to the selected supplier.`);
+            const due = Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount ?? inv.amountPaid ?? 0));
+            if (alloc.amount > due + 0.01) {
+              throw userError(`Allocated amount (PKR ${alloc.amount}) exceeds outstanding balance (PKR ${due}) for invoice ${inv.invoiceNo}.`);
+            }
+          }
+        }
+        if (manualTotal > totalAmount + 0.01) {
+          throw userError(`Total manual allocations (PKR ${manualTotal}) cannot exceed total payment amount (PKR ${totalAmount}).`);
+        }
+      }
+
+      const splitsToRecord: Array<{ method: PaymentMethod; amount: number; reference: string | null }> =
+        input.splits && input.splits.length > 0
+          ? input.splits.map((s) => ({
+              method: (s.method ?? PaymentMethod.CASH) as PaymentMethod,
+              amount: s.amount,
+              reference: s.reference || null,
+            }))
+          : [{ method: (primaryMethod ?? PaymentMethod.CASH) as PaymentMethod, amount: totalAmount, reference: null }];
+
       const payment = await tx.payment.create({
         data: {
           receiptNo,
@@ -545,33 +703,25 @@ export async function createPaymentAction(raw: unknown) {
           date: input.date,
           notes: input.notes || null,
           createdById: session.user.id,
-          ...(input.splits && input.splits.length > 0
-            ? {
-                splits: {
-                  create: input.splits.map((s) => ({
-                    method: s.method,
-                    amount: s.amount,
-                    reference: s.reference || null,
-                  })),
-                },
-              }
-            : {}),
+          splits: {
+            create: splitsToRecord.map((s) => ({
+              method: s.method,
+              amount: s.amount,
+              reference: s.reference || null,
+            })),
+          },
         },
       });
 
-      const splitsToRecord =
-        input.splits && input.splits.length > 0
-          ? input.splits
-          : [{ method: input.method, amount: totalAmount, reference: null }];
-
       if (direction === "IN") {
-        // Customer Receipt: increases Cash/Bank (Debit), decreases Receivable (Credit)
+        // Customer Receipt: increases Cash/Bank/Wallet (Debit), decreases Receivable (Credit)
         for (const split of splitsToRecord) {
+          const dest = getPaymentDestination(split.method);
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
               partyId: null,
-              accountType: AccountType.CASH,
+              accountType: dest.accountType,
               debit: split.amount,
               credit: 0,
               isPartnership,
@@ -579,7 +729,7 @@ export async function createPaymentAction(raw: unknown) {
               referenceType: "PAYMENT",
               referenceId: payment.id,
               date: input.date,
-              description: `Receipt #${receiptNo} from ${party.name} (${split.method})${refDesc}`,
+              description: `Receipt #${receiptNo} from ${party.name} (${dest.accountName})${refDesc}`,
               createdById: session.user.id,
             },
           });
@@ -600,13 +750,31 @@ export async function createPaymentAction(raw: unknown) {
             createdById: session.user.id,
           },
         });
+      } else {
+        // Supplier Payment: decreases Accounts Payable (Debit), decreases Cash/Bank/Wallet (Credit)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: party.id,
+            accountType: AccountType.PAYABLE,
+            debit: totalAmount,
+            credit: 0,
+            isPartnership,
+            partnershipId,
+            referenceType: "PAYMENT",
+            referenceId: payment.id,
+            date: input.date,
+            description: `Payment to supplier against Voucher #${receiptNo}`,
+            createdById: session.user.id,
+          },
+        });
 
         for (const split of splitsToRecord) {
+          const dest = getPaymentDestination(split.method);
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
               partyId: null,
-              accountType: AccountType.CASH,
+              accountType: dest.accountType,
               debit: 0,
               credit: split.amount,
               isPartnership,
@@ -614,7 +782,7 @@ export async function createPaymentAction(raw: unknown) {
               referenceType: "PAYMENT",
               referenceId: payment.id,
               date: input.date,
-              description: `Payment Voucher #${receiptNo} to ${party.name} (${split.method})${refDesc}`,
+              description: `Payment Voucher #${receiptNo} to ${party.name} (${dest.accountName})${refDesc}`,
               createdById: session.user.id,
             },
           });
@@ -636,20 +804,20 @@ export async function createPaymentAction(raw: unknown) {
           manualAllocations: input.manualAllocations,
         });
       } else if (input.saleInvoiceId) {
-        await tx.saleInvoice.update({
-          where: { id: input.saleInvoiceId },
+        await tx.invoicePaymentAllocation.create({
           data: {
-            paidAmount: { increment: totalAmount },
-            amountPaid: { increment: totalAmount },
+            paymentId: payment.id,
+            saleInvoiceId: input.saleInvoiceId,
+            amount: totalAmount,
           },
         });
         await updateInvoiceSettlementStatus(tx, input.saleInvoiceId, "SALE");
       } else if (input.purchaseInvoiceId) {
-        await tx.purchaseInvoice.update({
-          where: { id: input.purchaseInvoiceId },
+        await tx.invoicePaymentAllocation.create({
           data: {
-            paidAmount: { increment: totalAmount },
-            amountPaid: { increment: totalAmount },
+            paymentId: payment.id,
+            purchaseInvoiceId: input.purchaseInvoiceId,
+            amount: totalAmount,
           },
         });
         await updateInvoiceSettlementStatus(tx, input.purchaseInvoiceId, "PURCHASE");

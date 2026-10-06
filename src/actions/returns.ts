@@ -9,7 +9,14 @@ import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { saleReturnSchema, purchaseReturnSchema } from "@/schemas/return";
 import { assertStockDeductionsAvailable } from "@/lib/stock";
-import { AccountType, StockMovementType } from "@prisma/client";
+import { AccountType, LedgerAccountSubtype, StockMovementType } from "@prisma/client";
+import {
+  postInflow,
+  postOutflow,
+  resolvePurchaseOwnership,
+  ownershipTypeFromKey,
+} from "@/lib/inventoryCost.service";
+import { postJournal, JournalLineInput } from "@/lib/ledger";
 import { getActiveFinancialYear, getNextAtomicSequence, updateInvoiceSettlementStatus } from "@/lib/financial-year";
 
 export async function listReturnsAction() {
@@ -127,6 +134,15 @@ export async function createSaleReturnAction(raw: unknown) {
         "SALE_RETURN"
       );
 
+      const returnItemsWithCost = input.items.map((item) => {
+        const orig = invoice.items.find((i) => i.productId === item.productId);
+        const origQty = orig ? Number(orig.quantity) : item.quantity;
+        const origCogs = orig ? Number(orig.cogsAmount ?? 0) : 0;
+        const unitCogs = origQty > 0 ? origCogs / origQty : 0;
+        const costRestoredAmount = unitCogs * item.quantity;
+        return { ...item, costRestoredAmount, unitCogs };
+      });
+
       const saleReturn = await tx.saleReturn.create({
         data: {
           returnNo,
@@ -140,11 +156,12 @@ export async function createSaleReturnAction(raw: unknown) {
           totalAmount,
           createdById: session.user.id,
           items: {
-            create: input.items.map((item) => ({
+            create: returnItemsWithCost.map((item) => ({
               productId: item.productId,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
               lineTotal: item.quantity * item.unitPrice,
+              costRestoredAmount: item.costRestoredAmount,
             })),
           },
         },
@@ -166,40 +183,71 @@ export async function createSaleReturnAction(raw: unknown) {
         });
       }
 
-      // Reversing Ledger Entries
-      // Credit customer receivable
-      await tx.ledgerEntry.create({
-        data: {
+      const totalCogsRestored = returnItemsWithCost.reduce((s, i) => s + i.costRestoredAmount, 0);
+
+      for (const item of returnItemsWithCost) {
+        if (item.costRestoredAmount <= 0 || item.unitCogs <= 0) continue;
+        const orig = invoice.items.find((i) => i.productId === item.productId);
+        const ownership = orig?.ownershipKey
+          ? ownershipTypeFromKey(orig.ownershipKey)
+          : orig?.lotId
+            ? { ownershipType: "LOT", partnershipLotId: orig.lotId }
+            : await resolvePurchaseOwnership(tx, { warehouseLotId: orig?.warehouseLotId });
+        await postInflow(tx, {
+          productId: item.productId,
+          locationId: invoice.locationId,
+          ownership,
+          quantity: item.quantity,
+          unitCost: item.unitCogs,
+          movementType: "RETURN_IN",
+          referenceType: "SALE_RETURN",
+          referenceId: `${saleReturn.id}:${item.productId}`,
+        });
+      }
+
+      const journalLines: JournalLineInput[] = [
+        {
           partyId: invoice.customerId,
           accountType: AccountType.RECEIVABLE,
           debit: 0,
           credit: totalAmount,
-          isPartnership: invoice.isPartnership,
-          partnershipId: invoice.partnershipId,
-          referenceType: "SALE_RETURN",
-          referenceId: saleReturn.id,
-          date: input.date,
           description: `Credit Note / Sale Return ${saleReturn.returnNo}`,
-          createdById: session.user.id,
         },
-      });
-
-      // Debit sales revenue
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: null,
+        {
           accountType: AccountType.SALES,
+          accountSubtype: LedgerAccountSubtype.PRODUCT_SALES,
           debit: totalAmount,
           credit: 0,
-          isPartnership: invoice.isPartnership,
-          partnershipId: invoice.partnershipId,
+          description: `Sale Return adjustment for ${invoice.invoiceNo}`,
+        },
+      ];
+      if (totalCogsRestored > 0) {
+        journalLines.push(
+          {
+            accountType: AccountType.INVENTORY,
+            debit: totalCogsRestored,
+            credit: 0,
+            description: `Inventory restored on return ${saleReturn.returnNo}`,
+          },
+          {
+            accountType: AccountType.COGS,
+            debit: 0,
+            credit: totalCogsRestored,
+            description: `COGS reversal on return ${saleReturn.returnNo}`,
+          },
+        );
+      }
+
+      await postJournal(
+        {
           referenceType: "SALE_RETURN",
           referenceId: saleReturn.id,
           date: input.date,
-          description: `Sale Return adjustment for ${invoice.invoiceNo}`,
           createdById: session.user.id,
+          lines: journalLines,
         },
-      });
+        tx,
+      );
 
       // Recalculate and update settlement status of original invoice
       await updateInvoiceSettlementStatus(tx, invoice.id, "SALE");
@@ -331,40 +379,47 @@ export async function createPurchaseReturnAction(raw: unknown) {
         });
       }
 
-      // Reversing Ledger Entries
-      // Debit supplier payable (reduces debt to supplier)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: invoice.supplierId,
-          accountType: AccountType.PAYABLE,
-          debit: totalAmount,
-          credit: 0,
-          isPartnership: invoice.isPartnership,
-          partnershipId: invoice.partnershipId,
+      let inventoryCredit = 0;
+      for (const { returnItem: item, originalItem, locationId } of sourceItems) {
+        const ownership = await resolvePurchaseOwnership(tx, {
+          warehouseLotId: originalItem.warehouseLotId,
+        });
+        const { totalCost } = await postOutflow(tx, {
+          productId: item.productId,
+          locationId,
+          ownership,
+          quantity: item.quantity,
+          movementType: "RETURN_OUT",
           referenceType: "PURCHASE_RETURN",
-          referenceId: purchaseReturn.id,
-          date: input.date,
-          description: `Debit Note / Purchase Return ${purchaseReturn.returnNo}`,
-          createdById: session.user.id,
-        },
-      });
+          referenceId: `${purchaseReturn.id}:${item.productId}`,
+        });
+        inventoryCredit += totalCost;
+      }
 
-      // Credit purchases expense (reverses expense)
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: null,
-          accountType: AccountType.PURCHASES,
-          debit: 0,
-          credit: totalAmount,
-          isPartnership: invoice.isPartnership,
-          partnershipId: invoice.partnershipId,
+      await postJournal(
+        {
           referenceType: "PURCHASE_RETURN",
           referenceId: purchaseReturn.id,
           date: input.date,
-          description: `Purchase Return adjustment for ${invoice.invoiceNo}`,
           createdById: session.user.id,
+          lines: [
+            {
+              partyId: invoice.supplierId,
+              accountType: AccountType.PAYABLE,
+              debit: totalAmount,
+              credit: 0,
+              description: `Debit Note / Purchase Return ${purchaseReturn.returnNo}`,
+            },
+            {
+              accountType: AccountType.INVENTORY,
+              debit: 0,
+              credit: inventoryCredit > 0 ? inventoryCredit : totalAmount,
+              description: `Inventory reduction on purchase return ${purchaseReturn.returnNo}`,
+            },
+          ],
         },
-      });
+        tx,
+      );
 
       // Recalculate and update settlement status of original invoice
       await updateInvoiceSettlementStatus(tx, invoice.id, "PURCHASE");

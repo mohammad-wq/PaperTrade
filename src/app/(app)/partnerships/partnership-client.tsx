@@ -50,6 +50,8 @@ import { format } from "date-fns";
 import { handleFormEnterKeyDown } from "@/lib/keyboard-nav";
 import { useSession } from "next-auth/react";
 import { canPerformAction } from "@/lib/auth/permissions";
+import Link from "next/link";
+import { CreatePartnershipLotModal } from "@/components/partnerships/CreatePartnershipLotModal";
 
 export type HubData = {
   partner: {
@@ -227,6 +229,9 @@ export default function PartnershipClient({
   initialPartners,
   initialPartnerId,
   initialHubData,
+  initialLots = [],
+  warehouses = [],
+  products = [],
 }: {
   initialPartners: Array<{
     id: string;
@@ -238,6 +243,9 @@ export default function PartnershipClient({
   }>;
   initialPartnerId?: string;
   initialHubData?: HubData | null;
+  initialLots?: any[];
+  warehouses?: Array<{ id: string; name: string }>;
+  products?: Array<{ id: string; name: string; productNo: string; unit: string; costPrice: number }>;
 }) {
   const router = useRouter();
   const confirm = useConfirm();
@@ -302,8 +310,9 @@ export default function PartnershipClient({
 
   // Expanded lots set
   const [expandedProductIds, setExpandedProductIds] = useState<Set<string>>(new Set());
-  // Active Tab: Inventory, Settlements, or Orders
-  const [activeTab, setActiveTab] = useState<"inventory" | "settlements" | "orders">("inventory");
+  // Active Tab: Lots, Inventory, Settlements, or Orders
+  const [activeTab, setActiveTab] = useState<"lots" | "inventory" | "settlements" | "orders">("lots");
+  const [showCreateLotModal, setShowCreateLotModal] = useState(false);
 
   // Settlement Payout Modal
   const [showSettlementPayoutModal, setShowSettlementPayoutModal] = useState(false);
@@ -1208,6 +1217,15 @@ export default function PartnershipClient({
               + PI
             </Button>
           )}
+
+          <Button
+            size="sm"
+            onClick={() => setShowCreateLotModal(true)}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs gap-1.5 h-8 font-bold shadow-xs"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New Partnership Lot
+          </Button>
         </div>
       </div>
 
@@ -1358,6 +1376,18 @@ export default function PartnershipClient({
       <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-1 print:hidden">
         <button
           type="button"
+          onClick={() => setActiveTab("lots")}
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors flex items-center gap-2 ${
+            activeTab === "lots"
+              ? "bg-indigo-600 text-white shadow-xs"
+              : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+          }`}
+        >
+          <Warehouse className="h-3.5 w-3.5" />
+          Partnership Lots ({initialLots?.length || 0})
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveTab("inventory")}
           className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors flex items-center gap-2 ${
             activeTab === "inventory"
@@ -1393,6 +1423,110 @@ export default function PartnershipClient({
           Orders & Requisitions ({hubData?.purchaseOrders?.length || 0})
         </button>
       </div>
+
+      {/* ========================================================= */}
+      {/* SECTION 0: PARTNERSHIP LOTS OVERVIEW TABLE               */}
+      {/* ========================================================= */}
+      {activeTab === "lots" && (
+        <div className="space-y-4">
+          <div className="flex justify-between items-center">
+            <div>
+              <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                <Warehouse className="h-4 w-4 text-indigo-600" />
+                Partnership Lots (Consignment VMI & Co-Invested Pools)
+              </h2>
+              <p className="text-xs text-slate-500">
+                Click any lot to access its dedicated CPA-Grade Sub-Ledger Hub, Stock Allocator, and Commercial Statements.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => setShowCreateLotModal(true)}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs gap-1 h-8 font-bold"
+            >
+              <Plus className="h-3.5 w-3.5" /> New Partnership Lot
+            </Button>
+          </div>
+
+          <div className="bg-white border rounded-xl overflow-hidden shadow-xs dark:bg-slate-900 dark:border-slate-800">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
+                <tr>
+                  <th className="px-4 py-3 text-left font-bold text-slate-700 dark:text-slate-300">Lot Number</th>
+                  <th className="px-4 py-3 text-left font-bold text-slate-700 dark:text-slate-300">Archetype</th>
+                  <th className="px-4 py-3 text-left font-bold text-slate-700 dark:text-slate-300">Partner</th>
+                  <th className="px-4 py-3 text-left font-bold text-slate-700 dark:text-slate-300">Warehouse</th>
+                  <th className="px-4 py-3 text-right font-bold text-slate-700 dark:text-slate-300">Capital Cost</th>
+                  <th className="px-4 py-3 text-right font-bold text-slate-700 dark:text-slate-300">Remaining Units</th>
+                  <th className="px-4 py-3 text-right font-bold text-slate-700 dark:text-slate-300">Valuation</th>
+                  <th className="px-4 py-3 text-center font-bold text-slate-700 dark:text-slate-300">Status</th>
+                  <th className="px-4 py-3 text-center font-bold text-slate-700 dark:text-slate-300">Sub-Ledger Hub</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {(!initialLots || initialLots.length === 0) ? (
+                  <tr>
+                    <td colSpan={9} className="px-4 py-8 text-center text-slate-500">
+                      No partnership lots created yet. Click &quot;New Partnership Lot&quot; to register your first lot.
+                    </td>
+                  </tr>
+                ) : (
+                  initialLots.map((l: any) => {
+                    const isVMI = l.type === "CONSIGNMENT_VMI";
+                    return (
+                      <tr key={l.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors">
+                        <td className="px-4 py-3 font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                          <Link href={`/partnerships/${l.id}`} className="hover:underline flex items-center gap-1">
+                            {l.lotNumber}
+                            <ArrowUpRight className="h-3 w-3" />
+                          </Link>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                              isVMI
+                                ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                : "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                            }`}
+                          >
+                            {isVMI ? "Consignment VMI" : "Co-Invested"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 font-semibold text-slate-800 dark:text-slate-200">
+                          {l.partnerName}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{l.warehouseName}</td>
+                        <td className="px-4 py-3 text-right font-mono font-medium">
+                          PKR {l.totalCapitalCost.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono font-bold text-slate-900 dark:text-slate-100">
+                          {l.remainingUnits}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono font-bold text-emerald-600">
+                          PKR {l.remainingValuation.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="text-[10px] px-2 py-0.5 rounded font-semibold bg-slate-100 text-slate-700 border">
+                            {l.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <Link
+                            href={`/partnerships/${l.id}`}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-md bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950 dark:text-indigo-300"
+                          >
+                            Open Hub <ArrowUpRight className="h-3 w-3" />
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================= */}
       {/* SECTION 1: PRODUCT BREAKDOWN & LOT HISTORY TABLE         */}
@@ -3202,6 +3336,16 @@ export default function PartnershipClient({
           </div>
         </div>
       )}
+
+      {/* Create Partnership Lot Modal */}
+      <CreatePartnershipLotModal
+        open={showCreateLotModal}
+        onOpenChange={setShowCreateLotModal}
+        partners={initialPartners.map((p) => ({ id: p.id, name: p.name }))}
+        warehouses={warehouses}
+        products={products}
+        defaultPartnerId={selectedPartnerId}
+      />
     </div>
   );
 }

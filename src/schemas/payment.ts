@@ -33,7 +33,20 @@ export const paymentSchema = z
   .refine((value) => !(value.saleInvoiceId && value.purchaseInvoiceId), {
     message: "A payment cannot be linked to both a sale and a purchase invoice",
     path: ["saleInvoiceId"],
-  });
+  })
+  .refine(
+    (data) => {
+      if (data.splits && data.splits.length > 0) {
+        const totalSplits = data.splits.reduce((acc, s) => acc + (Number(s.amount) || 0), 0);
+        return Math.abs(totalSplits - (Number(data.amount) || 0)) < 0.01;
+      }
+      return true;
+    },
+    {
+      message: "The sum of payment splits must exactly equal the total payment amount",
+      path: ["splits"],
+    }
+  );
 
 export const miscExpenseSchema = z.object({
   amount: z.coerce.number().gt(0, "Amount must be greater than 0"),

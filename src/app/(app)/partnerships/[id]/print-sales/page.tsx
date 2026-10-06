@@ -14,7 +14,7 @@ export default async function PrintPartnershipSalesPage({
   params,
   searchParams,
 }: {
-  params: Promise<{ partnerId: string }>;
+  params: Promise<{ id: string }>;
   searchParams?: Promise<{
     from?: string;
     to?: string;
@@ -24,7 +24,8 @@ export default async function PrintPartnershipSalesPage({
   }>;
 }) {
   await assertPageAccess("/partnerships");
-  const { partnerId } = await params;
+  const { id } = await params;
+  const partnerId = id;
   const sp = searchParams ? await searchParams : {};
   const fromDate = sp.from || undefined;
   const toDate = sp.to || undefined;

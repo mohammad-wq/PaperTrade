@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { listExpensesAction, createExpenseAction } from "@/actions/expenses";
 import { ExpenseCategory, PaymentMethod } from "@prisma/client";
 import { format } from "date-fns";
+import { DateRangeFilter, isDateInRange, DateFilterPreset } from "@/components/ui/date-range-filter";
 import { handleFormKeyDown } from "@/lib/keyboard-nav";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
@@ -69,6 +70,9 @@ export default function ExpensesPage() {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
+  const [datePreset, setDatePreset] = useState<DateFilterPreset>("ALL");
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -90,7 +94,11 @@ export default function ExpensesPage() {
   const [category, setCategory] = useState<ExpenseCategory>(ExpenseCategory.OTHER);
   const [amount, setAmount] = useState<number | "">("");
   const [method, setMethod] = useState<PaymentMethod>(PaymentMethod.CASH);
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  });
   const [description, setDescription] = useState("");
   const [notes, setNotes] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
@@ -135,14 +143,15 @@ export default function ExpensesPage() {
     const q = query.trim().toLowerCase();
     return expenses.filter((e) => {
       const matchesCategory = categoryFilter === "ALL" || e.category === categoryFilter;
+      const matchesDate = isDateInRange(e.date, datePreset, startDate, endDate);
       const matchesQuery =
         !q ||
         e.expenseNo.toLowerCase().includes(q) ||
         e.description.toLowerCase().includes(q) ||
         (e.notes && e.notes.toLowerCase().includes(q));
-      return matchesCategory && matchesQuery;
+      return matchesCategory && matchesDate && matchesQuery;
     });
-  }, [expenses, query, categoryFilter]);
+  }, [expenses, query, categoryFilter, datePreset, startDate, endDate]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -185,7 +194,9 @@ export default function ExpensesPage() {
         setCategory(ExpenseCategory.OTHER);
         setAmount("");
         setMethod(PaymentMethod.CASH);
-        setDate(new Date().toISOString().slice(0, 10));
+        const now = new Date();
+        const pad = (n: number) => String(n).padStart(2, "0");
+        setDate(`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`);
         setDescription("");
         setNotes("");
         setIsDialogOpen(false);
@@ -276,6 +287,15 @@ export default function ExpensesPage() {
             </option>
           ))}
         </select>
+
+        <DateRangeFilter
+          preset={datePreset}
+          onPresetChange={setDatePreset}
+          startDate={startDate}
+          onStartDateChange={setStartDate}
+          endDate={endDate}
+          onEndDateChange={setEndDate}
+        />
       </div>
 
       {/* Expense List Card */}
@@ -293,7 +313,7 @@ export default function ExpensesPage() {
                 <thead className="border-b border-slate-100 bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   <tr>
                     <th className="px-4 py-3">Expense #</th>
-                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">Date & Time</th>
                     <th className="px-4 py-3">Category</th>
                     <th className="px-4 py-3">Description</th>
                     <th className="px-4 py-3">Payment Method</th>
@@ -304,8 +324,8 @@ export default function ExpensesPage() {
                   {filteredExpenses.map((exp) => (
                     <tr key={exp.id} className="hover:bg-slate-50/60 transition-colors">
                       <td className="px-4 py-3 font-semibold text-slate-900">{exp.expenseNo}</td>
-                      <td className="px-4 py-3 text-slate-500 whitespace-nowrap">
-                        {format(new Date(exp.date), "dd/MM/yyyy")}
+                      <td className="px-4 py-3 text-slate-500 whitespace-nowrap font-mono text-[11px]">
+                        {format(new Date(exp.date), "yyyy-MM-dd HH:mm")}
                       </td>
                       <td className="px-4 py-3">
                         <span className="inline-flex rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 border border-emerald-200/60">
@@ -416,11 +436,11 @@ export default function ExpensesPage() {
 
               <div className="space-y-1">
                 <Label htmlFor="date" className="text-xs font-semibold">
-                  Expense Date <span className="text-rose-500">*</span>
+                  Expense Date & Time <span className="text-rose-500">*</span>
                 </Label>
                 <Input
                   id="date"
-                  type="date"
+                  type="datetime-local"
                   value={date}
                   onChange={(e) => setDate(e.target.value)}
                   className="text-xs bg-white"

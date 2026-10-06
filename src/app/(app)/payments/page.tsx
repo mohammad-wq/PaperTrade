@@ -32,6 +32,9 @@ import { PaymentMethod, PartyType } from "@prisma/client";
 import { cn, formatDateTime } from "@/lib/utils";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
+import { DateRangeFilter, isDateInRange, DateFilterPreset } from "@/components/ui/date-range-filter";
+import { cleanPartyDisplayName } from "@/lib/party-display";
+import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf } from "@/lib/print-pdf";
@@ -128,6 +131,9 @@ export default function PaymentsPage() {
   const [query, setQuery] = useState("");
   const [directionFilter, setDirectionFilter] = useState<"ALL" | "IN" | "OUT">("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
+  const [datePreset, setDatePreset] = useState<DateFilterPreset>("ALL");
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isExpenseDialogOpen, setIsExpenseDialogOpen] = useState(false);
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
@@ -383,6 +389,11 @@ export default function PaymentsPage() {
         return false;
       }
 
+      // Date range filter
+      if (!isDateInRange(p.date, datePreset, startDate, endDate)) {
+        return false;
+      }
+
       if (!q) return true;
       const receiptStr = p.receiptNo ? p.receiptNo.toLowerCase() : "";
       const seqStr = p.sequenceNo ? String(p.sequenceNo) : "";
@@ -396,7 +407,7 @@ export default function PaymentsPage() {
         (p.splits && p.splits.some((s) => s.reference && s.reference.toLowerCase().includes(q)))
       );
     });
-  }, [payments, query, directionFilter, yearFilter]);
+  }, [payments, query, directionFilter, yearFilter, datePreset, startDate, endDate]);
 
   const totalCollected = useMemo(
     () =>
@@ -764,6 +775,15 @@ export default function PaymentsPage() {
               All Years
             </button>
           </div>
+
+          <DateRangeFilter
+            preset={datePreset}
+            onPresetChange={setDatePreset}
+            startDate={startDate}
+            onStartDateChange={setStartDate}
+            endDate={endDate}
+            onEndDateChange={setEndDate}
+          />
         </div>
       </div>
 
@@ -804,7 +824,7 @@ export default function PaymentsPage() {
                     className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors"
                   >
                     <td className="py-2 px-3 whitespace-nowrap text-slate-700 dark:text-slate-300 font-mono text-[11px]">
-                      {formatDateTime(p.date)}
+                      {format(new Date(p.date), "yyyy-MM-dd HH:mm")}
                     </td>
                     <td className="py-2 px-3 whitespace-nowrap">
                       <div className="flex items-center gap-1 font-mono font-bold text-slate-900 dark:text-slate-100">
@@ -818,7 +838,7 @@ export default function PaymentsPage() {
                     </td>
                     <td className="py-2 px-3">
                       <div className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
-                        <span>{p.party.name}</span>
+                        <span>{cleanPartyDisplayName(p.party.name)}</span>
                         {(p as any).isPartnership && (
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
                             Partnership
@@ -1056,7 +1076,7 @@ export default function PaymentsPage() {
                     const balLabel = isReceivable ? "Receivable" : isPayable ? "Payable" : "Settled";
                     return {
                       id: p.id,
-                      label: p.name,
+                      label: cleanPartyDisplayName(p.name),
                       sublabel: `${p.type} • Bal: PKR ${Math.abs(p.balance).toLocaleString()} (${balLabel})`,
                       badge: p.isPartner ? "Partner" : p.type === PartyType.CUSTOMER ? "Customer" : "Supplier",
                       badgeColor: p.isPartner ? "sky" : p.type === PartyType.CUSTOMER ? "green" : "amber",

@@ -42,11 +42,7 @@ export async function getOpenInvoicesForParty(
       .map((inv) => {
         const total = Number(inv.totalAmount);
         const paid = Number(inv.paidAmount ?? inv.amountPaid ?? 0);
-        // If balanceAmount is explicitly tracked and > 0, use it; otherwise compute total - paid
-        const rawDue = inv.balanceAmount != null && Number(inv.balanceAmount) > 0
-          ? Number(inv.balanceAmount)
-          : total - paid;
-        const totalDue = Math.max(0, rawDue);
+        const totalDue = Math.max(0, total - paid);
 
         return {
           invoiceId: inv.id,

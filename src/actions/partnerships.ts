@@ -5,14 +5,18 @@ import { prisma } from "@/lib/db";
 import { runAction, parseInput } from "@/actions/_helpers";
 import { requireSession } from "@/lib/auth/session";
 import { userError } from "@/lib/errors";
-import { getPartyBalance } from "@/lib/ledger";
-import { StockMovementType, InvoiceStatus, PaymentStatus, AccountType } from "@prisma/client";
+import { getPartyBalance, postJournal } from "@/lib/ledger";
+import { StockMovementType, InvoiceStatus, PaymentStatus, AccountType, PartnershipType, LotStatus, PaymentMethod, LedgerAccountSubtype } from "@prisma/client";
 import { assertStockDeductionsAvailable, getStockOnHand } from "@/lib/stock";
 import { generateDocumentNumber, withResourceQueue } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { cleanPartyDisplayName } from "@/lib/party-display";
 import { createPaymentAction } from "@/actions/payments";
+import {
+  partnershipArchetypeFromLot,
+  postOutflow,
+} from "@/lib/inventoryCost.service";
 
 export async function listPartnersAction() {
   return runAction("partnerships.list", async () => {
@@ -271,6 +275,7 @@ const partnershipPurchaseIntakeSchema = z
     supplierId: z.string().trim().optional().nullable(),
     destinationLocationId: z.string().min(1, "Destination Location is required"),
     lotNumber: z.string().trim().min(1, "Lot Number / Reference is required"),
+    warehouseLotId: z.string().trim().optional().nullable(),
     partnerSharePct: z.coerce.number().min(0).max(100).default(100),
     clientSharePct: z.coerce.number().min(0).max(100).default(0),
     date: z.coerce.date().default(() => new Date()),
@@ -343,13 +348,26 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
         : totalAmount / input.items.reduce((s, it) => s + it.quantity, 0);
 
     const res = await prisma.$transaction(async (tx) => {
-      // 1. Create or update the WarehouseLot in Shared Warehouse
-      let lot = await tx.warehouseLot.findFirst({
-        where: {
-          locationId: destinationLocation.id,
-          lotNumber: input.lotNumber.trim(),
-        },
-      });
+      // 1. Create or update the WarehouseLot in Shared Warehouse (prefer explicit lot id)
+      let lot =
+        (input as { warehouseLotId?: string }).warehouseLotId
+          ? await tx.warehouseLot.findUnique({
+              where: { id: (input as { warehouseLotId?: string }).warehouseLotId! },
+            })
+          : null;
+
+      if (lot && lot.locationId !== destinationLocation.id) {
+        throw userError("Selected warehouse lot does not belong to the destination warehouse.");
+      }
+
+      if (!lot) {
+        lot = await tx.warehouseLot.findFirst({
+          where: {
+            locationId: destinationLocation.id,
+            lotNumber: input.lotNumber.trim(),
+          },
+        });
+      }
 
       if (!lot) {
         lot = await tx.warehouseLot.create({
@@ -1061,21 +1079,16 @@ export async function getPartnershipHubDataAction(
       if (isSharedWh) {
         if (m.type === "PURCHASE_IN" || m.type === "TRANSFER_IN" || m.type === "SALE_RETURN" || (m.type === "ADJUSTMENT" && qty > 0)) {
           sharedWhLotQtyMap.set(compositeKey, (sharedWhLotQtyMap.get(compositeKey) ?? 0) + qty);
-          sharedWhLotQtyMap.set(lotKey, (sharedWhLotQtyMap.get(lotKey) ?? 0) + qty);
           if (m.type === "PURCHASE_IN") {
             lotReceivedQtyMap.set(compositeKey, (lotReceivedQtyMap.get(compositeKey) ?? 0) + qty);
-            lotReceivedQtyMap.set(lotKey, (lotReceivedQtyMap.get(lotKey) ?? 0) + qty);
           }
         } else if (m.type === "SALE_OUT" || m.type === "TRANSFER_OUT" || m.type === "DELIVERY_OUT" || m.type === "PURCHASE_RETURN" || (m.type === "ADJUSTMENT" && qty < 0)) {
           const absQty = Math.abs(qty);
           sharedWhLotQtyMap.set(compositeKey, (sharedWhLotQtyMap.get(compositeKey) ?? 0) - absQty);
-          sharedWhLotQtyMap.set(lotKey, (sharedWhLotQtyMap.get(lotKey) ?? 0) - absQty);
           if (m.type === "TRANSFER_OUT" || m.referenceType === "PARTNERSHIP_PULL") {
             lotPulledQtyMap.set(compositeKey, (lotPulledQtyMap.get(compositeKey) ?? 0) + absQty);
-            lotPulledQtyMap.set(lotKey, (lotPulledQtyMap.get(lotKey) ?? 0) + absQty);
           } else if (m.type === "SALE_OUT" || m.type === "ADJUSTMENT") {
             lotSoldDirectQtyMap.set(compositeKey, (lotSoldDirectQtyMap.get(compositeKey) ?? 0) + absQty);
-            lotSoldDirectQtyMap.set(lotKey, (lotSoldDirectQtyMap.get(lotKey) ?? 0) + absQty);
           }
         }
       }
@@ -1083,11 +1096,9 @@ export async function getPartnershipHubDataAction(
       if (isShop) {
         if (m.type === "PURCHASE_IN" || m.type === "TRANSFER_IN" || m.type === "SALE_RETURN" || (m.type === "ADJUSTMENT" && qty > 0)) {
           shopLotQtyMap.set(compositeKey, (shopLotQtyMap.get(compositeKey) ?? 0) + qty);
-          shopLotQtyMap.set(lotKey, (shopLotQtyMap.get(lotKey) ?? 0) + qty);
         } else if (m.type === "SALE_OUT" || m.type === "TRANSFER_OUT" || m.type === "DELIVERY_OUT" || m.type === "PURCHASE_RETURN" || (m.type === "ADJUSTMENT" && qty < 0)) {
           const absQty = Math.abs(qty);
           shopLotQtyMap.set(compositeKey, (shopLotQtyMap.get(compositeKey) ?? 0) - absQty);
-          shopLotQtyMap.set(lotKey, (shopLotQtyMap.get(lotKey) ?? 0) - absQty);
         }
       }
     }
@@ -1485,8 +1496,8 @@ export async function getPartnershipHubDataAction(
       const productIds = lotProductPairs.get(lot.id);
       const targetPids = productIds && productIds.size > 0 ? Array.from(productIds) : [];
 
-      if (targetPids.length === 0 && allRelevantProducts.length > 0) {
-        targetPids.push(allRelevantProducts[0].id);
+      if (targetPids.length === 0) {
+        continue;
       }
 
       for (const pId of targetPids) {
@@ -1503,11 +1514,11 @@ export async function getPartnershipHubDataAction(
             : `${pShare}% Partner / ${cShare}% Client`;
 
         const compositeKey = `${lot.id}:${pId}`;
-        const received = lotReceivedQtyMap.get(compositeKey) ?? (targetPids.length === 1 ? (lotReceivedQtyMap.get(lot.id) ?? 0) : 0);
-        const pulled = lotPulledQtyMap.get(compositeKey) ?? (targetPids.length === 1 ? (lotPulledQtyMap.get(lot.id) ?? 0) : 0);
-        const soldDirect = lotSoldDirectQtyMap.get(compositeKey) ?? (targetPids.length === 1 ? (lotSoldDirectQtyMap.get(lot.id) ?? 0) : 0);
-        const remainingWh = Math.max(0, sharedWhLotQtyMap.get(compositeKey) ?? (targetPids.length === 1 ? (sharedWhLotQtyMap.get(lot.id) ?? 0) : 0));
-        const remainingShop = Math.max(0, shopLotQtyMap.get(compositeKey) ?? (targetPids.length === 1 ? (shopLotQtyMap.get(lot.id) ?? 0) : 0));
+        const received = lotReceivedQtyMap.get(compositeKey) ?? 0;
+        const pulled = lotPulledQtyMap.get(compositeKey) ?? 0;
+        const soldDirect = lotSoldDirectQtyMap.get(compositeKey) ?? 0;
+        const remainingWh = Math.max(0, sharedWhLotQtyMap.get(compositeKey) ?? 0);
+        const remainingShop = Math.max(0, shopLotQtyMap.get(compositeKey) ?? 0);
 
         entry.lots.push({
           id: lot.id,
@@ -1603,7 +1614,15 @@ export async function getPartnershipHubDataAction(
     // All active warehouse lots for selection in intake
     const existingWarehouseLots = (
       await prisma.warehouseLot.findMany({
-        where: { deletedAt: null },
+        where: {
+          deletedAt: null,
+          OR: [
+            { partnerId: partner.id },
+            ...(partnerWarehouseIds.size > 0
+              ? [{ locationId: { in: Array.from(partnerWarehouseIds) } }]
+              : []),
+          ],
+        },
         select: {
           id: true,
           lotNumber: true,
@@ -1761,3 +1780,1193 @@ export async function recordPartnerSettlementAction(raw: unknown) {
     return createPaymentAction(raw);
   });
 }
+
+// ============================================================================
+// CPA-GRADE PARTNERSHIP HUB SUB-LEDGER & LOT MANAGEMENT
+// Archetypes: CONSIGNMENT_VMI & CO_INVESTED_POOL
+// ============================================================================
+
+export async function listPartnershipLotsAction(filters?: {
+  partnerId?: string;
+  type?: PartnershipType;
+  status?: LotStatus;
+}) {
+  return runAction("partnerships.lots.list", async () => {
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view partnership lots.");
+    }
+
+    const where: any = {};
+    if (filters?.partnerId) where.partnerId = filters.partnerId;
+    if (filters?.type) where.type = filters.type;
+    if (filters?.status) where.status = filters.status;
+
+    const lots = await prisma.partnershipLot.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      include: {
+        partner: { select: { id: true, name: true, phone: true } },
+        warehouse: { select: { id: true, name: true } },
+        items: {
+          include: {
+            product: { select: { id: true, productNo: true, name: true, unit: true } },
+          },
+        },
+        expenses: true,
+        allocations: true,
+      },
+    });
+
+    return lots.map((lot) => {
+      const initialUnits = lot.items.reduce((sum, it) => sum + Number(it.initialQuantity), 0);
+      const remainingUnits = lot.items.reduce((sum, it) => sum + Number(it.remainingQuantity), 0);
+      const remainingValuation = lot.items.reduce(
+        (sum, it) => sum + Number(it.remainingQuantity) * Number(it.unitCostRate),
+        0
+      );
+
+      const totalRevenue = lot.allocations.reduce(
+        (sum, a) => sum + Number(a.quantity) * Number(a.unitSaleRate),
+        0
+      );
+      const totalCOGS = lot.allocations.reduce(
+        (sum, a) => sum + Number(a.quantity) * Number(a.unitCostRate),
+        0
+      );
+      const grossMargin = lot.allocations.reduce((sum, a) => sum + Number(a.grossMargin), 0);
+      const partnerMarginShare = lot.allocations.reduce(
+        (sum, a) => sum + Number(a.partnerMarginShare),
+        0
+      );
+      const totalExpenses = lot.expenses.reduce((sum, e) => sum + Number(e.amount), 0);
+
+      return {
+        id: lot.id,
+        lotNumber: lot.lotNumber,
+        partnerId: lot.partnerId,
+        partnerName: cleanPartyDisplayName(lot.partner.name),
+        partnerPhone: lot.partner.phone,
+        type: lot.type,
+        status: lot.status,
+        warehouseId: lot.warehouseId,
+        warehouseName: lot.warehouse.name,
+        totalCapitalCost: Number(lot.totalCapitalCost),
+        entityCapitalShare: Number(lot.entityCapitalShare),
+        partnerCapitalShare: Number(lot.partnerCapitalShare),
+        partnerMarginRatio: Number(lot.partnerMarginRatio),
+        initialUnits,
+        remainingUnits,
+        remainingValuation,
+        totalRevenue,
+        totalCOGS,
+        grossMargin,
+        partnerMarginShare,
+        totalExpenses,
+        itemCount: lot.items.length,
+        createdAt: lot.createdAt,
+      };
+    });
+  });
+}
+
+const createPartnershipLotSchema = z.object({
+  lotNumber: z.string().trim().min(1, "Lot Number is required"),
+  partnerId: z.string().min(1, "Partner is required"),
+  type: z.enum(["CONSIGNMENT_VMI", "CO_INVESTED_POOL"]).default("CO_INVESTED_POOL"),
+  warehouseId: z.string().min(1, "Warehouse Location is required"),
+  partnerMarginRatio: z.coerce.number().min(0).max(1).default(0.5),
+  entityCapitalShare: z.coerce.number().min(0).optional(),
+  partnerCapitalShare: z.coerce.number().min(0).optional(),
+  notes: z.string().trim().optional().nullable(),
+  items: z
+    .array(
+      z.object({
+        productId: z.string().min(1, "Product is required"),
+        initialQuantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
+        unitCostRate: z.coerce.number().min(0, "Unit cost rate must be 0 or greater"),
+      })
+    )
+    .min(1, "At least one item is required"),
+});
+
+export async function createPartnershipLotAction(raw: unknown) {
+  return runAction("partnerships.lots.create", async () => {
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "create", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "create", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to create a partnership lot.");
+    }
+    const input = parseInput(createPartnershipLotSchema, raw);
+
+    const partner = await prisma.party.findUnique({
+      where: { id: input.partnerId },
+      select: { id: true, name: true },
+    });
+    if (!partner) throw userError("Partner not found.");
+
+    const warehouse = await prisma.location.findUnique({
+      where: { id: input.warehouseId },
+      select: { id: true, name: true, type: true },
+    });
+    if (!warehouse) throw userError("Warehouse location not found.");
+
+    // Check duplicate lot number
+    const existing = await prisma.partnershipLot.findUnique({
+      where: { lotNumber: input.lotNumber.trim() },
+    });
+    if (existing) {
+      throw userError(`A partnership lot with number "${input.lotNumber}" already exists.`);
+    }
+
+    const totalCapitalCost = input.items.reduce(
+      (sum, it) => sum + it.initialQuantity * it.unitCostRate,
+      0
+    );
+
+    let partnerCap = 0;
+    let entityCap = 0;
+
+    const partnerMarginRatio = input.partnerMarginRatio ?? 0.5;
+
+    if (input.type === "CONSIGNMENT_VMI") {
+      // Consignment: Partner purchases 100% of stock.
+      // Zero GL trade payable or purchase entry posted to the shop ledger upon intake.
+      partnerCap = totalCapitalCost;
+      entityCap = 0;
+    } else {
+      // Co-Invested Pool
+      if (input.partnerCapitalShare != null && input.entityCapitalShare != null) {
+        partnerCap = input.partnerCapitalShare;
+        entityCap = input.entityCapitalShare;
+      } else {
+        partnerCap = totalCapitalCost * partnerMarginRatio;
+        entityCap = totalCapitalCost - partnerCap;
+      }
+    }
+
+    const res = await prisma.$transaction(async (tx) => {
+      const lot = await tx.partnershipLot.create({
+        data: {
+          lotNumber: input.lotNumber.trim(),
+          partnerId: partner.id,
+          type: input.type,
+          status: LotStatus.ACTIVE,
+          totalCapitalCost,
+          entityCapitalShare: entityCap,
+          partnerCapitalShare: partnerCap,
+          partnerMarginRatio,
+          warehouseId: warehouse.id,
+          items: {
+            create: input.items.map((it) => ({
+              productId: it.productId,
+              initialQuantity: it.initialQuantity,
+              remainingQuantity: it.initialQuantity,
+              unitCostRate: it.unitCostRate,
+            })),
+          },
+        },
+      });
+
+      // Record StockMovements at the warehouse location to track physical intake count under this lot
+      for (const it of input.items) {
+        await tx.stockMovement.create({
+          data: {
+            productId: it.productId,
+            locationId: warehouse.id,
+            partnershipLotId: lot.id,
+            type: StockMovementType.PURCHASE_IN,
+            quantity: it.initialQuantity,
+            referenceType: "PARTNERSHIP_INTAKE",
+            referenceId: lot.id,
+            createdById: session.user.id,
+            notes: `Partnership Intake [${lot.type}] Lot: ${lot.lotNumber} (${cleanPartyDisplayName(partner.name)})${input.notes ? ` — ${input.notes}` : ""}`,
+          },
+        });
+      }
+
+      return lot;
+    });
+
+    emitRealtimeEvent(["parties", "inventory", "stock-movements"], "create", "PartnershipLot", {
+      lotId: res.id,
+      lotNumber: res.lotNumber,
+    });
+
+    return { success: true, lotId: res.id, lotNumber: res.lotNumber };
+  });
+}
+
+export async function getPartnershipLotDetailsAction(lotId: string) {
+  return runAction("partnerships.lots.getDetails", async () => {
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "view", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "view", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to view partnership lot details.");
+    }
+
+    const lot = await prisma.partnershipLot.findUnique({
+      where: { id: lotId },
+      include: {
+        partner: { select: { id: true, name: true, phone: true, email: true } },
+        warehouse: { select: { id: true, name: true, type: true } },
+        items: {
+          include: {
+            product: { select: { id: true, productNo: true, name: true, unit: true, costPrice: true } },
+          },
+        },
+        expenses: {
+          orderBy: { createdAt: "desc" },
+        },
+        allocations: {
+          orderBy: { allocatedAt: "desc" },
+          include: {
+            invoice: { select: { id: true, invoiceNo: true, date: true, walkInName: true, customer: { select: { name: true } } } },
+            product: { select: { id: true, productNo: true, name: true, unit: true } },
+          },
+        },
+        reconciliations: {
+          orderBy: { periodEnd: "desc" },
+        },
+      },
+    });
+
+    if (!lot) throw userError("Partnership lot not found.");
+
+    // Fetch related stock movements for PO/DO movement audit sheet
+    const movements = await prisma.stockMovement.findMany({
+      where: {
+        OR: [
+          { partnershipLotId: lot.id },
+          { referenceId: lot.id },
+        ],
+      },
+      include: {
+        product: { select: { id: true, productNo: true, name: true, unit: true } },
+        location: { select: { id: true, name: true } },
+        createdBy: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    // Payouts made to partner for this partnership or general
+    const payments = await prisma.payment.findMany({
+      where: {
+        partyId: lot.partnerId,
+        direction: "OUT",
+        OR: [
+          { notes: { contains: lot.lotNumber, mode: "insensitive" } },
+          { isPartnership: true },
+        ],
+      },
+      select: {
+        id: true,
+        receiptNo: true,
+        date: true,
+        amount: true,
+        method: true,
+        notes: true,
+      },
+      orderBy: { date: "desc" },
+    });
+
+    // Calculate aggregated metrics
+    const totalInitialUnits = lot.items.reduce((s, it) => s + Number(it.initialQuantity), 0);
+    const totalRemainingUnits = lot.items.reduce((s, it) => s + Number(it.remainingQuantity), 0);
+    const totalRemainingValuation = lot.items.reduce(
+      (s, it) => s + Number(it.remainingQuantity) * Number(it.unitCostRate),
+      0
+    );
+
+    const totalGrossRevenue = lot.allocations.reduce(
+      (s, a) => s + Number(a.quantity) * Number(a.unitSaleRate),
+      0
+    );
+    const totalCOGS = lot.allocations.reduce(
+      (s, a) => s + Number(a.quantity) * Number(a.unitCostRate),
+      0
+    );
+    const totalGrossMargin = lot.allocations.reduce((s, a) => s + Number(a.grossMargin), 0);
+    const partnerAccruedMarginShare = lot.allocations.reduce(
+      (s, a) => s + Number(a.partnerMarginShare),
+      0
+    );
+    const shopRetainedMargin = totalGrossMargin - partnerAccruedMarginShare;
+
+    // Expenses
+    const entityPaidExpenses = lot.expenses
+      .filter((e) => e.paidBy === "ENTITY")
+      .reduce((s, e) => s + Number(e.amount), 0);
+    const partnerPaidExpenses = lot.expenses
+      .filter((e) => e.paidBy === "PARTNER")
+      .reduce((s, e) => s + Number(e.amount), 0);
+    const totalExpenses = entityPaidExpenses + partnerPaidExpenses;
+
+    // Units pulled to shop vs liquidated externally
+    const internalSoldUnits = lot.allocations
+      .filter((a) => a.salesChannel === "INTERNAL_POS")
+      .reduce((s, a) => s + Number(a.quantity), 0);
+    const externalSoldUnits = lot.allocations
+      .filter((a) => a.salesChannel === "EXTERNAL_PARTNER")
+      .reduce((s, a) => s + Number(a.quantity), 0);
+    const totalUnitsSold = internalSoldUnits + externalSoldUnits;
+
+    // Consignment-specific pulled value (Accounts Payable - Consignor)
+    // Find all DO / inward pulls to shop
+    const pullMovements = movements.filter(
+      (m) =>
+        m.type === StockMovementType.TRANSFER_IN ||
+        (m.type === StockMovementType.PURCHASE_IN && m.referenceType === "DELIVERY_ORDER")
+    );
+    const pulledUnitsTotal = pullMovements.reduce((s, m) => s + Number(m.quantity), 0);
+    const pulledValuationTotal = pullMovements.reduce((s, m) => {
+      const item = lot.items.find((it) => it.productId === m.productId);
+      return s + Number(m.quantity) * Number(item?.unitCostRate ?? 0);
+    }, 0);
+
+    const totalPayouts = payments.reduce((s, p) => s + Number(p.amount), 0);
+
+    // Calculate Net Settlement Position:
+    // If CONSIGNMENT_VMI:
+    // Net Payable to Partner = Accounts Payable – Consignor (for pulled stock) + partnerPaidExpenses - payouts
+    // If CO_INVESTED_POOL:
+    // Accrued Profit Share Payable + partnerPaidExpenses - entityPaidExpenses - payouts
+    let netSettlementAmount = 0;
+    let netSettlementDirection: "ENTITY_OWES_PARTNER" | "PARTNER_OWES_ENTITY" = "ENTITY_OWES_PARTNER";
+
+    if (lot.type === "CONSIGNMENT_VMI") {
+      netSettlementAmount = pulledValuationTotal + partnerPaidExpenses - totalPayouts;
+    } else {
+      netSettlementAmount = partnerAccruedMarginShare + partnerPaidExpenses - totalPayouts;
+    }
+
+    if (netSettlementAmount < 0) {
+      netSettlementDirection = "PARTNER_OWES_ENTITY";
+      netSettlementAmount = Math.abs(netSettlementAmount);
+    }
+
+    // Breakdown per item
+    const itemBreakdown = lot.items.map((it) => {
+      const itemAllocations = lot.allocations.filter((a) => a.productId === it.productId);
+      const soldInternal = itemAllocations
+        .filter((a) => a.salesChannel === "INTERNAL_POS")
+        .reduce((s, a) => s + Number(a.quantity), 0);
+      const soldExternal = itemAllocations
+        .filter((a) => a.salesChannel === "EXTERNAL_PARTNER")
+        .reduce((s, a) => s + Number(a.quantity), 0);
+      const itemPulled = pullMovements
+        .filter((m) => m.productId === it.productId)
+        .reduce((s, m) => s + Number(m.quantity), 0);
+
+      return {
+        id: it.id,
+        productId: it.productId,
+        productNo: it.product.productNo,
+        productName: it.product.name,
+        unit: it.product.unit,
+        initialQuantity: Number(it.initialQuantity),
+        remainingQuantity: Number(it.remainingQuantity),
+        unitCostRate: Number(it.unitCostRate),
+        initialCost: Number(it.initialQuantity) * Number(it.unitCostRate),
+        remainingValuation: Number(it.remainingQuantity) * Number(it.unitCostRate),
+        pulledToShopQty: itemPulled,
+        liquidatedByPartnerQty: soldExternal,
+        soldInternalQty: soldInternal,
+      };
+    });
+
+    return {
+      lot: {
+        id: lot.id,
+        lotNumber: lot.lotNumber,
+        partnerId: lot.partnerId,
+        partnerName: cleanPartyDisplayName(lot.partner.name),
+        partnerPhone: lot.partner.phone,
+        partnerEmail: lot.partner.email,
+        type: lot.type,
+        status: lot.status,
+        warehouseId: lot.warehouseId,
+        warehouseName: lot.warehouse.name,
+        totalCapitalCost: Number(lot.totalCapitalCost),
+        entityCapitalShare: Number(lot.entityCapitalShare),
+        partnerCapitalShare: Number(lot.partnerCapitalShare),
+        partnerMarginRatio: Number(lot.partnerMarginRatio),
+        createdAt: lot.createdAt,
+        updatedAt: lot.updatedAt,
+      },
+      metrics: {
+        // Contributed Capital
+        totalCapitalCost: Number(lot.totalCapitalCost),
+        entityCapitalShare: Number(lot.entityCapitalShare),
+        partnerCapitalShare: Number(lot.partnerCapitalShare),
+        partnerMarginRatioPct: Number(lot.partnerMarginRatio) * 100,
+        // Lot Inventory
+        totalInitialUnits,
+        totalRemainingUnits,
+        totalRemainingValuation,
+        pulledUnitsTotal,
+        pulledValuationTotal,
+        liquidatedUnitsTotal: externalSoldUnits,
+        // Gross Revenue & Margin
+        totalGrossRevenue,
+        totalCOGS,
+        totalGrossMargin,
+        partnerAccruedMarginShare,
+        shopRetainedMargin,
+        // Expenses
+        entityPaidExpenses,
+        partnerPaidExpenses,
+        totalExpenses,
+        // Net Settlement Position
+        netSettlementAmount,
+        netSettlementDirection,
+        totalPayouts,
+      },
+      items: itemBreakdown,
+      allocations: lot.allocations.map((a) => ({
+        id: a.id,
+        invoiceId: a.invoiceId,
+        invoiceNo: a.invoice?.invoiceNo || "EXT-LIQ",
+        customerName: a.invoice?.customer?.name || a.invoice?.walkInName || (a.salesChannel === "EXTERNAL_PARTNER" ? "External Buyer" : "Customer"),
+        productNo: a.product.productNo,
+        productName: a.product.name,
+        unit: a.product.unit,
+        quantity: Number(a.quantity),
+        unitCostRate: Number(a.unitCostRate),
+        unitSaleRate: Number(a.unitSaleRate),
+        grossMargin: Number(a.grossMargin),
+        partnerMarginShare: Number(a.partnerMarginShare),
+        salesChannel: a.salesChannel,
+        allocatedAt: a.allocatedAt,
+      })),
+      expenses: lot.expenses.map((e) => ({
+        id: e.id,
+        category: e.category,
+        description: e.description,
+        amount: Number(e.amount),
+        paidBy: e.paidBy,
+        createdAt: e.createdAt,
+      })),
+      movements: movements.map((m) => ({
+        id: m.id,
+        date: m.createdAt,
+        type: m.type,
+        referenceType: m.referenceType,
+        referenceId: m.referenceId,
+        productNo: m.product.productNo,
+        productName: m.product.name,
+        unit: m.product.unit,
+        locationName: m.location.name,
+        quantity: Number(m.quantity),
+        notes: m.notes,
+        createdByName: m.createdBy?.name || "System",
+      })),
+      payouts: payments.map((p) => ({
+        id: p.id,
+        receiptNo: p.receiptNo || `PAY-${p.id.slice(0, 6)}`,
+        date: p.date,
+        amount: Number(p.amount),
+        method: p.method,
+        notes: p.notes,
+      })),
+    };
+  });
+}
+
+// ----------------------------------------------------------------------------
+// DO / PI Pull from Partnership Lot to Shop
+// ----------------------------------------------------------------------------
+const pullPartnershipLotStockSchema = z.object({
+  lotId: z.string().min(1, "Lot ID is required"),
+  destinationLocationId: z.string().min(1, "Destination Shop Location is required"),
+  date: z.coerce.date().default(() => new Date()),
+  notes: z.string().trim().optional().nullable(),
+  items: z
+    .array(
+      z.object({
+        productId: z.string().min(1, "Product is required"),
+        quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
+      })
+    )
+    .min(1, "At least one item is required"),
+});
+
+export async function pullPartnershipLotStockAction(raw: unknown) {
+  return runAction("partnerships.lots.pullToShop", async () => {
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "update", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to pull partnership stock.");
+    }
+    const input = parseInput(pullPartnershipLotStockSchema, raw);
+
+    const lot = await prisma.partnershipLot.findUnique({
+      where: { id: input.lotId },
+      include: {
+        partner: true,
+        warehouse: true,
+        items: { include: { product: true } },
+      },
+    });
+    if (!lot) throw userError("Partnership lot not found.");
+
+    const destinationLocation = await prisma.location.findUnique({
+      where: { id: input.destinationLocationId },
+      select: { id: true, name: true, type: true },
+    });
+    if (!destinationLocation) throw userError("Destination location not found.");
+    if (destinationLocation.type !== "SHOP") {
+      throw userError("Stock pull must be received at a shop location.");
+    }
+
+    // Verify stock availability in lot
+    for (const reqItem of input.items) {
+      const lotItem = lot.items.find((li) => li.productId === reqItem.productId);
+      if (!lotItem) {
+        throw userError(`Product is not part of lot ${lot.lotNumber}.`);
+      }
+      if (Number(lotItem.remainingQuantity) < reqItem.quantity) {
+        throw userError(
+          `Insufficient quantity in lot ${lot.lotNumber} for ${lotItem.product.name}. Available: ${lotItem.remainingQuantity}, Requested: ${reqItem.quantity}`
+        );
+      }
+    }
+
+    const pullDate = input.date ?? new Date();
+    const activeYear = await prisma.financialYear.findFirst({
+      where: { isActive: true, isClosed: false },
+    });
+
+    const res = await prisma.$transaction(async (tx) => {
+      const doNo = generateDocumentNumber("DO-PULL");
+      let totalPullValuation = 0;
+
+      for (const reqItem of input.items) {
+        const lotItem = lot.items.find((li) => li.productId === reqItem.productId)!;
+        const lineValuation = reqItem.quantity * Number(lotItem.unitCostRate);
+        totalPullValuation += lineValuation;
+
+        // Decrement PartnershipLotItem.remainingQuantity
+        await tx.partnershipLotItem.update({
+          where: { id: lotItem.id },
+          data: {
+            remainingQuantity: {
+              decrement: reqItem.quantity,
+            },
+          },
+        });
+
+        // Decrement warehouse lot stock
+        await tx.stockMovement.create({
+          data: {
+            productId: reqItem.productId,
+            locationId: lot.warehouseId,
+            partnershipLotId: lot.id,
+            type: StockMovementType.TRANSFER_OUT,
+            quantity: reqItem.quantity,
+            referenceType: "DELIVERY_ORDER",
+            referenceId: doNo,
+            createdById: session.user.id,
+            createdAt: pullDate,
+            notes: `Delivery Order ${doNo}: Pulled to shop floor ${destinationLocation.name} [Lot ${lot.lotNumber}]`,
+          },
+        });
+
+        // Increment shop regular or JV stock
+        await tx.stockMovement.create({
+          data: {
+            productId: reqItem.productId,
+            locationId: destinationLocation.id,
+            partnershipLotId: lot.type === "CO_INVESTED_POOL" ? lot.id : null,
+            type: StockMovementType.TRANSFER_IN,
+            quantity: reqItem.quantity,
+            referenceType: "DELIVERY_ORDER",
+            referenceId: doNo,
+            createdById: session.user.id,
+            createdAt: pullDate,
+            notes:
+              lot.type === "CONSIGNMENT_VMI"
+                ? `Consignment inward received at ${destinationLocation.name} (fungible regular stock) [Ref: ${doNo}]`
+                : `JV Pool stock received at ${destinationLocation.name} [Lot ${lot.lotNumber}] [Ref: ${doNo}]`,
+          },
+        });
+      }
+
+      // If CONSIGNMENT_VMI: Post Accounts Payable credit
+      // Debit: Inventory on Hand (Asset)
+      // Credit: Accounts Payable – Consignor (Partner B) at the agreed unit cost rate.
+      if (lot.type === "CONSIGNMENT_VMI") {
+        const invoiceNo = generateDocumentNumber("PINV-VMI");
+
+        const purchaseInvoice = await tx.purchaseInvoice.create({
+          data: {
+            invoiceNo,
+            financialYearId: activeYear?.id || null,
+            supplierId: lot.partnerId,
+            locationId: destinationLocation.id,
+            date: pullDate,
+            status: InvoiceStatus.OPEN,
+            paymentStatus: PaymentStatus.UNPAID,
+            isPartnership: true,
+            partnershipId: lot.partnerId,
+            totalAmount: totalPullValuation,
+            amountPaid: 0,
+            paidAmount: 0,
+            balanceAmount: totalPullValuation,
+            notes: `[Consignment Stock Pull] From Lot ${lot.lotNumber} into ${destinationLocation.name} via ${doNo}${input.notes ? ` — ${input.notes}` : ""}`,
+            createdById: session.user.id,
+            items: {
+              create: input.items.map((it) => {
+                const lotItem = lot.items.find((li) => li.productId === it.productId)!;
+                return {
+                  productId: it.productId,
+                  locationId: destinationLocation.id,
+                  quantity: it.quantity,
+                  unitCost: lotItem.unitCostRate,
+                  lineTotal: it.quantity * Number(lotItem.unitCostRate),
+                };
+              }),
+            },
+          },
+        });
+
+        // Debit: Inventory on Hand (Asset)
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.INVENTORY,
+            debit: totalPullValuation,
+            credit: 0,
+            isPartnership: true,
+            partnershipId: lot.partnerId,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: purchaseInvoice.id,
+            date: pullDate,
+            description: `Inventory on Hand (Asset) - Consignment Draw [Lot ${lot.lotNumber}] into ${destinationLocation.name}`,
+            createdById: session.user.id,
+          },
+        });
+
+        // Credit: Accounts Payable – Consignor
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: lot.partnerId,
+            accountType: AccountType.PAYABLE,
+            debit: 0,
+            credit: totalPullValuation,
+            isPartnership: true,
+            partnershipId: lot.partnerId,
+            referenceType: "PURCHASE_INVOICE",
+            referenceId: purchaseInvoice.id,
+            date: pullDate,
+            description: `Accounts Payable – Consignor (${cleanPartyDisplayName(lot.partner.name)}): Consignment Draw [Lot ${lot.lotNumber}] (${purchaseInvoice.invoiceNo})`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      return { doNo, totalPullValuation };
+    });
+
+    emitRealtimeEvent(["parties", "inventory", "stock-movements", "ledger"], "create", "StockPull", {
+      lotId: lot.id,
+      doNo: res.doNo,
+    });
+
+    return { success: true, doNo: res.doNo, valuation: res.totalPullValuation };
+  });
+}
+
+// ----------------------------------------------------------------------------
+// External Partner Liquidation (Reconciliation Entry)
+// ----------------------------------------------------------------------------
+const externalLiquidationSchema = z.object({
+  lotId: z.string().min(1, "Lot ID is required"),
+  productId: z.string().min(1, "Product is required"),
+  quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
+  realizedRate: z.coerce.number().gt(0, "Realized unit rate must be greater than 0"),
+  partnerExpenses: z.coerce.number().min(0).default(0),
+  expenseDescription: z.string().trim().optional().nullable(),
+  date: z.coerce.date().default(() => new Date()),
+  notes: z.string().trim().optional().nullable(),
+});
+
+export async function recordExternalPartnerLiquidationAction(raw: unknown) {
+  return runAction("partnerships.lots.externalLiquidation", async () => {
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "update", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "sales", "create", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to record partner liquidation.");
+    }
+    const input = parseInput(externalLiquidationSchema, raw);
+
+    const lot = await prisma.partnershipLot.findUnique({
+      where: { id: input.lotId },
+      include: {
+        partner: true,
+        items: { where: { productId: input.productId }, include: { product: true } },
+      },
+    });
+    if (!lot) throw userError("Partnership lot not found.");
+
+    const lotItem = lot.items[0];
+    if (!lotItem) throw userError("Product does not exist in this lot.");
+    if (Number(lotItem.remainingQuantity) < input.quantity) {
+      throw userError(
+        `Insufficient quantity in lot. Available: ${lotItem.remainingQuantity}, Requested: ${input.quantity}`
+      );
+    }
+
+    const unitCostRate = Number(lotItem.unitCostRate);
+    const unitSaleRate = input.realizedRate;
+    const grossMargin = (unitSaleRate - unitCostRate) * input.quantity;
+    const partnerMarginRatio = Number(lot.partnerMarginRatio);
+    const partnerMarginShare = grossMargin * partnerMarginRatio;
+    const liqDate = input.date ?? new Date();
+    const partnerExpenses = input.partnerExpenses ?? 0;
+
+    const res = await prisma.$transaction(async (tx) => {
+      // 1. Decrement lot item remaining quantity
+      await tx.partnershipLotItem.update({
+        where: { id: lotItem.id },
+        data: {
+          remainingQuantity: {
+            decrement: input.quantity,
+          },
+        },
+      });
+
+      const allocation = await tx.partnershipSaleAllocation.create({
+        data: {
+          lotId: lot.id,
+          productId: input.productId,
+          quantity: input.quantity,
+          unitCostRate,
+          unitSaleRate,
+          grossMargin,
+          partnerMarginShare,
+          salesChannel: "EXTERNAL_PARTNER",
+          soldBy: "PARTNER",
+          allocatedAt: liqDate,
+        },
+      });
+
+      await postOutflow(tx, {
+        productId: input.productId,
+        locationId: lot.warehouseId,
+        ownership: { ownershipType: "LOT", partnershipLotId: lot.id },
+        quantity: input.quantity,
+        movementType: "PARTNER_SALE",
+        referenceType: "EXTERNAL_PARTNER_LIQUIDATION",
+        referenceId: allocation.id,
+      });
+
+      // 3. Record StockMovement
+      await tx.stockMovement.create({
+        data: {
+          productId: input.productId,
+          locationId: lot.warehouseId,
+          partnershipLotId: lot.id,
+          type: StockMovementType.SALE_OUT,
+          quantity: input.quantity,
+          referenceType: "EXTERNAL_PARTNER_LIQUIDATION",
+          referenceId: allocation.id,
+          createdById: session.user.id,
+          createdAt: liqDate,
+          notes: `External partner liquidation: ${input.quantity} ${lotItem.product.unit} @ PKR ${unitSaleRate} [Lot ${lot.lotNumber}]${input.notes ? ` — ${input.notes}` : ""}`,
+        },
+      });
+
+      // 4. Record partner expense if provided
+      if (partnerExpenses > 0) {
+        await tx.partnershipExpense.create({
+          data: {
+            lotId: lot.id,
+            category: "Handling & Labor",
+            description: input.expenseDescription?.trim() || "External Liquidation Handling & Transport",
+            amount: partnerExpenses,
+            paidBy: "PARTNER",
+            createdAt: liqDate,
+          },
+        });
+      }
+
+      return allocation;
+    });
+
+    emitRealtimeEvent(["parties", "inventory", "stock-movements"], "create", "StockMovement", {
+      lotId: lot.id,
+      allocationId: res.id,
+    });
+
+    return {
+      success: true,
+      allocationId: res.id,
+      grossMargin,
+      partnerMarginShare,
+    };
+  });
+}
+
+// ----------------------------------------------------------------------------
+// Partnership Expense Recording
+// ----------------------------------------------------------------------------
+const recordPartnershipExpenseSchema = z.object({
+  lotId: z.string().min(1, "Lot ID is required"),
+  category: z.string().min(1, "Category is required"),
+  description: z.string().trim().min(1, "Description is required"),
+  amount: z.coerce.number().gt(0, "Amount must be greater than 0"),
+  paidBy: z.enum(["ENTITY", "PARTNER"]).default("ENTITY"),
+  date: z.coerce.date().default(() => new Date()),
+});
+
+export async function recordPartnershipExpenseAction(raw: unknown) {
+  return runAction("partnerships.lots.recordExpense", async () => {
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "update", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "expenses", "create", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to record partnership expenses.");
+    }
+    const input = parseInput(recordPartnershipExpenseSchema, raw);
+
+    const lot = await prisma.partnershipLot.findUnique({
+      where: { id: input.lotId },
+      include: { partner: true },
+    });
+    if (!lot) throw userError("Partnership lot not found.");
+
+    const shareRatio = Number(lot.partnerMarginRatio ?? 0.5);
+    const partnerShare = input.amount * shareRatio;
+    const entityShare = input.amount - partnerShare;
+
+    const expense = await prisma.$transaction(async (tx) => {
+      const row = await tx.partnershipExpense.create({
+        data: {
+          lotId: lot.id,
+          category: input.category,
+          description: input.description,
+          amount: input.amount,
+          paidBy: input.paidBy ?? "ENTITY",
+          entityShare,
+          partnerShare,
+          createdAt: input.date ?? new Date(),
+        },
+      });
+
+      const lines =
+        input.paidBy === "PARTNER"
+          ? [
+              {
+                accountType: AccountType.EXPENSE,
+                debit: entityShare,
+                credit: 0,
+                description: `Entity share of partnership expense: ${input.description}`,
+              },
+              {
+                partyId: lot.partnerId,
+                accountType: AccountType.PAYABLE,
+                accountSubtype: LedgerAccountSubtype.PARTNER_EXPENSE_DUE,
+                debit: 0,
+                credit: entityShare,
+                description: `Partner paid expense — entity owes share: ${input.description}`,
+                partnershipId: lot.id,
+                isPartnership: true,
+              },
+            ]
+          : [
+              {
+                accountType: AccountType.EXPENSE,
+                debit: entityShare,
+                credit: 0,
+                description: `Entity paid partnership expense (entity share): ${input.description}`,
+              },
+              {
+                accountType: AccountType.CASH,
+                debit: 0,
+                credit: input.amount,
+                description: `Cash paid for partnership expense: ${input.description}`,
+              },
+              {
+                partyId: lot.partnerId,
+                accountType: AccountType.RECEIVABLE,
+                debit: partnerShare,
+                credit: 0,
+                description: `Partner share due on expense paid by entity: ${input.description}`,
+                partnershipId: lot.id,
+                isPartnership: true,
+              },
+            ];
+
+      await postJournal(
+        {
+          referenceType: "PARTNERSHIP_EXPENSE",
+          referenceId: row.id,
+          date: input.date ?? new Date(),
+          createdById: session.user.id,
+          lines,
+        },
+        tx,
+      );
+
+      return row;
+    });
+
+    emitRealtimeEvent(["parties", "expenses"], "create", "Expense", {
+      lotId: lot.id,
+      expenseId: expense.id,
+    });
+
+    return { success: true, expenseId: expense.id };
+  });
+}
+
+// ----------------------------------------------------------------------------
+// Record Partner Settlement Payout
+// ----------------------------------------------------------------------------
+const recordPartnerSettlementPayoutSchema = z.object({
+  lotId: z.string().min(1, "Lot ID is required"),
+  amount: z.coerce.number().gt(0, "Amount must be greater than 0"),
+  method: z.nativeEnum(PaymentMethod).default(PaymentMethod.CASH),
+  date: z.coerce.date().default(() => new Date()),
+  notes: z.string().trim().optional().nullable(),
+});
+
+export async function recordPartnerSettlementPayoutAction(raw: unknown) {
+  return runAction("partnerships.lots.recordPayout", async () => {
+    const session = await requireSession();
+    if (
+      !canPerformAction(session.user.role, "partnerships", "update", (session.user as any).permissions) &&
+      !canPerformAction(session.user.role, "payments", "create", (session.user as any).permissions)
+    ) {
+      throw userError("You do not have permission to record settlement payouts.");
+    }
+    const input = parseInput(recordPartnerSettlementPayoutSchema, raw);
+
+    const lot = await prisma.partnershipLot.findUnique({
+      where: { id: input.lotId },
+      include: { partner: true },
+    });
+    if (!lot) throw userError("Partnership lot not found.");
+
+    const activeYear = await prisma.financialYear.findFirst({
+      where: { isActive: true, isClosed: false },
+    });
+
+    const receiptNo = generateDocumentNumber("PAY-SETTLE");
+    const payoutDate = input.date ?? new Date();
+
+    const res = await prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.create({
+        data: {
+          receiptNo,
+          financialYearId: activeYear?.id || null,
+          partyId: lot.partnerId,
+          isPartnership: true,
+          partnershipId: lot.id,
+          amount: input.amount,
+          method: input.method ?? PaymentMethod.CASH,
+          direction: "OUT",
+          date: payoutDate,
+          notes: `Settlement Payout [Lot ${lot.lotNumber}] to ${cleanPartyDisplayName(lot.partner.name)}${input.notes ? ` — ${input.notes}` : ""}`,
+          createdById: session.user.id,
+        },
+      });
+
+      await tx.partnershipSettlementAllocation.create({
+        data: {
+          paymentId: payment.id,
+          lotId: lot.id,
+          kind: "PROFIT",
+          amount: input.amount,
+        },
+      });
+
+      // Debit: Accounts Payable (Reduces payable to partner)
+      await tx.ledgerEntry.create({
+        data: {
+          partyId: lot.partnerId,
+          accountType: AccountType.PAYABLE,
+          debit: input.amount,
+          credit: 0,
+          isPartnership: true,
+          partnershipId: lot.id,
+          referenceType: "PAYMENT",
+          referenceId: payment.id,
+          date: payoutDate,
+          description: `Settlement Payout [Lot ${lot.lotNumber}] to ${cleanPartyDisplayName(lot.partner.name)} (${receiptNo})`,
+          createdById: session.user.id,
+        },
+      });
+
+      // Credit: Cash / Bank
+      await tx.ledgerEntry.create({
+        data: {
+          partyId: null,
+          accountType: AccountType.CASH,
+          debit: 0,
+          credit: input.amount,
+          isPartnership: true,
+          partnershipId: lot.partnerId,
+          referenceType: "PAYMENT",
+          referenceId: payment.id,
+          date: payoutDate,
+          description: `Payout via ${input.method} for Settlement [Lot ${lot.lotNumber}] (${receiptNo})`,
+          createdById: session.user.id,
+        },
+      });
+
+      return payment;
+    });
+
+    emitRealtimeEvent(["parties", "payments", "ledger"], "create", "Payment", {
+      paymentId: res.id,
+      receiptNo: res.receiptNo,
+    });
+
+    return { success: true, paymentId: res.id, receiptNo: res.receiptNo };
+  });
+}
+
+const reconcilePeriodSchema = z.object({
+  lotId: z.string().min(1),
+  periodStart: z.coerce.date(),
+  periodEnd: z.coerce.date(),
+});
+
+export async function reconcilePartnershipPeriodAction(raw: unknown) {
+  return runAction("partnerships.reconcilePeriod", async () => {
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "partnerships", "update", (session.user as any).permissions)) {
+      throw userError("You do not have permission to reconcile partnership periods.");
+    }
+    const input = parseInput(reconcilePeriodSchema, raw);
+
+    const lot = await prisma.partnershipLot.findUnique({
+      where: { id: input.lotId },
+      include: { partner: true },
+    });
+    if (!lot) throw userError("Partnership lot not found.");
+
+    const archetype = partnershipArchetypeFromLot(lot);
+    const periodEnd = input.periodEnd;
+    periodEnd.setHours(23, 59, 59, 999);
+
+    const allocations = await prisma.partnershipSaleAllocation.findMany({
+      where: {
+        lotId: lot.id,
+        soldBy: "OWNER",
+        allocatedAt: { gte: input.periodStart, lte: periodEnd },
+      },
+    });
+
+    const transferredOut = await prisma.deliveryOrderItem.aggregate({
+      where: {
+        lotId: lot.id,
+        deliveryOrder: { date: { gte: input.periodStart, lte: periodEnd } },
+      },
+      _sum: { quantity: true },
+    });
+
+    const totalUnitsSold = allocations.reduce((s, a) => s + Number(a.quantity), 0);
+    const netGrossMargin = allocations.reduce((s, a) => s + Number(a.grossMargin), 0);
+    const totalAccruedPayable = allocations.reduce((s, a) => s + Number(a.partnerMarginShare), 0);
+
+    const res = await prisma.$transaction(async (tx) => {
+      const reconciliation = await tx.partnershipReconciliation.create({
+        data: {
+          lotId: lot.id,
+          periodStart: input.periodStart,
+          periodEnd: input.periodEnd,
+          totalUnitsSold,
+          netGrossMargin,
+          totalAccruedPayable,
+          reconciledAt: new Date(),
+        },
+      });
+
+      if (totalAccruedPayable > 0) {
+        const lines =
+          archetype === "CONSIGNMENT"
+            ? [
+                {
+                  partyId: lot.partnerId,
+                  accountType: AccountType.PAYABLE,
+                  debit: 0,
+                  credit: totalAccruedPayable,
+                  description: `Consignment settlement accrual [${lot.lotNumber}]`,
+                  isPartnership: true,
+                  partnershipId: lot.id,
+                },
+                {
+                  accountType: AccountType.SALES,
+                  debit: totalAccruedPayable,
+                  credit: 0,
+                  description: `Consignment partner share offset [${lot.lotNumber}]`,
+                  isPartnership: true,
+                  partnershipId: lot.id,
+                },
+              ]
+            : [
+                {
+                  accountType: AccountType.EXPENSE,
+                  debit: totalAccruedPayable,
+                  credit: 0,
+                  description: `Co-invested partner profit share [${lot.lotNumber}]`,
+                  isPartnership: true,
+                  partnershipId: lot.id,
+                },
+                {
+                  partyId: lot.partnerId,
+                  accountType: AccountType.PAYABLE,
+                  debit: 0,
+                  credit: totalAccruedPayable,
+                  description: `Accrued co-invested payable [${lot.lotNumber}]`,
+                  isPartnership: true,
+                  partnershipId: lot.id,
+                },
+              ];
+
+        await postJournal(
+          {
+            referenceType: "PARTNERSHIP_RECONCILIATION",
+            referenceId: reconciliation.id,
+            date: input.periodEnd,
+            createdById: session.user.id,
+            lines,
+          },
+          tx,
+        );
+      }
+
+      return {
+        reconciliationId: reconciliation.id,
+        totalUnitsSold,
+        unitsTransferredOut: Number(transferredOut._sum.quantity ?? 0),
+        netGrossMargin,
+        totalAccruedPayable,
+        archetype,
+      };
+    });
+
+    emitRealtimeEvent(["parties", "ledger", "dashboard"], "update", "PartnershipReconciliation", {
+      lotId: lot.id,
+      reconciliationId: res.reconciliationId,
+    });
+
+    return res;
+  });
+}
+

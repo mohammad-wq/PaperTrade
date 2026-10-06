@@ -6,6 +6,7 @@ export const stockAdjustmentSchema = z.object({
   warehouseLotId: z.string().trim().optional().nullable(),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   direction: z.enum(["IN", "OUT"]),
+  unitCost: z.coerce.number().min(0, "Unit cost must be non-negative").optional().nullable(),
   reason: z.string().trim().min(3, "A reason is required"),
 });
 
@@ -40,6 +41,7 @@ export const bulkStockAdjustmentSchema = z.object({
         warehouseLotId: z.string().trim().optional().nullable().or(z.literal("")),
         quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
         direction: z.enum(["IN", "OUT"]),
+        unitCost: z.coerce.number().min(0, "Unit cost must be non-negative").optional().nullable(),
         notes: z.string().trim().optional().nullable().or(z.literal("")),
       })
     )

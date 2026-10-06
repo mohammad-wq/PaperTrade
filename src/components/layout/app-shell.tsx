@@ -28,6 +28,7 @@ import {
   Wallet,
   Calendar,
   MapPin,
+  TrendingUp,
 } from "lucide-react";
 import { Role } from "@prisma/client";
 import { Button } from "@/components/ui/button";
@@ -54,6 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: "Overview",
     items: [
       { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "dashboard" },
+      { href: "/analytics", label: "Executive Analytics", icon: TrendingUp, roles: [Role.OWNER, Role.MANAGER], moduleKey: "reports" },
       { href: "/calculator", label: "Paper Calculator", icon: Calculator, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "calculator" },
     ],
   },

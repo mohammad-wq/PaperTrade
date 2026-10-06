@@ -68,6 +68,9 @@ export async function createExpenseAction(raw: unknown) {
         data: {
           expenseNo,
           category: input.category,
+          categoryLabel: input.categoryLabel || null,
+          isOperatingExpense: input.isOperatingExpense ?? true,
+          partnershipLotId: input.partnershipLotId || null,
           amount: input.amount,
           method: input.method,
           date: input.date,
@@ -77,20 +80,22 @@ export async function createExpenseAction(raw: unknown) {
         },
       });
 
-      // 1. Debit Expense account
-      await tx.ledgerEntry.create({
-        data: {
-          partyId: null,
-          accountType: AccountType.EXPENSE,
-          debit: input.amount,
-          credit: 0,
-          referenceType: "MISC_EXPENSE",
-          referenceId: expense.id,
-          date: input.date,
-          description: `${(input.category || ExpenseCategory.OTHER).replace(/_/g, " ")}: ${input.description}`,
-          createdById: session.user.id,
-        },
-      });
+      if (input.isOperatingExpense !== false) {
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.EXPENSE,
+            debit: input.amount,
+            credit: 0,
+            referenceType: "MISC_EXPENSE",
+            referenceId: expense.id,
+            idempotencyKey: `expense:${expense.id}:debit`,
+            date: input.date,
+            description: `${(input.categoryLabel || input.category || ExpenseCategory.OTHER).toString().replace(/_/g, " ")}: ${input.description}`,
+            createdById: session.user.id,
+          },
+        });
+      }
 
       // 2. Credit Cash or Bank account
       const paymentAccount = input.method === PaymentMethod.BANK ? AccountType.CASH : AccountType.CASH;

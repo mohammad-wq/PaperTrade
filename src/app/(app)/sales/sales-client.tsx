@@ -43,6 +43,7 @@ import { listPartiesAction, listInventoryAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { listLocationsAction } from "@/actions/locations";
 import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
+import { listSaleOwnershipBucketsAction } from "@/actions/inventory";
 import { format } from "date-fns";
 import { formatDateTime, getLocalDateTimeInputValue } from "@/lib/utils";
 import { formatSequenceDisplay } from "@/lib/financial-year";
@@ -51,6 +52,7 @@ import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { useSession } from "next-auth/react";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { cleanPartyDisplayName } from "@/lib/party-display";
 
 type WarehouseLotOption = {
   id: string;
@@ -127,6 +129,15 @@ type StockInfo = {
   lots?: Array<{ id: string | null; lotNumber: string; available: number; description?: string | null }>;
 };
 
+type OwnershipBucketOption = {
+  ownershipType: string;
+  ownershipKey: string;
+  partnershipLotId?: string | null;
+  quantity: number;
+  avgCost: number;
+  label: string;
+};
+
 type CommittedLineItem = {
   productId: string;
   productNo: string;
@@ -142,7 +153,11 @@ type CommittedLineItem = {
   locationType: string;
   warehouseLotId?: string | null;
   lotNumber?: string | null;
+  lotId?: string | null;
   stockSource: "AUTO_SPLIT" | "REGULAR_ONLY" | "PARTNER_ONLY";
+  ownershipType?: string | null;
+  ownershipKey?: string | null;
+  ownershipLabel?: string | null;
   packetWeight?: number;
   reamWeight?: number;
 };
@@ -211,6 +226,9 @@ export default function SalesClient({
   const [activeStockSource, setActiveStockSource] = useState<CommittedLineItem["stockSource"]>("AUTO_SPLIT");
   const [activeQty, setActiveQty] = useState<string>("1");
   const [activeRate, setActiveRate] = useState<string>("0");
+  const [activeOwnershipKey, setActiveOwnershipKey] = useState<string>("");
+  const [activeOwnershipBuckets, setActiveOwnershipBuckets] = useState<OwnershipBucketOption[]>([]);
+  const [ownershipBucketsLoading, setOwnershipBucketsLoading] = useState(false);
   const [activeRowError, setActiveRowError] = useState<string | null>(null);
   const [showTypeahead, setShowTypeahead] = useState(false);
   const [typeaheadIndex, setTypeaheadIndex] = useState<number>(0);
@@ -500,6 +518,42 @@ export default function SalesClient({
     [warehouseLots, currentItemLocationId]
   );
 
+  useEffect(() => {
+    if (!matchedProduct || !currentItemLocationId) {
+      setActiveOwnershipBuckets([]);
+      setActiveOwnershipKey("");
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setOwnershipBucketsLoading(true);
+      try {
+        const res = await listSaleOwnershipBucketsAction({
+          productId: matchedProduct.id,
+          locationId: currentItemLocationId,
+          warehouseLotId: activeLotId || null,
+          stockSource: activeStockSource,
+        });
+        if (cancelled || !res.success) return;
+        const buckets = (res.data as { buckets: OwnershipBucketOption[]; suggestedOwnershipKey: string | null })
+          .buckets;
+        const suggested = (res.data as { suggestedOwnershipKey: string | null }).suggestedOwnershipKey;
+        setActiveOwnershipBuckets(buckets);
+        setActiveOwnershipKey((prev) => {
+          if (prev && buckets.some((b) => b.ownershipKey === prev)) return prev;
+          if (suggested && buckets.some((b) => b.ownershipKey === suggested)) return suggested;
+          if (buckets.length === 1) return buckets[0].ownershipKey;
+          return "";
+        });
+      } finally {
+        if (!cancelled) setOwnershipBucketsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [matchedProduct?.id, currentItemLocationId, activeLotId, activeStockSource]);
+
   const selectedCustomer = useMemo(
     () => parties.find((p) => p.id === customerId),
     [parties, customerId]
@@ -539,6 +593,41 @@ export default function SalesClient({
     () => committedItems.reduce((sum, item) => sum + item.quantity, 0),
     [committedItems]
   );
+
+  const splitSum = useMemo(
+    () => paymentSplits.reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0),
+    [paymentSplits]
+  );
+
+  // Dynamic Payment Split Recalculation:
+  // If invoiceTotal changes and customer is WALK_IN, keep amountPaid synced.
+  useEffect(() => {
+    if (customerType === "WALK_IN" && isDialogOpen) {
+      setAmountPaid(String(invoiceTotal));
+    }
+  }, [customerType, invoiceTotal, isDialogOpen]);
+
+  // When isSplitPayment is true and numPaid changes or invoice items change,
+  // dynamically recalculate the last split row so no stale tender splits remain.
+  useEffect(() => {
+    if (!isSplitPayment || paymentSplits.length < 2) return;
+    const priorSplitsSum = paymentSplits
+      .slice(0, -1)
+      .reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
+    const lastAmount = parseFloat(paymentSplits[paymentSplits.length - 1].amount) || 0;
+    const requiredRemainder = Math.max(0, Math.round((numPaid - priorSplitsSum) * 100) / 100);
+
+    if (priorSplitsSum > 0 && Math.abs(lastAmount - requiredRemainder) > 0.009) {
+      setPaymentSplits((prev) => {
+        const next = [...prev];
+        next[next.length - 1] = {
+          ...next[next.length - 1],
+          amount: requiredRemainder > 0 ? String(requiredRemainder) : "0",
+        };
+        return next;
+      });
+    }
+  }, [numPaid, isSplitPayment, paymentSplits.length]);
 
   // Pattern 1: Filtered Invoices across status, financial year, and search query
   const filteredInvoices = useMemo(() => {
@@ -693,7 +782,18 @@ export default function SalesClient({
           ? "AUTO_SPLIT"
           : it.warehouseLot?.id || it.warehouseLotId
             ? "PARTNER_ONLY"
-            : "AUTO_SPLIT",
+            : it.lotId || (it.ownershipKey && it.ownershipKey !== "OWN")
+              ? "PARTNER_ONLY"
+              : "AUTO_SPLIT",
+        lotId: it.lotId || null,
+        ownershipType: it.ownershipType || null,
+        ownershipKey: it.ownershipKey || null,
+        ownershipLabel:
+          it.ownershipKey === "OWN"
+            ? "Entity owned"
+            : it.ownershipKey?.startsWith("LOT:")
+              ? `Lot bucket`
+              : it.ownershipKey || null,
         packetWeight: prod?.packetWeight || 0,
         reamWeight: prod?.reamWeight || 0,
       };
@@ -1099,6 +1199,19 @@ export default function SalesClient({
       return;
     }
 
+    const needsOwnershipPick = activeOwnershipBuckets.length > 1;
+    const chosenKey =
+      activeOwnershipKey ||
+      (activeOwnershipBuckets.length === 1 ? activeOwnershipBuckets[0].ownershipKey : "");
+    if (needsOwnershipPick && !chosenKey) {
+      setActiveRowError("Select an ownership bucket (entity vs partnership lot) for this line.");
+      return;
+    }
+    const chosenBucket =
+      activeOwnershipBuckets.find((b) => b.ownershipKey === chosenKey) ||
+      activeOwnershipBuckets[0] ||
+      null;
+
     // Add to committed items list
     setCommittedItems((prev) => [
       ...prev,
@@ -1110,14 +1223,20 @@ export default function SalesClient({
         unit: matchedProduct.unit,
         quantity: qtyNum,
         unitPrice: rateNum,
-        unitCost: matchedLot?.unitCost != null ? Number(matchedLot.unitCost) : null,
+        unitCost:
+          chosenBucket?.avgCost ??
+          (matchedLot?.unitCost != null ? Number(matchedLot.unitCost) : null),
         availableStock: available,
         locationId: finalLocId,
         locationName: finalLoc?.name || "Location",
         locationType: finalLoc?.type || "SHOP",
         warehouseLotId: finalLoc?.type === "WAREHOUSE" ? activeLotId || null : null,
         lotNumber: matchedLot ? matchedLot.lotNumber : null,
+        lotId: chosenBucket?.partnershipLotId || null,
         stockSource: activeStockSource,
+        ownershipType: chosenBucket?.ownershipType ?? (activeStockSource === "REGULAR_ONLY" ? "OWN" : null),
+        ownershipKey: chosenKey || (activeStockSource === "REGULAR_ONLY" ? "OWN" : null),
+        ownershipLabel: chosenBucket?.label ?? (chosenKey === "OWN" ? "Entity owned" : null),
         packetWeight: matchedProduct.packetWeight || 0,
         reamWeight: matchedProduct.reamWeight || 0,
       },
@@ -1127,6 +1246,8 @@ export default function SalesClient({
     setActiveCodeInput("");
     setMatchedProduct(null);
     setActiveLotId("");
+    setActiveOwnershipKey("");
+    setActiveOwnershipBuckets([]);
     setActiveStockSource("AUTO_SPLIT");
     setActiveQty("1");
     setActiveRate("0");
@@ -1197,6 +1318,15 @@ export default function SalesClient({
 
     const fallbackLocId = locationId || committedItems[0]?.locationId || dbLocations[0]?.id;
 
+    for (const item of committedItems) {
+      if (item.locationType === "SHOP" && !item.ownershipKey && item.stockSource === "PARTNER_ONLY") {
+        setFormError(
+          `Line ${item.productNo}: partner stock requires an ownership bucket. Re-add the line and select the lot bucket.`,
+        );
+        return;
+      }
+    }
+
     setSubmitting(true);
     try {
       const payload: any = {
@@ -1222,10 +1352,13 @@ export default function SalesClient({
           productId: item.productId,
           locationId: item.locationId || fallbackLocId,
           warehouseLotId: item.warehouseLotId || undefined,
+          lotId: item.lotId || undefined,
           stockSource: item.stockSource,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           unitCost: item.unitCost ?? undefined,
+          ownershipType: item.ownershipType || undefined,
+          ownershipKey: item.ownershipKey || undefined,
         })),
       };
 
@@ -1470,7 +1603,7 @@ export default function SalesClient({
                                 <span className="text-[10px] text-slate-400 ml-1">(Walk-in)</span>
                               </>
                             ) : (
-                              inv.customer.name
+                              cleanPartyDisplayName(inv.customer.name)
                             )}
                           </span>
                           {inv.customer.phone && (
@@ -1726,7 +1859,7 @@ export default function SalesClient({
                       <SearchCombobox
                         options={registeredParties.map((p) => ({
                           id: p.id,
-                          label: p.name,
+                          label: cleanPartyDisplayName(p.name),
                           badge: p.type === "CUSTOMER" ? "Customer" : "Supplier",
                           badgeColor: p.type === "CUSTOMER" ? "green" : "amber",
                           sublabel: p.creditLimit ? `Limit: PKR ${p.creditLimit.toLocaleString()}` : (p.phone || undefined),
@@ -1909,12 +2042,17 @@ export default function SalesClient({
                                   Lot #{item.lotNumber}
                                 </span>
                               ) : item.locationType === "SHOP" ? (
-                                <span className="text-[10px] text-slate-600 dark:text-slate-300 font-sans">
+                                <span className="text-[10px] text-slate-600 dark:text-slate-300 font-sans block">
                                   {item.stockSource === "REGULAR_ONLY"
-                                    ? "Regular Stock Only"
+                                    ? "Regular"
                                     : item.stockSource === "PARTNER_ONLY"
-                                      ? "Partner Stock Only"
-                                      : "Auto / Split"}
+                                      ? "Partner"
+                                      : "Auto"}
+                                  {item.ownershipLabel ? (
+                                    <span className="block text-[9px] text-violet-700 dark:text-violet-300 font-semibold mt-0.5">
+                                      {item.ownershipLabel}
+                                    </span>
+                                  ) : null}
                                 </span>
                               ) : (
                                 <span className="text-slate-400">—</span>
@@ -2095,6 +2233,7 @@ export default function SalesClient({
                               setActiveItemLocationId(val);
                               setActiveLotId("");
                               setActiveStockSource("AUTO_SPLIT");
+                              setActiveOwnershipKey("");
                             }}
                             inputRef={itemLocationInputRef}
                             onEnterPress={() => {
@@ -2116,38 +2255,79 @@ export default function SalesClient({
                         {/* Warehouse lot or shop stock-source selector */}
                         <td className="py-1 px-1 border-r border-slate-200 dark:border-slate-700 min-w-[145px]">
                           {isItemLocationWarehouse ? (
-                            <SearchCombobox
-                              options={locationLots.map((lot) => {
-                                const available = matchedProduct
-                                  ? getAvailableStock(matchedProduct.id, currentItemLocationId, lot.id)
-                                  : lot.currentStock;
-                                return {
-                                  id: lot.id,
-                                  label: `Lot #${lot.lotNumber} (${available} ${matchedProduct?.unit || "pkts"})`,
-                                };
-                              })}
-                              value={activeLotId}
-                              onChange={(val) => setActiveLotId(val)}
-                              inputRef={lotComboboxInputRef}
-                              onEnterPress={() => {
-                                qtyInputRef.current?.focus();
-                                qtyInputRef.current?.select();
-                              }}
-                              placeholder="Select lot"
-                              inputClassName="h-7 text-xs font-mono"
-                            />
+                            <div className="space-y-1">
+                              <SearchCombobox
+                                options={locationLots.map((lot) => {
+                                  const available = matchedProduct
+                                    ? getAvailableStock(matchedProduct.id, currentItemLocationId, lot.id)
+                                    : lot.currentStock;
+                                  return {
+                                    id: lot.id,
+                                    label: `Lot #${lot.lotNumber} (${available} ${matchedProduct?.unit || "pkts"})`,
+                                  };
+                                })}
+                                value={activeLotId}
+                                onChange={(val) => {
+                                  setActiveLotId(val);
+                                  setActiveOwnershipKey("");
+                                }}
+                                inputRef={lotComboboxInputRef}
+                                onEnterPress={() => {
+                                  qtyInputRef.current?.focus();
+                                  qtyInputRef.current?.select();
+                                }}
+                                placeholder="Select lot"
+                                inputClassName="h-7 text-xs font-mono"
+                              />
+                              {matchedProduct && activeOwnershipBuckets.length > 1 ? (
+                                <select
+                                  value={activeOwnershipKey}
+                                  onChange={(e) => setActiveOwnershipKey(e.target.value)}
+                                  className="h-7 w-full rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-1.5 text-[10px] font-sans"
+                                >
+                                  <option value="">Ownership bucket…</option>
+                                  {activeOwnershipBuckets.map((b) => (
+                                    <option key={b.ownershipKey} value={b.ownershipKey}>
+                                      {b.label} ({b.quantity} {matchedProduct.unit})
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : null}
+                            </div>
                           ) : activeItemLocation?.type === "SHOP" ? (
-                            <select
-                              value={activeStockSource}
-                              onChange={(event) =>
-                                setActiveStockSource(event.target.value as CommittedLineItem["stockSource"])
-                              }
-                              className="h-7 w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1.5 text-[10px] font-sans"
-                            >
-                              <option value="AUTO_SPLIT">Auto / Split</option>
-                              <option value="REGULAR_ONLY">Regular Stock Only</option>
-                              <option value="PARTNER_ONLY">Partner Stock Only</option>
-                            </select>
+                            <div className="space-y-1">
+                              <select
+                                value={activeStockSource}
+                                onChange={(event) => {
+                                  setActiveStockSource(event.target.value as CommittedLineItem["stockSource"]);
+                                  setActiveOwnershipKey("");
+                                }}
+                                className="h-7 w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1.5 text-[10px] font-sans"
+                              >
+                                <option value="AUTO_SPLIT">Auto / Split</option>
+                                <option value="REGULAR_ONLY">Regular Stock Only</option>
+                                <option value="PARTNER_ONLY">Partner Stock Only</option>
+                              </select>
+                              {matchedProduct && activeOwnershipBuckets.length > 1 ? (
+                                <select
+                                  value={activeOwnershipKey}
+                                  onChange={(e) => setActiveOwnershipKey(e.target.value)}
+                                  className="h-7 w-full rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-1.5 text-[10px] font-sans"
+                                  title="Required when both entity and partnership stock exist"
+                                >
+                                  <option value="">Select ownership bucket…</option>
+                                  {activeOwnershipBuckets.map((b) => (
+                                    <option key={b.ownershipKey} value={b.ownershipKey}>
+                                      {b.label} ({b.quantity} {matchedProduct.unit})
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : matchedProduct && activeOwnershipBuckets.length === 1 ? (
+                                <span className="text-[9px] text-slate-500 block truncate" title={activeOwnershipBuckets[0].label}>
+                                  {ownershipBucketsLoading ? "…" : activeOwnershipBuckets[0].label}
+                                </span>
+                              ) : null}
+                            </div>
                           ) : (
                             <span className="text-[10px] text-slate-400 font-sans italic px-1 block text-center">Not applicable</span>
                           )}
@@ -2402,13 +2582,35 @@ export default function SalesClient({
                   {isSplitPayment && numPaid > 0 && (
                     <div className="mt-2 p-2 bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded space-y-2">
                       <div className="flex items-center justify-between text-[11px] font-bold text-indigo-900 dark:text-indigo-300">
-                        <span>Multiple Payment Allocation</span>
+                        <div className="flex items-center gap-2">
+                          <span>Multiple Payment Allocation</span>
+                          {paymentSplits.length >= 2 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const priorSum = paymentSplits
+                                  .slice(0, -1)
+                                  .reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
+                                const remainder = Math.max(0, Math.round((numPaid - priorSum) * 100) / 100);
+                                const next = [...paymentSplits];
+                                next[next.length - 1] = {
+                                  ...next[next.length - 1],
+                                  amount: String(remainder),
+                                };
+                                setPaymentSplits(next);
+                              }}
+                              className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 underline hover:text-indigo-800"
+                            >
+                              Auto-Balance Remainder
+                            </button>
+                          )}
+                        </div>
                         {(() => {
-                          const splitSum = paymentSplits.reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
-                          const isMatched = Math.abs(splitSum - numPaid) < 0.05;
+                          const currentSplitSum = paymentSplits.reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
+                          const isMatched = Math.abs(currentSplitSum - numPaid) < 0.05;
                           return (
                             <span className={isMatched ? "text-emerald-600 dark:text-emerald-400 font-bold" : "text-amber-600 dark:text-amber-400 font-bold"}>
-                              Split Total: PKR {splitSum.toFixed(2)} / Paid: PKR {numPaid.toFixed(2)} {isMatched ? "✓" : "(Diff: " + (numPaid - splitSum).toFixed(2) + ")"}
+                              Split Total: PKR {currentSplitSum.toFixed(2)} / Paid: PKR {numPaid.toFixed(2)} {isMatched ? "✓" : "(Diff: " + (numPaid - currentSplitSum).toFixed(2) + ")"}
                             </span>
                           );
                         })()}
@@ -2597,7 +2799,11 @@ export default function SalesClient({
                   type="button"
                   size="sm"
                   onClick={handleSaveInvoice}
-                  disabled={submitting || committedItems.length === 0}
+                  disabled={
+                    submitting ||
+                    committedItems.length === 0 ||
+                    (isSplitPayment && numPaid > 0 && Math.abs(splitSum - numPaid) > 0.05)
+                  }
                   className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-4"
                 >
                   <Check className="h-3.5 w-3.5 mr-1.5" />

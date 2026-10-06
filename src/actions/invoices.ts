@@ -5,17 +5,30 @@ import { requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { userError } from "@/lib/errors";
 import { assertStockDeductionsAvailable, assertStockAvailableForDeduction, getStockOnHand } from "@/lib/stock";
-import { getPartyBalance } from "@/lib/ledger";
+import { getPartyBalance, postJournal } from "@/lib/ledger";
+import { allocateInwardFreightToLines, buildOwnedPurchaseJournalLines } from "@/lib/invoice-accounting";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { saleInvoiceSchema, updateSaleInvoiceSchema } from "@/schemas/sale-invoice";
 import { purchaseInvoiceSchema, updatePurchaseInvoiceSchema } from "@/schemas/purchase-invoice";
-import { AccountType, InvoiceStatus, PartyType, PaymentMethod, Prisma, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
+import { AccountType, InvoiceStatus, LedgerAccountSubtype, PaymentStatus, PartyType, PaymentMethod, Prisma, PurchaseOrderStatus, StockMovementType } from "@prisma/client";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { getActiveFinancialYear, getNextAtomicSequence, updateInvoiceSettlementStatus } from "@/lib/financial-year";
-import { consumeAdvanceCreditsForInvoice } from "@/lib/payment-allocation";
+import { consumeAdvanceCreditsForInvoice, reversePaymentAllocations } from "@/lib/payment-allocation";
 import { cleanPartyDisplayName } from "@/lib/party-display";
 import { revalidateWarehouseLots } from "@/lib/cached-lookups";
+import {
+  postInflow,
+  postOutflow,
+  reverseMovement,
+  reverseMovementsByReferencePrefix,
+  resolveOwnershipKey,
+  resolvePurchaseOwnership,
+  resolveSaleOwnership,
+  getProductCostState,
+  partnershipArchetypeFromLot,
+} from "@/lib/inventoryCost.service";
+import { getPaymentDestination } from "@/lib/payment-destinations";
 import { z } from "zod";
 
 type SaleStockLine = {
@@ -396,6 +409,9 @@ export async function createSaleInvoiceAction(raw: unknown) {
 
       // Resolve payment amount (for walk-in or immediate cash settlement)
       const rawPaid = typeof input.amountPaid === "number" ? input.amountPaid : 0;
+      if (rawPaid > totalAmount + 0.01) {
+        throw userError(`Payment amount (PKR ${rawPaid}) cannot exceed the total invoice amount (PKR ${totalAmount}).`);
+      }
       const paidAmount = input.paidImmediately
         ? Math.min(totalAmount, rawPaid > 0 ? rawPaid : totalAmount)
         : Math.min(totalAmount, Math.max(0, rawPaid));
@@ -418,38 +434,60 @@ export async function createSaleInvoiceAction(raw: unknown) {
 
       const isSettled = paidAmount >= totalAmount - 0.001;
 
-      // Resolve unitCost for each sold line item (from lot or product cost price)
+      const remainingAllocations = stockAllocations.map((a) => ({ ...a }));
+
       const resolvedItems = await Promise.all(
         input.items.map(async (item) => {
+          const itemLocId = item.locationId || fallbackLocationId;
           let unitCost = (item as any).unitCost != null ? Number((item as any).unitCost) : null;
-          const matchingAllocations = stockAllocations.filter(
-            (a) => a.productId === item.productId && (a.locationId === (item.locationId || fallbackLocationId)),
-          );
-          const allocatedLotId = item.warehouseLotId || matchingAllocations.find((a) => Boolean(a.warehouseLotId))?.warehouseLotId || null;
-          if (unitCost === null && allocatedLotId) {
-            const lot = await tx.warehouseLot.findUnique({
-              where: { id: allocatedLotId },
-              select: { unitCost: true },
+          let cogsAmount = 0;
+          let saleOwnership: Awaited<ReturnType<typeof resolveSaleOwnership>> | null = null;
+          let ownershipKey: string | null = null;
+
+          if (item.lotId) {
+            const pLot = await tx.partnershipLot.findUnique({
+              where: { id: item.lotId },
+              include: { items: true },
             });
-            if (lot?.unitCost != null) {
-              unitCost = Number(lot.unitCost);
+            const lotItem = pLot?.items.find((li) => li.productId === item.productId);
+            unitCost = Number(unitCost ?? lotItem?.unitCostRate ?? 0);
+            cogsAmount = Number(item.quantity) * unitCost;
+            saleOwnership = { ownershipType: "LOT", partnershipLotId: item.lotId };
+            ownershipKey = resolveOwnershipKey(saleOwnership);
+
+            let needed = item.quantity;
+            for (const a of remainingAllocations) {
+              if (a.productId === item.productId && a.locationId === itemLocId && a.quantity > 0.0001) {
+                const take = Math.min(a.quantity, needed);
+                a.quantity -= take;
+                needed -= take;
+                if (needed <= 0.0001) break;
+              }
             }
-          }
-          if (unitCost === null) {
-            const prod = await tx.product.findUnique({
-              where: { id: item.productId },
-              select: { costPrice: true },
+          } else {
+            saleOwnership = await resolveSaleOwnership(tx, {
+              productId: item.productId,
+              locationId: itemLocId,
+              lotId: item.lotId,
+              warehouseLotId: item.warehouseLotId,
+              ownershipType: (item as any).ownershipType,
+              ownershipKey: (item as any).ownershipKey,
             });
-            if (prod?.costPrice != null) {
-              unitCost = Number(prod.costPrice);
-            }
+            ownershipKey = resolveOwnershipKey(saleOwnership);
+            const preview = await getProductCostState(tx, item.productId, itemLocId, ownershipKey);
+            unitCost = preview.avgCost;
+            cogsAmount = Number(item.quantity) * preview.avgCost;
           }
+
           return {
             ...item,
-            resolvedLotId: allocatedLotId,
+            resolvedLotId: item.warehouseLotId || null,
             resolvedUnitCost: unitCost,
+            cogsAmount,
+            saleOwnership,
+            ownershipKey,
           };
-        })
+        }),
       );
 
       const { isPartnership: isPartnershipTx, partnershipId } =
@@ -483,14 +521,58 @@ export async function createSaleInvoiceAction(raw: unknown) {
               productId: item.productId,
               locationId: item.locationId || fallbackLocationId,
               warehouseLotId: item.warehouseLotId || item.resolvedLotId || null,
+              lotId: item.lotId || null,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
               unitCost: item.resolvedUnitCost,
               lineTotal: item.quantity * item.unitPrice,
+              cogsAmount: item.cogsAmount,
+              ownershipType: item.saleOwnership?.ownershipType ?? null,
+              ownershipKey: item.ownershipKey,
             })),
           },
         },
+        include: { items: true },
       });
+
+      for (const line of invoice.items) {
+        const ownership = line.lotId
+          ? { ownershipType: "LOT", partnershipLotId: line.lotId }
+          : await resolveSaleOwnership(tx, {
+              productId: line.productId,
+              locationId: line.locationId || fallbackLocationId,
+              lotId: line.lotId,
+              warehouseLotId: line.warehouseLotId,
+              ownershipType: line.ownershipType,
+              ownershipKey: line.ownershipKey,
+            });
+        const movementType = line.lotId ? "PARTNER_SALE" : "SALE";
+        const { totalCost, unitCost } = await postOutflow(tx, {
+          productId: line.productId,
+          locationId: line.locationId || fallbackLocationId,
+          ownership,
+          quantity: Number(line.quantity),
+          movementType,
+          referenceType: "SALE_INVOICE",
+          referenceId: `${invoice.id}:${line.id}`,
+        });
+        await tx.saleInvoiceItem.update({
+          where: { id: line.id },
+          data: {
+            cogsAmount: totalCost,
+            unitCost,
+            ownershipType: ownership.ownershipType,
+            ownershipKey: resolveOwnershipKey(ownership),
+          },
+        });
+        const resolved = resolvedItems.find(
+          (r) => r.productId === line.productId && Number(r.quantity) === Number(line.quantity),
+        );
+        if (resolved) {
+          resolved.cogsAmount = totalCost;
+          resolved.resolvedUnitCost = unitCost;
+        }
+      }
 
       // Check if linked DO already deducted stock
       let alreadyDeductedByDO = false;
@@ -523,7 +605,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // Create ledger entries: multiple entries for each sold product so quantities/rates are recorded (Issue 15)
+      // Fetch products for line item descriptions
       const saleProductIds = input.items.map((i) => i.productId);
       const saleProducts = await tx.product.findMany({
         where: { id: { in: saleProductIds } },
@@ -531,33 +613,75 @@ export async function createSaleInvoiceAction(raw: unknown) {
       });
       const saleProdMap = new Map(saleProducts.map((p) => [p.id, p]));
 
-      for (const item of input.items) {
-        const p = saleProdMap.get(item.productId);
-        const lineTotal = item.quantity * item.unitPrice;
-        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitPrice})`;
+      // -------------------------------------------------------------
+      // CPA-GRADE SINGLE-TRANSACTION POSTING (Fix duplicate entries)
+      // Total Debits (Cash/Bank + Accounts Receivable) == Total Credits (Gross Revenue + Freight Outward)
+      // -------------------------------------------------------------
 
-        // Customer Receivable (Debit per product)
+      const splitsToRecord: Array<{ method: PaymentMethod; amount: number; reference: string | null }> =
+        input.paymentSplits && input.paymentSplits.length > 0
+          ? input.paymentSplits.map((s) => ({
+              method: (s.method ?? PaymentMethod.CASH) as PaymentMethod,
+              amount: s.amount,
+              reference: s.reference || null,
+            }))
+          : [{ method: (input.paymentMethod ?? PaymentMethod.CASH) as PaymentMethod, amount: paidAmount, reference: null }];
+
+      // 1. Debits: Cash / Bank inflow for immediately settled portion
+      if (paidAmount > 0) {
+        for (const split of splitsToRecord) {
+          if (split.amount <= 0) continue;
+          const dest = getPaymentDestination(split.method);
+          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
+          await tx.ledgerEntry.create({
+            data: {
+              partyId: null,
+              accountType: dest.accountType,
+              debit: split.amount,
+              credit: 0,
+              isPartnership: isPartnershipTx,
+              partnershipId,
+              referenceType: "SALE_INVOICE",
+              referenceId: invoice.id,
+              date: input.date,
+              description: `Cash / Bank received: Estimate ${invoice.invoiceNo} (${dest.accountName})${refDesc}`,
+              createdById: session.user.id,
+            },
+          });
+        }
+      }
+
+      // 2. Debits: Accounts Receivable (Trade Debtors) ONLY if an unpaid balance remains
+      const unpaidBalance = Math.max(0, totalAmount - paidAmount);
+      if (unpaidBalance > 0.001) {
         await tx.ledgerEntry.create({
           data: {
             partyId: targetCustomerId,
             accountType: AccountType.RECEIVABLE,
-            debit: lineTotal,
+            debit: unpaidBalance,
             credit: 0,
             isPartnership: isPartnershipTx,
             partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: invoice.id,
             date: input.date,
-            description: `Estimate ${invoice.invoiceNo}: ${itemDesc}`,
+            description: `Accounts Receivable (Trade Debtors): Estimate ${invoice.invoiceNo} remaining balance`,
             createdById: session.user.id,
           },
         });
+      }
 
-        // Sales Revenue (Credit per product)
+      // 3. Credits: Gross Revenue itemized per product
+      for (const item of input.items) {
+        const p = saleProdMap.get(item.productId);
+        const lineTotal = item.quantity * item.unitPrice;
+        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitPrice})`;
+
         await tx.ledgerEntry.create({
           data: {
             partyId: null,
             accountType: AccountType.SALES,
+            accountSubtype: LedgerAccountSubtype.PRODUCT_SALES,
             debit: 0,
             credit: lineTotal,
             isPartnership: isPartnershipTx,
@@ -565,34 +689,19 @@ export async function createSaleInvoiceAction(raw: unknown) {
             referenceType: "SALE_INVOICE",
             referenceId: invoice.id,
             date: input.date,
-            description: `Sales Revenue (${invoice.invoiceNo}): ${itemDesc}`,
+            description: `Gross Revenue (${invoice.invoiceNo}): ${itemDesc}`,
             createdById: session.user.id,
           },
         });
       }
 
-      // If freight charges were added
+      // 4. Credits: Transparent Freight Accounting
       if (freight > 0) {
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetCustomerId,
-            accountType: AccountType.RECEIVABLE,
-            debit: freight,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "SALE_INVOICE",
-            referenceId: invoice.id,
-            date: input.date,
-            description: `Freight charges on Estimate ${invoice.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-
         await tx.ledgerEntry.create({
           data: {
             partyId: null,
             accountType: AccountType.SALES,
+            accountSubtype: LedgerAccountSubtype.FREIGHT_REVENUE,
             debit: 0,
             credit: freight,
             isPartnership: isPartnershipTx,
@@ -600,13 +709,65 @@ export async function createSaleInvoiceAction(raw: unknown) {
             referenceType: "SALE_INVOICE",
             referenceId: invoice.id,
             date: input.date,
-            description: `Freight charges on Estimate ${invoice.invoiceNo}`,
+            description: `Freight Outward (Transport Charges) on Estimate ${invoice.invoiceNo}`,
             createdById: session.user.id,
           },
         });
       }
 
-      // If immediate or on-the-spot payment was made
+      // 5. Balanced Double-Entry for COGS and Inventory Asset Reduction (IFRS/GAAP)
+      // Dr Cost of Goods Sold (COGS) [EXPENSE]
+      // Cr Inventory on Hand [INVENTORY]
+      for (const item of resolvedItems) {
+        if (!item.cogsAmount || item.cogsAmount <= 0) continue;
+        if (item.lotId) {
+          const lot = await tx.partnershipLot.findUnique({
+            where: { id: item.lotId },
+            select: { archetype: true, type: true },
+          });
+          if (lot && partnershipArchetypeFromLot(lot) === "CONSIGNMENT") {
+            continue;
+          }
+        }
+        const p = saleProdMap.get(item.productId);
+        const prodName = p?.productNo ? `[${p.productNo}] ${p.name}` : p?.name || "Product";
+
+        // Debit COGS
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.COGS,
+            debit: item.cogsAmount,
+            credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
+            referenceType: "SALE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Cost of Goods Sold (COGS): ${prodName} (Qty: ${item.quantity} ${p?.unit || "pkts"}) on Estimate ${invoice.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+
+        // Credit Inventory Asset
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.INVENTORY,
+            debit: 0,
+            credit: item.cogsAmount,
+            isPartnership: isPartnershipTx,
+            partnershipId,
+            referenceType: "SALE_INVOICE",
+            referenceId: invoice.id,
+            date: input.date,
+            description: `Inventory Asset Reduction: ${prodName} (Qty: ${item.quantity} ${p?.unit || "pkts"}) on Estimate ${invoice.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      // Record Payment record for receipt numbering and payment history (NO duplicate ledger entries)
       if (paidAmount > 0) {
         const { sequenceNo: paymentSeq, formattedNumber: paymentFormatted } = await getNextAtomicSequence(
           tx,
@@ -614,11 +775,6 @@ export async function createSaleInvoiceAction(raw: unknown) {
           "PAYMENT_RECEIPT"
         );
         const receiptNo = `RCT-${paymentFormatted}`;
-        const splitsToRecord =
-          input.paymentSplits && input.paymentSplits.length > 0
-            ? input.paymentSplits
-            : [{ method: input.paymentMethod || PaymentMethod.CASH, amount: paidAmount, reference: null }];
-
         const primaryMethod = splitsToRecord[0].method;
 
         const payment = await tx.payment.create({
@@ -636,54 +792,13 @@ export async function createSaleInvoiceAction(raw: unknown) {
             date: input.date,
             notes: `Settlement for Estimate ${invoice.invoiceNo} (${input.customerType === "WALK_IN" ? "Walk-in Sale" : "Registered Customer"})`,
             createdById: session.user.id,
-            ...(splitsToRecord.length > 1 || (input.paymentSplits && input.paymentSplits.length > 0)
-              ? {
-                  splits: {
-                    create: splitsToRecord.map((s) => ({
-                      method: s.method,
-                      amount: s.amount,
-                      reference: s.reference || null,
-                    })),
-                  },
-                }
-              : {}),
-          },
-        });
-
-        // Cash/Bank inflow (Debit per payment method/split)
-        for (const split of splitsToRecord) {
-          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
-          await tx.ledgerEntry.create({
-            data: {
-              partyId: null,
-              accountType: AccountType.CASH,
-              debit: split.amount,
-              credit: 0,
-              isPartnership: isPartnershipTx,
-              partnershipId,
-              referenceType: "PAYMENT",
-              referenceId: payment.id,
-              date: input.date,
-              description: `Payment received for ${invoice.invoiceNo} (${split.method})${refDesc}`,
-              createdById: session.user.id,
+            splits: {
+              create: splitsToRecord.map((s) => ({
+                method: s.method,
+                amount: s.amount,
+                reference: s.reference || null,
+              })),
             },
-          });
-        }
-
-        // Customer Receivable reduction (Credit)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetCustomerId,
-            accountType: AccountType.RECEIVABLE,
-            debit: 0,
-            credit: paidAmount,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Payment cleared for ${invoice.invoiceNo}`,
-            createdById: session.user.id,
           },
         });
 
@@ -695,6 +810,91 @@ export async function createSaleInvoiceAction(raw: unknown) {
           },
         });
       }
+
+      // -------------------------------------------------------------
+      // Co-Invested Shared Stock Pool (CO_INVESTED_POOL) Allocations
+      // -------------------------------------------------------------
+      for (const item of input.items) {
+        if (!item.lotId) continue;
+        const pLot = await tx.partnershipLot.findUnique({
+          where: { id: item.lotId },
+          include: { partner: true, items: true },
+        });
+
+        if (pLot && pLot.type === "CO_INVESTED_POOL") {
+          const lotItem = pLot.items.find((li) => li.productId === item.productId);
+          const unitCost = Number(item.unitCost ?? lotItem?.unitCostRate ?? 0);
+          const unitSale = Number(item.unitPrice);
+          const grossMargin = Math.max(0, (unitSale - unitCost) * Number(item.quantity));
+          const marginRatio = Number(pLot.partnerMarginRatio);
+          const partnerMarginShare = grossMargin * marginRatio;
+
+          await tx.partnershipSaleAllocation.create({
+            data: {
+              lotId: pLot.id,
+              invoiceId: invoice.id,
+              productId: item.productId,
+              quantity: item.quantity,
+              unitCostRate: unitCost,
+              unitSaleRate: unitSale,
+              grossMargin,
+              partnerMarginShare,
+              salesChannel: "INTERNAL_POS",
+              soldBy: "OWNER",
+            },
+          });
+
+          // Decrement physical remainingQuantity from lot item
+          if (lotItem) {
+            await tx.partnershipLotItem.update({
+              where: { id: lotItem.id },
+              data: {
+                remainingQuantity: {
+                  decrement: item.quantity,
+                },
+              },
+            });
+          }
+
+          // Balanced double-entry for Partner Margin Share:
+          // Debit: Partner Margin Share / Profit Allocation (EXPENSE)
+          // Credit: Accrued Profit Share Payable (PAYABLE to Partner)
+          if (partnerMarginShare > 0) {
+            await tx.ledgerEntry.create({
+              data: {
+                partyId: null,
+                accountType: AccountType.EXPENSE,
+                debit: partnerMarginShare,
+                credit: 0,
+                isPartnership: true,
+                partnershipId: pLot.id,
+                referenceType: "SALE_INVOICE",
+                referenceId: invoice.id,
+                date: input.date,
+                description: `Partner Profit Allocation: Lot #${pLot.lotNumber} (${pLot.partner.name}) on Estimate ${invoice.invoiceNo}`,
+                createdById: session.user.id,
+              },
+            });
+
+            await tx.ledgerEntry.create({
+              data: {
+                partyId: pLot.partnerId,
+                accountType: AccountType.PAYABLE,
+                debit: 0,
+                credit: partnerMarginShare,
+                isPartnership: true,
+                partnershipId: pLot.id,
+                referenceType: "SALE_INVOICE",
+                referenceId: invoice.id,
+                date: input.date,
+                description: `Accrued Profit Share Payable: Lot #${pLot.lotNumber} on Estimate ${invoice.invoiceNo}`,
+                createdById: session.user.id,
+              },
+            });
+          }
+        }
+      }
+
 
       // Consume any existing unallocated advance credits for this customer
       const advanceResult = await consumeAdvanceCreditsForInvoice(tx, {
@@ -856,6 +1056,9 @@ export async function updateSaleInvoiceAction(raw: unknown) {
       const totalAmount = subtotal + freight;
 
       // Revert previous side effects safely before re-checking stock and re-posting
+      await reverseMovementsByReferencePrefix(tx, "SALE_INVOICE", `${existing.id}:`);
+      await tx.partnershipSaleAllocation.deleteMany({ where: { invoiceId: existing.id } });
+
       // A. Delete old stock movements generated by this invoice
       await tx.stockMovement.deleteMany({
         where: {
@@ -938,41 +1141,63 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         },
       });
 
-      // Resolve unitCost for each sold line item (from lot or product cost price)
+      const remainingAllocations = stockAllocations.map((a) => ({ ...a }));
+
       const resolvedUpdateItems = await Promise.all(
         input.items.map(async (item) => {
+          const itemLocId = item.locationId || fallbackLocationId;
           let unitCost = (item as any).unitCost != null ? Number((item as any).unitCost) : null;
-          const matchingAllocations = stockAllocations.filter(
-            (a) => a.productId === item.productId && (a.locationId === (item.locationId || fallbackLocationId)),
-          );
-          const allocatedLotId = item.warehouseLotId || matchingAllocations.find((a) => Boolean(a.warehouseLotId))?.warehouseLotId || null;
-          if (unitCost === null && allocatedLotId) {
-            const lot = await tx.warehouseLot.findUnique({
-              where: { id: allocatedLotId },
-              select: { unitCost: true },
+          let cogsAmount = 0;
+          let saleOwnership: Awaited<ReturnType<typeof resolveSaleOwnership>> | null = null;
+          let ownershipKey: string | null = null;
+
+          if (item.lotId) {
+            const pLot = await tx.partnershipLot.findUnique({
+              where: { id: item.lotId },
+              include: { items: true },
             });
-            if (lot?.unitCost != null) {
-              unitCost = Number(lot.unitCost);
+            const lotItem = pLot?.items.find((li) => li.productId === item.productId);
+            unitCost = Number(unitCost ?? lotItem?.unitCostRate ?? 0);
+            cogsAmount = Number(item.quantity) * unitCost;
+            saleOwnership = { ownershipType: "LOT", partnershipLotId: item.lotId };
+            ownershipKey = resolveOwnershipKey(saleOwnership);
+
+            let needed = item.quantity;
+            for (const a of remainingAllocations) {
+              if (a.productId === item.productId && a.locationId === itemLocId && a.quantity > 0.0001) {
+                const take = Math.min(a.quantity, needed);
+                a.quantity -= take;
+                needed -= take;
+                if (needed <= 0.0001) break;
+              }
             }
-          }
-          if (unitCost === null) {
-            const prod = await tx.product.findUnique({
-              where: { id: item.productId },
-              select: { costPrice: true },
+          } else {
+            saleOwnership = await resolveSaleOwnership(tx, {
+              productId: item.productId,
+              locationId: itemLocId,
+              lotId: item.lotId,
+              warehouseLotId: item.warehouseLotId,
+              ownershipType: (item as any).ownershipType,
+              ownershipKey: (item as any).ownershipKey,
             });
-            if (prod?.costPrice != null) {
-              unitCost = Number(prod.costPrice);
-            }
+            ownershipKey = resolveOwnershipKey(saleOwnership);
+            const preview = await getProductCostState(tx, item.productId, itemLocId, ownershipKey);
+            unitCost = preview.avgCost;
+            cogsAmount = Number(item.quantity) * preview.avgCost;
           }
+
           return {
             ...item,
-            resolvedLotId: allocatedLotId,
+            lotId: item.lotId || null,
+            resolvedLotId: item.warehouseLotId || null,
             resolvedUnitCost: unitCost,
+            cogsAmount,
+            saleOwnership,
+            ownershipKey,
           };
-        })
+        }),
       );
 
-      // Re-create items
       await tx.saleInvoiceItem.deleteMany({
         where: { invoiceId: existing.id },
       });
@@ -982,12 +1207,56 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           productId: item.productId,
           locationId: item.locationId || fallbackLocationId,
           warehouseLotId: item.warehouseLotId || item.resolvedLotId || null,
+          lotId: item.lotId || null,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           unitCost: item.resolvedUnitCost,
           lineTotal: item.quantity * item.unitPrice,
+          cogsAmount: item.cogsAmount,
+          ownershipType: item.saleOwnership?.ownershipType ?? null,
+          ownershipKey: item.ownershipKey,
         })),
       });
+
+      const updatedLines = await tx.saleInvoiceItem.findMany({ where: { invoiceId: existing.id } });
+      for (const line of updatedLines) {
+        const ownership = line.lotId
+          ? { ownershipType: "LOT", partnershipLotId: line.lotId }
+          : await resolveSaleOwnership(tx, {
+              productId: line.productId,
+              locationId: line.locationId || fallbackLocationId,
+              lotId: line.lotId,
+              warehouseLotId: line.warehouseLotId,
+              ownershipType: line.ownershipType,
+              ownershipKey: line.ownershipKey,
+            });
+        const movementType = line.lotId ? "PARTNER_SALE" : "SALE";
+        const { totalCost, unitCost } = await postOutflow(tx, {
+          productId: line.productId,
+          locationId: line.locationId || fallbackLocationId,
+          ownership,
+          quantity: Number(line.quantity),
+          movementType,
+          referenceType: "SALE_INVOICE",
+          referenceId: `${existing.id}:${line.id}`,
+        });
+        await tx.saleInvoiceItem.update({
+          where: { id: line.id },
+          data: {
+            cogsAmount: totalCost,
+            unitCost,
+            ownershipType: ownership.ownershipType,
+            ownershipKey: resolveOwnershipKey(ownership),
+          },
+        });
+        const resolved = resolvedUpdateItems.find(
+          (r) => r.productId === line.productId && Number(r.quantity) === Number(line.quantity),
+        );
+        if (resolved) {
+          resolved.cogsAmount = totalCost;
+          resolved.resolvedUnitCost = unitCost;
+        }
+      }
 
       // Re-create stock movements (unless DO already deducted)
       let alreadyDeductedByDO = false;
@@ -1019,7 +1288,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // Re-create ledger entries: multiple entries for each sold product (Issue 15)
+      // Fetch products for line item descriptions
       const editProductIds = input.items.map((i) => i.productId);
       const editProducts = await tx.product.findMany({
         where: { id: { in: editProductIds } },
@@ -1027,29 +1296,63 @@ export async function updateSaleInvoiceAction(raw: unknown) {
       });
       const editProdMap = new Map(editProducts.map((p) => [p.id, p]));
 
-      for (const item of input.items) {
-        const p = editProdMap.get(item.productId);
-        const lineTotal = item.quantity * item.unitPrice;
-        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitPrice})`;
+      // -------------------------------------------------------------
+      // CPA-GRADE SINGLE-TRANSACTION POSTING (Fix duplicate entries)
+      // -------------------------------------------------------------
+      const splitsToRecord =
+        input.paymentSplits && input.paymentSplits.length > 0
+          ? input.paymentSplits
+          : [{ method: input.paymentMethod || PaymentMethod.CASH, amount: paidAmount, reference: null }];
 
-        // Customer Receivable (Debit per product)
+      // 1. Debits: Cash / Bank inflow for immediately settled portion
+      if (paidAmount > 0) {
+        for (const split of splitsToRecord) {
+          if (split.amount <= 0) continue;
+          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
+          await tx.ledgerEntry.create({
+            data: {
+              partyId: null,
+              accountType: AccountType.CASH,
+              debit: split.amount,
+              credit: 0,
+              isPartnership: isPartnershipTx,
+              partnershipId,
+              referenceType: "SALE_INVOICE",
+              referenceId: existing.id,
+              date: input.date,
+              description: `Cash / Bank received: Estimate ${existing.invoiceNo} (${split.method})${refDesc}`,
+              createdById: session.user.id,
+            },
+          });
+        }
+      }
+
+      // 2. Debits: Accounts Receivable (Trade Debtors) ONLY if an unpaid balance remains
+      const unpaidBalance = Math.max(0, totalAmount - paidAmount);
+      if (unpaidBalance > 0.001) {
         await tx.ledgerEntry.create({
           data: {
             partyId: targetCustomerId,
             accountType: AccountType.RECEIVABLE,
-            debit: lineTotal,
+            debit: unpaidBalance,
             credit: 0,
             isPartnership: isPartnershipTx,
             partnershipId,
             referenceType: "SALE_INVOICE",
             referenceId: existing.id,
             date: input.date,
-            description: `Estimate ${existing.invoiceNo}: ${itemDesc}`,
+            description: `Accounts Receivable (Trade Debtors): Estimate ${existing.invoiceNo} remaining balance`,
             createdById: session.user.id,
           },
         });
+      }
 
-        // Sales Revenue (Credit per product)
+      // 3. Credits: Gross Revenue itemized per product
+      for (const item of input.items) {
+        const p = editProdMap.get(item.productId);
+        const lineTotal = item.quantity * item.unitPrice;
+        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitPrice})`;
+
         await tx.ledgerEntry.create({
           data: {
             partyId: null,
@@ -1061,30 +1364,14 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             referenceType: "SALE_INVOICE",
             referenceId: existing.id,
             date: input.date,
-            description: `Sales Revenue (${existing.invoiceNo}): ${itemDesc}`,
+            description: `Gross Revenue (${existing.invoiceNo}): ${itemDesc}`,
             createdById: session.user.id,
           },
         });
       }
 
-      // If freight was added
+      // 4. Credits: Transparent Freight Accounting
       if (freight > 0) {
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetCustomerId,
-            accountType: AccountType.RECEIVABLE,
-            debit: freight,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "SALE_INVOICE",
-            referenceId: existing.id,
-            date: input.date,
-            description: `Freight charges on Estimate ${existing.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-
         await tx.ledgerEntry.create({
           data: {
             partyId: null,
@@ -1096,13 +1383,63 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             referenceType: "SALE_INVOICE",
             referenceId: existing.id,
             date: input.date,
-            description: `Freight charges on Estimate ${existing.invoiceNo}`,
+            description: `Freight Outward (Transport Charges) on Estimate ${existing.invoiceNo}`,
             createdById: session.user.id,
           },
         });
       }
 
-      // If immediate payment
+      // 5. Balanced Double-Entry for COGS and Inventory Asset Reduction (IFRS/GAAP)
+      // Dr Cost of Goods Sold (COGS) [EXPENSE]
+      // Cr Inventory on Hand [INVENTORY]
+      for (const item of resolvedUpdateItems) {
+        if (!item.cogsAmount || item.cogsAmount <= 0) continue;
+        if (item.lotId) {
+          const lot = await tx.partnershipLot.findUnique({
+            where: { id: item.lotId },
+            select: { archetype: true, type: true },
+          });
+          if (lot && partnershipArchetypeFromLot(lot) === "CONSIGNMENT") {
+            continue;
+          }
+        }
+        const p = editProdMap.get(item.productId);
+        const prodName = p?.productNo ? `[${p.productNo}] ${p.name}` : p?.name || "Product";
+
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.COGS,
+            debit: item.cogsAmount,
+            credit: 0,
+            isPartnership: isPartnershipTx,
+            partnershipId,
+            referenceType: "SALE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Cost of Goods Sold (COGS): ${prodName} (Qty: ${item.quantity} ${p?.unit || "pkts"}) on Estimate ${existing.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+
+        await tx.ledgerEntry.create({
+          data: {
+            partyId: null,
+            accountType: AccountType.INVENTORY,
+            debit: 0,
+            credit: item.cogsAmount,
+            isPartnership: isPartnershipTx,
+            partnershipId,
+            referenceType: "SALE_INVOICE",
+            referenceId: existing.id,
+            date: input.date,
+            description: `Inventory Asset Reduction: ${prodName} (Qty: ${item.quantity} ${p?.unit || "pkts"}) on Estimate ${existing.invoiceNo}`,
+            createdById: session.user.id,
+          },
+        });
+      }
+
+      // Record Payment record for receipt numbering and payment history (NO duplicate ledger entries)
       if (paidAmount > 0) {
         const activeYear = existing.financialYearId ? { id: existing.financialYearId } : await getActiveFinancialYear(tx);
         const { sequenceNo: paymentSeq, formattedNumber: paymentFormatted } = await getNextAtomicSequence(
@@ -1111,12 +1448,6 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           "PAYMENT_RECEIPT"
         );
         const receiptNo = `RCT-${paymentFormatted}`;
-
-        const splitsToRecord =
-          input.paymentSplits && input.paymentSplits.length > 0
-            ? input.paymentSplits
-            : [{ method: input.paymentMethod || PaymentMethod.CASH, amount: paidAmount, reference: null }];
-
         const primaryMethod = splitsToRecord[0].method;
 
         const payment = await tx.payment.create({
@@ -1148,41 +1479,6 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           },
         });
 
-        for (const split of splitsToRecord) {
-          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
-          await tx.ledgerEntry.create({
-            data: {
-              partyId: null,
-              accountType: AccountType.CASH,
-              debit: split.amount,
-              credit: 0,
-              isPartnership: isPartnershipTx,
-              partnershipId,
-              referenceType: "PAYMENT",
-              referenceId: payment.id,
-              date: input.date,
-              description: `Payment received for ${existing.invoiceNo} (${split.method})${refDesc}`,
-              createdById: session.user.id,
-            },
-          });
-        }
-
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetCustomerId,
-            accountType: AccountType.RECEIVABLE,
-            debit: 0,
-            credit: paidAmount,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Payment cleared for ${existing.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-
         await tx.invoicePaymentAllocation.create({
           data: {
             paymentId: payment.id,
@@ -1191,6 +1487,84 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           },
         });
       }
+
+      // Co-Invested Shared Stock Pool (CO_INVESTED_POOL) Allocations
+      for (const item of input.items) {
+        if (!item.lotId) continue;
+        const pLot = await tx.partnershipLot.findUnique({
+          where: { id: item.lotId },
+          include: { partner: true, items: true },
+        });
+
+        if (pLot && pLot.type === "CO_INVESTED_POOL") {
+          const lotItem = pLot.items.find((li) => li.productId === item.productId);
+          const unitCost = Number(item.unitCost ?? lotItem?.unitCostRate ?? 0);
+          const unitSale = Number(item.unitPrice);
+          const grossMargin = Math.max(0, (unitSale - unitCost) * Number(item.quantity));
+          const marginRatio = Number(pLot.partnerMarginRatio);
+          const partnerMarginShare = grossMargin * marginRatio;
+
+          await tx.partnershipSaleAllocation.create({
+            data: {
+              lotId: pLot.id,
+              invoiceId: existing.id,
+              productId: item.productId,
+              quantity: item.quantity,
+              unitCostRate: unitCost,
+              unitSaleRate: unitSale,
+              grossMargin,
+              partnerMarginShare,
+              salesChannel: "INTERNAL_POS",
+            },
+          });
+
+          if (lotItem) {
+            await tx.partnershipLotItem.update({
+              where: { id: lotItem.id },
+              data: {
+                remainingQuantity: {
+                  decrement: item.quantity,
+                },
+              },
+            });
+          }
+
+          if (partnerMarginShare > 0) {
+            await tx.ledgerEntry.create({
+              data: {
+                partyId: null,
+                accountType: AccountType.EXPENSE,
+                debit: partnerMarginShare,
+                credit: 0,
+                isPartnership: true,
+                partnershipId: pLot.id,
+                referenceType: "SALE_INVOICE",
+                referenceId: existing.id,
+                date: input.date,
+                description: `Partner Profit Allocation: Lot #${pLot.lotNumber} (${pLot.partner.name}) on Estimate ${existing.invoiceNo}`,
+                createdById: session.user.id,
+              },
+            });
+
+            await tx.ledgerEntry.create({
+              data: {
+                partyId: pLot.partnerId,
+                accountType: AccountType.PAYABLE,
+                debit: 0,
+                credit: partnerMarginShare,
+                isPartnership: true,
+                partnershipId: pLot.id,
+                referenceType: "SALE_INVOICE",
+                referenceId: existing.id,
+                date: input.date,
+                description: `Accrued Profit Share Payable: Lot #${pLot.lotNumber} on Estimate ${existing.invoiceNo}`,
+                createdById: session.user.id,
+              },
+            });
+          }
+        }
+      }
+
 
       // Update the SaleInvoice row itself
       await tx.saleInvoice.update({
@@ -1419,6 +1793,9 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
       const totalAmount = subtotal + freight;
 
       const rawPaid = typeof input.amountPaid === "number" ? input.amountPaid : 0;
+      if (rawPaid > totalAmount + 0.01) {
+        throw userError(`Payment amount (PKR ${rawPaid}) cannot exceed the total invoice amount (PKR ${totalAmount}).`);
+      }
       const paidAmount = Math.min(totalAmount, Math.max(0, rawPaid));
       const isSettled = paidAmount >= totalAmount - 0.001;
       
@@ -1656,6 +2033,11 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         }
       }
 
+      const layerUnitCosts = allocateInwardFreightToLines(
+        resolvedItems.map((i) => ({ quantity: i.quantity, unitCost: i.unitCost })),
+        freight,
+      );
+
       const invoice = await tx.purchaseInvoice.create({
         data: {
           invoiceNo: formattedNumber,
@@ -1676,12 +2058,13 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           notes: input.notes || null,
           createdById: session.user.id,
           items: {
-            create: resolvedItems.map((item) => ({
+            create: resolvedItems.map((item, idx) => ({
               productId: item.productId,
               locationId: item.locationId,
               warehouseLotId: item.warehouseLotId,
               quantity: item.quantity,
               unitCost: item.unitCost,
+              landedUnitCost: layerUnitCosts[idx] ?? item.unitCost,
               lineTotal: item.lineTotal,
             })),
           },
@@ -1751,7 +2134,6 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         }
       }
 
-      // Create ledger entries: multiple entries for each purchased product (Issue 15)
       const purchaseProductIds = input.items.map((i) => i.productId);
       const purchaseProducts = await tx.product.findMany({
         where: { id: { in: purchaseProductIds } },
@@ -1759,98 +2141,77 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
       });
       const purchaseProdMap = new Map(purchaseProducts.map((p) => [p.id, p]));
 
-      for (const item of input.items) {
-        const p = purchaseProdMap.get(item.productId);
-        const lineTotal = item.quantity * item.unitCost;
-        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitCost})`;
-
-        const itemLotId = item.warehouseLotId || (item as any).sourceWarehouseLotId || input.warehouseLotId;
-        const itemLot = itemLotId ? lotMap.get(itemLotId) : null;
-        const partnerShare = itemLot?.partnerSharePct != null
-          ? Number(itemLot.partnerSharePct)
-          : defaultPartnerSharePct;
-
-        // Dynamic Purchase Calculation: Person A's payable liability to Person B reflects only Person B's ownership portion
-        const payableCredit = isPartnershipTx ? lineTotal * (partnerShare / 100) : lineTotal;
-
-        // Purchases Expense (Debit per product at full shop valuation)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.PURCHASES,
-            debit: lineTotal,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
+      if (!alreadyFulfilledByPO) {
+        for (let idx = 0; idx < resolvedItems.length; idx++) {
+          const item = resolvedItems[idx];
+          const layerUnit = layerUnitCosts[idx] ?? item.unitCost;
+          const ownership = await resolvePurchaseOwnership(tx, {
+            warehouseLotId: item.warehouseLotId,
+          });
+          await postInflow(tx, {
+            productId: item.productId,
+            locationId: item.locationId,
+            ownership,
+            quantity: item.quantity,
+            unitCost: layerUnit,
+            movementType: "PURCHASE",
             referenceType: "PURCHASE_INVOICE",
             referenceId: invoice.id,
-            date: input.date,
-            description: `Purchase Invoice ${invoice.invoiceNo}: ${itemDesc}`,
-            createdById: session.user.id,
-          },
-        });
-
-        const isPartnerCapitalInjection = Boolean(
-          (input as any).paymentMode === "PARTNER_CAPITAL" ||
-          input.notes?.includes("PARTNER_CAPITAL") ||
-          input.notes?.includes("Partnership Intake")
-        );
-
-        // Supplier Payable (Credit reflecting partner ownership portion)
-        // If funded via partner capital injection, credit partner's capital account directly (NOT the external mill!)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: isPartnerCapitalInjection && partnershipId ? partnershipId : targetSupplierId!,
-            accountType: AccountType.PAYABLE,
-            debit: 0,
-            credit: payableCredit,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "PURCHASE_INVOICE",
-            referenceId: invoice.id,
-            date: input.date,
-            description: isPartnerCapitalInjection
-              ? `Partner Capital Contribution: ${invoice.invoiceNo} - ${itemDesc}`
-              : (isPartnershipTx && partnerShare < 100
-                ? `Payable for ${invoice.invoiceNo}: ${itemDesc} (${partnerShare}% equity share)`
-                : `Payable for ${invoice.invoiceNo}: ${itemDesc}`),
-            createdById: session.user.id,
-          },
-        });
+          });
+        }
       }
 
-      // If freight charges were added
-      if (freight > 0) {
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.PURCHASES,
-            debit: freight,
-            credit: 0,
-            referenceType: "PURCHASE_INVOICE",
-            referenceId: invoice.id,
-            date: input.date,
-            description: `Freight charges on Purchase Invoice ${invoice.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
+      const splitsToRecord: Array<{ method: PaymentMethod; amount: number; reference: string | null }> =
+        input.paymentSplits && input.paymentSplits.length > 0
+          ? input.paymentSplits.map((s) => ({
+              method: (s.method ?? PaymentMethod.CASH) as PaymentMethod,
+              amount: s.amount,
+              reference: s.reference || null,
+            }))
+          : [{ method: (input.paymentMethod ?? PaymentMethod.CASH) as PaymentMethod, amount: paidAmount, reference: null }];
 
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetSupplierId!,
-            accountType: AccountType.PAYABLE,
-            debit: 0,
-            credit: freight,
-            referenceType: "PURCHASE_INVOICE",
-            referenceId: invoice.id,
-            date: input.date,
-            description: `Freight payable for ${invoice.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-      }
+      const unpaidBalance = Math.max(0, totalAmount - paidAmount);
+      const isPartnerCapitalInjection = Boolean(
+        (input as any).paymentMode === "PARTNER_CAPITAL" ||
+        input.notes?.includes("PARTNER_CAPITAL") ||
+        input.notes?.includes("Partnership Intake")
+      );
 
-      // If immediate payment was made
+      const purchaseJournalLines = buildOwnedPurchaseJournalLines({
+        items: input.items.map((item, idx) => {
+          const p = purchaseProdMap.get(item.productId);
+          const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"})`;
+          return {
+            productId: item.productId,
+            quantity: item.quantity,
+            unitCost: item.unitCost,
+            description: itemDesc,
+          };
+        }),
+        freight,
+        layerUnitCosts,
+        paidAmount,
+        splits: splitsToRecord,
+        supplierId: targetSupplierId!,
+        partnershipId,
+        isPartnership: isPartnershipTx,
+        unpaidBalance,
+        isPartnerCapitalInjection,
+        invoiceNo: invoice.invoiceNo,
+      });
+
+      await postJournal(
+        {
+          referenceType: "PURCHASE_INVOICE",
+          referenceId: invoice.id,
+          date: input.date,
+          createdById: session.user.id,
+          lines: purchaseJournalLines,
+        },
+        tx,
+      );
+
+      // Record Payment record for receipt numbering and payment history (NO duplicate ledger entries)
       if (paidAmount > 0) {
         const { sequenceNo: paymentSeq, formattedNumber: paymentFormatted } = await getNextAtomicSequence(
           tx,
@@ -1858,12 +2219,6 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           "PAYMENT_RECEIPT"
         );
         const receiptNo = `PAY-${paymentFormatted}`;
-
-        const splitsToRecord =
-          input.paymentSplits && input.paymentSplits.length > 0
-            ? input.paymentSplits
-            : [{ method: input.paymentMethod || PaymentMethod.CASH, amount: paidAmount, reference: null }];
-
         const primaryMethod = splitsToRecord[0].method;
 
         const payment = await tx.payment.create({
@@ -1879,52 +2234,15 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
             date: input.date,
             notes: `Payment for Purchase Invoice ${invoice.invoiceNo} (${supplierName})`,
             createdById: session.user.id,
-            ...(splitsToRecord.length > 1 || (input.paymentSplits && input.paymentSplits.length > 0)
-              ? {
-                  splits: {
-                    create: splitsToRecord.map((s) => ({
-                      method: s.method,
-                      amount: s.amount,
-                      reference: s.reference || null,
-                    })),
-                  },
-                }
-              : {}),
-          },
-        });
-
-        // Supplier Payable reduced (Debit)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetSupplierId!,
-            accountType: AccountType.PAYABLE,
-            debit: paidAmount,
-            credit: 0,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Payment for ${invoice.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-
-        // Cash/Bank outflow (Credit per payment split)
-        for (const split of splitsToRecord) {
-          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
-          await tx.ledgerEntry.create({
-            data: {
-              partyId: null,
-              accountType: AccountType.CASH,
-              debit: 0,
-              credit: split.amount,
-              referenceType: "PAYMENT",
-              referenceId: payment.id,
-              date: input.date,
-              description: `Payment for ${invoice.invoiceNo} (${split.method})${refDesc}`,
-              createdById: session.user.id,
+            splits: {
+              create: splitsToRecord.map((s) => ({
+                method: s.method,
+                amount: s.amount,
+                reference: s.reference || null,
+              })),
             },
-          });
-        }
+          },
+        });
 
         await tx.invoicePaymentAllocation.create({
           data: {
@@ -1934,12 +2252,6 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           },
         });
       }
-
-      const isPartnerCapitalInjection = Boolean(
-        (input as any).paymentMode === "PARTNER_CAPITAL" ||
-        input.notes?.includes("PARTNER_CAPITAL") ||
-        input.notes?.includes("Partnership Intake")
-      );
 
       if (isPartnerCapitalInjection) {
         await tx.purchaseInvoice.update({
@@ -2022,6 +2334,7 @@ export async function deletePurchaseInvoiceAction(raw: unknown) {
       }
       await tx.payment.deleteMany({ where: { purchaseInvoiceId: id } });
       await tx.ledgerEntry.deleteMany({ where: { referenceType: "PURCHASE_INVOICE", referenceId: id } });
+      await reverseMovement(tx, "PURCHASE_INVOICE", id);
       await tx.stockMovement.deleteMany({ where: { referenceType: "PURCHASE_INVOICE", referenceId: id } });
       await tx.invoicePaymentAllocation.deleteMany({ where: { purchaseInvoiceId: id } });
       await tx.purchaseInvoiceItem.deleteMany({ where: { invoiceId: id } });
@@ -2163,6 +2476,7 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
           referenceId: existing.id,
         },
       });
+      await reverseMovement(tx, "PURCHASE_INVOICE", existing.id);
 
       // 3. Revert old auto payments if any
       const oldAutoPayments = await tx.payment.findMany({
@@ -2207,14 +2521,20 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
       await tx.purchaseInvoiceItem.deleteMany({
         where: { invoiceId: existing.id },
       });
+      const editLayerUnitCosts = allocateInwardFreightToLines(
+        input.items.map((i) => ({ quantity: i.quantity, unitCost: i.unitCost })),
+        freight,
+      );
+
       await tx.purchaseInvoiceItem.createMany({
-        data: input.items.map((item) => ({
+        data: input.items.map((item, idx) => ({
           invoiceId: existing.id,
           productId: item.productId,
           locationId: (item as any).locationId || fallbackLocationId,
           warehouseLotId: item.warehouseLotId || input.warehouseLotId || null,
           quantity: item.quantity,
           unitCost: item.unitCost,
+          landedUnitCost: editLayerUnitCosts[idx] ?? item.unitCost,
           lineTotal: item.quantity * item.unitCost,
         })),
       });
@@ -2251,7 +2571,6 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
         }
       }
 
-      // 7. Recreate ledger entries: multiple entries for each purchased product (Issue 15)
       const editPurchaseProductIds = input.items.map((i) => i.productId);
       const editPurchaseProducts = await tx.product.findMany({
         where: { id: { in: editPurchaseProductIds } },
@@ -2259,95 +2578,78 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
       });
       const editPurchaseProdMap = new Map(editPurchaseProducts.map((p) => [p.id, p]));
 
-      for (const item of input.items) {
-        const p = editPurchaseProdMap.get(item.productId);
-        const lineTotal = item.quantity * item.unitCost;
-        const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"} @ PKR ${item.unitCost})`;
-
-        const partnerShare = existing.partnerSharePct != null ? Number(existing.partnerSharePct) : 100;
-        const payableCredit = isPartnershipTx ? lineTotal * (partnerShare / 100) : lineTotal;
-
-        // Purchases Expense (Debit per product)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.PURCHASES,
-            debit: lineTotal,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
+      if (!alreadyFulfilledByPO) {
+        for (let idx = 0; idx < input.items.length; idx++) {
+          const item = input.items[idx];
+          const itemLoc = (item as any).locationId || fallbackLocationId;
+          const layerUnit = editLayerUnitCosts[idx] ?? item.unitCost;
+          const ownership = await resolvePurchaseOwnership(tx, {
+            warehouseLotId: item.warehouseLotId || input.warehouseLotId || null,
+          });
+          await postInflow(tx, {
+            productId: item.productId,
+            locationId: itemLoc,
+            ownership,
+            quantity: item.quantity,
+            unitCost: layerUnit,
+            movementType: "PURCHASE",
             referenceType: "PURCHASE_INVOICE",
             referenceId: existing.id,
-            date: input.date,
-            description: `Purchase Invoice ${existing.invoiceNo}: ${itemDesc}`,
-            createdById: session.user.id,
-          },
-        });
-
-        const isPartnerCapitalInjection = Boolean(
-          (input as any).paymentMode === "PARTNER_CAPITAL" ||
-          input.notes?.includes("PARTNER_CAPITAL") ||
-          input.notes?.includes("Partnership Intake") ||
-          existing.notes?.includes("PARTNER_CAPITAL") ||
-          existing.notes?.includes("Partnership Intake")
-        );
-
-        // Supplier Payable (Credit per product)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: isPartnerCapitalInjection && partnershipId ? partnershipId : targetSupplierId!,
-            accountType: AccountType.PAYABLE,
-            debit: 0,
-            credit: payableCredit,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "PURCHASE_INVOICE",
-            referenceId: existing.id,
-            date: input.date,
-            description: isPartnerCapitalInjection
-              ? `Partner Capital Contribution: ${existing.invoiceNo} - ${itemDesc}`
-              : `Payable for ${existing.invoiceNo}: ${itemDesc}`,
-            createdById: session.user.id,
-          },
-        });
+          });
+        }
       }
 
-      // If freight charges were added
-      if (freight > 0) {
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.PURCHASES,
-            debit: freight,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "PURCHASE_INVOICE",
-            referenceId: existing.id,
-            date: input.date,
-            description: `Freight charges on Purchase Invoice ${existing.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
+      const splitsToRecord: Array<{ method: PaymentMethod; amount: number; reference: string | null }> =
+        input.paymentSplits && input.paymentSplits.length > 0
+          ? input.paymentSplits.map((s) => ({
+              method: (s.method ?? PaymentMethod.CASH) as PaymentMethod,
+              amount: s.amount,
+              reference: s.reference || null,
+            }))
+          : [{ method: (input.paymentMethod ?? PaymentMethod.CASH) as PaymentMethod, amount: paidAmount, reference: null }];
 
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetSupplierId!,
-            accountType: AccountType.PAYABLE,
-            debit: 0,
-            credit: freight,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "PURCHASE_INVOICE",
-            referenceId: existing.id,
-            date: input.date,
-            description: `Freight payable for ${existing.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-      }
+      const unpaidBalance = Math.max(0, totalAmount - paidAmount);
+      const isPartnerCapitalInjectionEdit = Boolean(
+        (input as any).paymentMode === "PARTNER_CAPITAL" ||
+        input.notes?.includes("PARTNER_CAPITAL") ||
+        input.notes?.includes("Partnership Intake") ||
+        existing.notes?.includes("PARTNER_CAPITAL") ||
+        existing.notes?.includes("Partnership Intake")
+      );
 
-      // 8. Auto Payment if paidAmount > 0
+      await postJournal(
+        {
+          referenceType: "PURCHASE_INVOICE",
+          referenceId: existing.id,
+          date: input.date,
+          createdById: session.user.id,
+          lines: buildOwnedPurchaseJournalLines({
+            items: input.items.map((item) => {
+              const p = editPurchaseProdMap.get(item.productId);
+              const itemDesc = `${p?.productNo ? `[${p.productNo}] ` : ""}${p?.name || "Product"} (Qty: ${item.quantity} ${p?.unit || "pkts"})`;
+              return {
+                productId: item.productId,
+                quantity: item.quantity,
+                unitCost: item.unitCost,
+                description: itemDesc,
+              };
+            }),
+            freight,
+            layerUnitCosts: editLayerUnitCosts,
+            paidAmount,
+            splits: splitsToRecord,
+            supplierId: targetSupplierId!,
+            partnershipId,
+            isPartnership: isPartnershipTx,
+            unpaidBalance,
+            isPartnerCapitalInjection: isPartnerCapitalInjectionEdit,
+            invoiceNo: existing.invoiceNo,
+          }),
+        },
+        tx,
+      );
+
+      // 8. Auto Payment record for sequence and allocation (WITHOUT duplicate ledger entries)
       if (paidAmount > 0) {
         const activeYear = existing.financialYearId ? { id: existing.financialYearId } : await getActiveFinancialYear(tx);
         const { sequenceNo: paymentSeq, formattedNumber: paymentFormatted } = await getNextAtomicSequence(
@@ -2356,12 +2658,6 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
           "PAYMENT_RECEIPT"
         );
         const receiptNo = `PAY-${paymentFormatted}`;
-
-        const splitsToRecord =
-          input.paymentSplits && input.paymentSplits.length > 0
-            ? input.paymentSplits
-            : [{ method: input.paymentMethod || PaymentMethod.CASH, amount: paidAmount, reference: null }];
-
         const primaryMethod = splitsToRecord[0].method;
 
         const payment = await tx.payment.create({
@@ -2392,41 +2688,6 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
               : {}),
           },
         });
-
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetSupplierId!,
-            accountType: AccountType.PAYABLE,
-            debit: paidAmount,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Payment for ${existing.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-
-        for (const split of splitsToRecord) {
-          const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
-          await tx.ledgerEntry.create({
-            data: {
-              partyId: null,
-              accountType: AccountType.CASH,
-              debit: 0,
-              credit: split.amount,
-              isPartnership: isPartnershipTx,
-              partnershipId,
-              referenceType: "PAYMENT",
-              referenceId: payment.id,
-              date: input.date,
-              description: `Payment for ${existing.invoiceNo} (${split.method})${refDesc}`,
-              createdById: session.user.id,
-            },
-          });
-        }
 
         await tx.invoicePaymentAllocation.create({
           data: {
@@ -2517,6 +2778,7 @@ export async function deleteSaleInvoiceAction(raw: unknown) {
 
       // 1. Reverse all linked payments and their ledger entries
       for (const payment of existing.payments) {
+        await reversePaymentAllocations(tx, payment.id);
         await tx.ledgerEntry.deleteMany({ where: { referenceType: "PAYMENT", referenceId: payment.id } });
         await tx.paymentSplit.deleteMany({ where: { paymentId: payment.id } });
       }
@@ -2526,6 +2788,8 @@ export async function deleteSaleInvoiceAction(raw: unknown) {
       await tx.ledgerEntry.deleteMany({ where: { referenceType: "SALE_INVOICE", referenceId: id } });
 
       // 3. Reverse SALE_OUT stock movements (restores inventory)
+      await reverseMovementsByReferencePrefix(tx, "SALE_INVOICE", `${id}:`);
+      await tx.partnershipSaleAllocation.deleteMany({ where: { invoiceId: id } });
       await tx.stockMovement.deleteMany({ where: { referenceType: "SALE_INVOICE", referenceId: id } });
 
       // 4. Delete allocations, items, then the invoice itself
@@ -2542,5 +2806,61 @@ export async function deleteSaleInvoiceAction(raw: unknown) {
     });
 
     return res;
+  });
+}
+
+const recordActualFreightCostSchema = z.object({
+  saleInvoiceId: z.string().min(1),
+  actualFreightCost: z.coerce.number().min(0),
+  paymentMethod: z.nativeEnum(PaymentMethod).default(PaymentMethod.CASH),
+  date: z.coerce.date().optional(),
+});
+
+/** Record actual outbound freight/packing cost (separate from customer-billed freight). */
+export async function recordActualFreightCostAction(raw: unknown) {
+  return runAction("sales.recordActualFreight", async () => {
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "sales", "update", (session.user as any).permissions)) {
+      throw userError("You do not have permission to update sale invoices.");
+    }
+    const input = parseInput(recordActualFreightCostSchema, raw);
+
+    await withResourceQueue([`invoice:si:${input.saleInvoiceId}`], async (tx) => {
+      const invoice = await tx.saleInvoice.findUnique({ where: { id: input.saleInvoiceId } });
+      if (!invoice) throw userError("Sale invoice not found.");
+
+      await tx.saleInvoice.update({
+        where: { id: invoice.id },
+        data: { actualFreightCost: input.actualFreightCost },
+      });
+
+      if (input.actualFreightCost <= 0) return;
+
+      await postJournal(
+        {
+          referenceType: "SALE_FREIGHT_COST",
+          referenceId: invoice.id,
+          date: input.date ?? new Date(),
+          createdById: session.user.id,
+          lines: [
+            {
+              accountType: AccountType.DIRECT_COST,
+              debit: input.actualFreightCost,
+              credit: 0,
+              description: `Actual freight/packing cost for ${invoice.invoiceNo}`,
+            },
+            {
+              accountType: AccountType.CASH,
+              debit: 0,
+              credit: input.actualFreightCost,
+              description: `Cash paid for freight on ${invoice.invoiceNo}`,
+            },
+          ],
+        },
+        tx,
+      );
+    });
+
+    return { success: true };
   });
 }

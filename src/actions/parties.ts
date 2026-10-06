@@ -20,6 +20,11 @@ import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { revalidatePath } from "next/cache";
 import { cleanPartyDisplayName } from "@/lib/party-display";
+import {
+  postTransfer,
+  resolveOwnershipKey,
+  resolveSaleOwnership,
+} from "@/lib/inventoryCost.service";
 
 const deletePartySchema = z.object({ id: z.string().min(1, "Party is required") });
 
@@ -512,287 +517,23 @@ export async function adjustPartyBalanceAction(raw: unknown) {
     };
   });
 }
+import {
+  adjustStockAction as _adjustStockAction,
+  bulkAdjustStockAction as _bulkAdjustStockAction,
+  transferStockAction as _transferStockAction,
+} from "@/actions/inventory";
 
 export async function adjustStockAction(raw: unknown) {
-  return runAction("inventory.adjust", async () => {
-    const session = await requireSession();
-    if (!canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions)) {
-      throw userError("You do not have permission to adjust inventory stock.");
-    }
-    const input = parseInput(stockAdjustmentSchema, raw);
-
-    const location = await prisma.location.findUnique({
-      where: { id: input.locationId },
-      include: {
-        warehouseLots: {
-          where: { isActive: true, deletedAt: null },
-        },
-      },
-    });
-    if (!location) throw userError("Location not found.");
-
-    if (input.warehouseLotId) {
-      const lot = location.warehouseLots.find((l) => l.id === input.warehouseLotId);
-      if (!lot) throw userError("Selected lot does not exist in this location.");
-    } else if (location.warehouseLots.length > 0) {
-      throw userError(`Select a specific lot before adjusting stock at ${location.name}.`);
-    }
-
-    const lockKeys = [`stock:${input.productId}:${input.locationId}`];
-
-    const res = await withResourceQueue(lockKeys, async (tx) => {
-      const currentStock = await getStockOnHand(
-        input.productId,
-        input.locationId,
-        tx,
-        input.warehouseLotId ? input.warehouseLotId : null,
-      );
-      const desired = input.direction === "OUT" ? currentStock - input.quantity : currentStock + input.quantity;
-
-      if (input.direction === "OUT") {
-        await assertStockDeductionsAvailable(
-          [{
-            productId: input.productId,
-            locationId: input.locationId,
-            warehouseLotId: input.warehouseLotId,
-            quantity: input.quantity,
-          }],
-          tx,
-        );
-      }
-
-      const movementType = "ADJUSTMENT";
-      const referenceId = generateDocumentNumber("ADJ");
-      await tx.stockMovement.create({
-        data: {
-          productId: input.productId,
-          locationId: input.locationId,
-          warehouseLotId: input.warehouseLotId || null,
-          type: movementType,
-          quantity: input.direction === "IN" ? input.quantity : -input.quantity,
-          referenceType: "ADJUSTMENT",
-          referenceId,
-          createdById: session.user.id,
-          notes: input.reason,
-        },
-      });
-
-      return { availableStock: desired };
-    });
-
-    emitRealtimeEvent(["inventory", "stock-movements", "dashboard"], "update", "StockAdjustment", {
-      productId: input.productId,
-      locationId: input.locationId,
-    });
-
-    revalidatePath("/inventory");
-    revalidatePath("/stock-movements");
-    revalidatePath("/dashboard");
-
-    return res;
-  });
-}
-
-export async function transferStockAction(raw: unknown) {
-  return runAction("inventory.transfer", async () => {
-    const session = await requireSession();
-    if (!canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions)) {
-      throw userError("You do not have permission to transfer inventory stock.");
-    }
-    const input = parseInput(stockTransferSchema, raw);
-
-    const [fromLocation, toLocation] = await Promise.all([
-      prisma.location.findUnique({
-        where: { id: input.fromLocationId },
-        include: { warehouseLots: { where: { isActive: true, deletedAt: null } } },
-      }),
-      prisma.location.findUnique({
-        where: { id: input.toLocationId },
-        include: { warehouseLots: { where: { isActive: true, deletedAt: null } } },
-      }),
-    ]);
-
-    if (!fromLocation) throw userError("Source location not found.");
-    if (!toLocation) throw userError("Destination location not found.");
-
-    if (input.fromWarehouseLotId) {
-      const lot = fromLocation.warehouseLots.find((l) => l.id === input.fromWarehouseLotId);
-      if (!lot) throw userError(`Selected source lot does not exist in "${fromLocation.name}".`);
-    }
-    if (input.toWarehouseLotId) {
-      const lot = toLocation.warehouseLots.find((l) => l.id === input.toWarehouseLotId);
-      if (!lot) throw userError(`Selected destination lot does not exist in "${toLocation.name}".`);
-    }
-    if (fromLocation.warehouseLots.length > 0 && !input.fromWarehouseLotId) {
-      throw userError(`Select a specific source lot before transferring stock from ${fromLocation.name}.`);
-    }
-    if (toLocation.warehouseLots.length > 0 && !input.toWarehouseLotId) {
-      throw userError(`Select a specific destination lot before transferring stock to ${toLocation.name}.`);
-    }
-
-    if (input.fromLocationId === input.toLocationId && (input.fromWarehouseLotId || "") === (input.toWarehouseLotId || "")) {
-      throw userError("Source and destination lot cannot be identical in the same location.");
-    }
-
-    const lockKeys = [
-      `stock:${input.productId}:${input.fromLocationId}`,
-      `stock:${input.productId}:${input.toLocationId}`,
-    ];
-
-    const res = await withResourceQueue(lockKeys, async (tx) => {
-      await assertStockDeductionsAvailable(
-        [{
-          productId: input.productId,
-          locationId: input.fromLocationId,
-          warehouseLotId: input.fromWarehouseLotId,
-          quantity: input.quantity,
-        }],
-        tx,
-      );
-
-      const referenceId = generateDocumentNumber("TRF");
-      await tx.stockMovement.createMany({
-        data: [
-          {
-            productId: input.productId,
-            locationId: input.fromLocationId,
-            warehouseLotId: input.fromWarehouseLotId || null,
-            type: "TRANSFER_OUT",
-            quantity: input.quantity,
-            referenceType: "TRANSFER",
-            referenceId,
-            createdById: session.user.id,
-            notes: input.notes || "Stock transfer",
-          },
-          {
-            productId: input.productId,
-            locationId: input.toLocationId,
-            warehouseLotId: input.toWarehouseLotId || null,
-            type: "TRANSFER_IN",
-            quantity: input.quantity,
-            referenceType: "TRANSFER",
-            referenceId,
-            createdById: session.user.id,
-            notes: input.notes || "Stock transfer",
-          },
-        ],
-      });
-
-      return { success: true };
-    });
-
-    emitRealtimeEvent(["inventory", "stock-movements", "dashboard"], "update", "StockTransfer", {
-      productId: input.productId,
-      fromLocationId: input.fromLocationId,
-      toLocationId: input.toLocationId,
-    });
-
-    revalidatePath("/inventory");
-    revalidatePath("/stock-movements");
-    revalidatePath("/dashboard");
-
-    return res;
-  });
+  return _adjustStockAction(raw);
 }
 
 export async function bulkAdjustStockAction(raw: unknown) {
-  return runAction("inventory.bulkAdjust", async () => {
-    const session = await requireSession();
-    if (!canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions)) {
-      throw userError("You do not have permission to adjust inventory stock.");
-    }
-    const input = parseInput(bulkStockAdjustmentSchema, raw);
-
-    // Resolve location for each item (item-level location or header fallback)
-    const normalizedItems = input.items.map((item) => {
-      const locId = item.locationId || input.locationId;
-      if (!locId) {
-        throw userError("Location is required for each adjustment item.");
-      }
-      return {
-        ...item,
-        locationId: locId,
-      };
-    });
-
-    const uniqueLocationIds = Array.from(new Set(normalizedItems.map((it) => it.locationId)));
-    const locations = await prisma.location.findMany({
-      where: { id: { in: uniqueLocationIds } },
-      include: {
-        warehouseLots: {
-          where: { isActive: true, deletedAt: null },
-        },
-      },
-    });
-
-    const locationMap = new Map(locations.map((l) => [l.id, l]));
-    for (const locId of uniqueLocationIds) {
-      if (!locationMap.has(locId)) {
-        throw userError(`Location not found: ${locId}`);
-      }
-    }
-
-    // Validate warehouse lots where specified
-    for (const item of normalizedItems) {
-      if (item.warehouseLotId) {
-        const loc = locationMap.get(item.locationId)!;
-        const lotExists = loc.warehouseLots.some((l) => l.id === item.warehouseLotId);
-        if (!lotExists) {
-          throw userError(`Selected lot does not exist in warehouse "${loc.name}".`);
-        }
-      } else if (locationMap.get(item.locationId)!.warehouseLots.length > 0) {
-        throw userError(`Select a specific lot before adjusting stock at ${locationMap.get(item.locationId)!.name}.`);
-      }
-    }
-
-    const lockKeys = normalizedItems.map((it) => `stock:${it.productId}:${it.locationId}`);
-
-    const res = await withResourceQueue(lockKeys, async (tx) => {
-      const referenceId = generateDocumentNumber("ADJ");
-
-      await assertStockDeductionsAvailable(
-        normalizedItems
-          .filter((item) => item.direction === "OUT")
-          .map((item) => ({
-            productId: item.productId,
-            locationId: item.locationId,
-            warehouseLotId: item.warehouseLotId,
-            quantity: item.quantity,
-          })),
-        tx,
-      );
-
-      for (const item of normalizedItems) {
-        await tx.stockMovement.create({
-          data: {
-            productId: item.productId,
-            locationId: item.locationId,
-            warehouseLotId: item.warehouseLotId || null,
-            type: "ADJUSTMENT",
-            quantity: item.direction === "IN" ? item.quantity : -item.quantity,
-            referenceType: "ADJUSTMENT",
-            referenceId,
-            createdById: session.user.id,
-            notes: item.notes || input.reason,
-          },
-        });
-      }
-
-      return { success: true, count: normalizedItems.length, referenceId };
-    });
-
-    emitRealtimeEvent(["inventory", "stock-movements", "dashboard"], "update", "BulkStockAdjustment", {
-      referenceId: res.referenceId,
-    });
-
-    revalidatePath("/inventory");
-    revalidatePath("/stock-movements");
-    revalidatePath("/dashboard");
-
-    return res;
-  });
+  return _bulkAdjustStockAction(raw);
 }
 
+export async function transferStockAction(raw: unknown) {
+  return _transferStockAction(raw);
+}
 export async function bulkTransferStockAction(raw: unknown) {
   return runAction("inventory.bulkTransfer", async () => {
     const session = await requireSession();
@@ -884,6 +625,26 @@ export async function bulkTransferStockAction(raw: unknown) {
               notes: input.notes || "Bulk stock transfer",
             },
           ],
+        });
+
+        const ownership = await resolveSaleOwnership(tx, {
+          productId: item.productId,
+          locationId: input.fromLocationId,
+          warehouseLotId: item.fromWarehouseLotId,
+        });
+        const ownershipKey = resolveOwnershipKey(ownership);
+        await postTransfer(tx, {
+          productId: item.productId,
+          fromLocationId: input.fromLocationId,
+          toLocationId: input.toLocationId,
+          ownership,
+          quantity: item.quantity,
+          referenceType: "TRANSFER",
+          referenceId: `${referenceId}:${item.productId}`,
+        });
+        await tx.stockMovement.updateMany({
+          where: { referenceType: "TRANSFER", referenceId, productId: item.productId },
+          data: { ownershipType: ownership.ownershipType, ownershipKey },
         });
       }
 

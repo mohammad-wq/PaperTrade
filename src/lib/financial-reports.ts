@@ -15,38 +15,63 @@ export async function calculateProfitLoss(params?: { startDate?: string; endDate
     dateFilter.lte = end;
   }
 
+  const invoiceDateFilter = Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {};
   const whereClause = Object.keys(dateFilter).length > 0 ? { date: dateFilter } : undefined;
 
-  const entries = await prisma.ledgerEntry.groupBy({
-    by: ["accountType"],
-    where: whereClause,
-    _sum: { debit: true, credit: true },
-  });
+  const [saleItemsAgg, saleReturnAgg, freightAgg, actualFreightAgg, ledgerEntries] = await Promise.all([
+      prisma.saleInvoiceItem.aggregate({
+        where: {
+          invoice: { status: { not: "CANCELLED" }, ...invoiceDateFilter },
+        },
+        _sum: { lineTotal: true, cogsAmount: true },
+      }),
+      prisma.saleReturn.aggregate({
+        where: invoiceDateFilter,
+        _sum: { totalAmount: true },
+      }),
+      prisma.saleInvoice.aggregate({
+        where: { status: { not: "CANCELLED" }, ...invoiceDateFilter },
+        _sum: { freightCharges: true },
+      }),
+      prisma.saleInvoice.aggregate({
+        where: {
+          status: { not: "CANCELLED" },
+          actualFreightCost: { not: null },
+          ...invoiceDateFilter,
+        },
+        _sum: { actualFreightCost: true },
+      }),
+      prisma.ledgerEntry.groupBy({
+        by: ["accountType"],
+        where: whereClause,
+        _sum: { debit: true, credit: true },
+      }),
+    ]);
 
-  let grossSales = 0;
-  let salesReturns = 0;
+  let grossSales = Number(saleItemsAgg._sum.lineTotal ?? 0) + Number(freightAgg._sum.freightCharges ?? 0);
+  const salesReturns = Number(saleReturnAgg._sum.totalAmount ?? 0);
+  const cogs = Number(saleItemsAgg._sum.cogsAmount ?? 0);
+  const directCosts = Number(actualFreightAgg._sum.actualFreightCost ?? 0);
+
   let grossPurchases = 0;
   let purchaseReturns = 0;
-  let expenses = 0;
-
-  for (const row of entries) {
+  let operatingExpenses = 0;
+  for (const row of ledgerEntries) {
     const debit = Number(row._sum.debit ?? 0);
     const credit = Number(row._sum.credit ?? 0);
-
-    if (row.accountType === AccountType.SALES) {
-      grossSales = credit;
-      salesReturns = debit;
-    } else if (row.accountType === AccountType.PURCHASES) {
+    if (row.accountType === AccountType.PURCHASES) {
       grossPurchases = debit;
       purchaseReturns = credit;
     } else if (row.accountType === AccountType.EXPENSE) {
-      expenses = debit - credit;
+      operatingExpenses = debit - credit;
     }
   }
 
   const netSales = Math.max(0, grossSales - salesReturns);
   const netPurchases = Math.max(0, grossPurchases - purchaseReturns);
-  const grossProfit = netSales - netPurchases;
+  const totalCogs = cogs + directCosts;
+  const grossProfit = netSales - totalCogs;
+  const expenses = operatingExpenses + totalCogs;
   const grossMarginPct = netSales > 0 ? (grossProfit / netSales) * 100 : 0;
 
   // Retrieve itemized expenses breakdown
@@ -144,7 +169,7 @@ export async function calculateProfitLoss(params?: { startDate?: string; endDate
     amount: Number(e.debit) - Number(e.credit),
   }));
 
-  const netProfit = grossProfit - expenses;
+  const netProfit = grossProfit - operatingExpenses;
   const netMarginPct = netSales > 0 ? (netProfit / netSales) * 100 : 0;
 
   return {
@@ -159,6 +184,10 @@ export async function calculateProfitLoss(params?: { startDate?: string; endDate
     salesReturns,
     grossPurchases,
     purchaseReturns,
+    cogs: totalCogs,
+    directCosts,
+    netSales,
+    operatingExpenses,
     grossMarginPct: Math.round(grossMarginPct * 100) / 100,
     netMarginPct: Math.round(netMarginPct * 100) / 100,
     expenseBreakdown,
@@ -199,7 +228,6 @@ export async function calculateBalanceSheet(params?: { asOfDate?: string }) {
     }
   }
 
-  // Calculate current inventory valuation across all locations
   const [products, locations] = await Promise.all([
     prisma.product.findMany({
       where: { isActive: true, deletedAt: null },
@@ -219,16 +247,23 @@ export async function calculateBalanceSheet(params?: { asOfDate?: string }) {
   let totalStockUnits = 0;
   let totalStockWeightKg = 0;
 
-  for (const p of products) {
-    const packetWeight = (Number(p.length) * Number(p.breadth) * Number(p.gsm)) / 15499;
-    const reamWeight = packetWeight * 5;
+  const wacAgg = await prisma.productCostState.aggregate({
+    _sum: { totalValue: true, quantity: true },
+  });
+  inventoryValuation = Number(wacAgg._sum.totalValue ?? 0);
+  totalStockUnits = Number(wacAgg._sum.quantity ?? 0);
 
-    for (const loc of locations) {
-      const qty = await getStockOnHand(p.id, loc.id);
-      if (qty > 0) {
-        inventoryValuation += qty * Number(p.costPrice);
-        totalStockUnits += qty;
-        totalStockWeightKg += qty * (p.unit === "REAM" ? reamWeight : packetWeight);
+  if (inventoryValuation <= 0) {
+    for (const p of products) {
+      const packetWeight = (Number(p.length) * Number(p.breadth) * Number(p.gsm)) / 15499;
+      const reamWeight = packetWeight * 5;
+      for (const loc of locations) {
+        const qty = await getStockOnHand(p.id, loc.id);
+        if (qty > 0) {
+          inventoryValuation += qty * Number(p.costPrice);
+          totalStockUnits += qty;
+          totalStockWeightKg += qty * (p.unit === "REAM" ? reamWeight : packetWeight);
+        }
       }
     }
   }
@@ -356,7 +391,7 @@ export async function calculateBalanceSheet(params?: { asOfDate?: string }) {
       totalLiabilities,
     },
     equity,
-    isBalanced: true,
+    isBalanced: Math.abs(totalAssets - (totalLiabilities + equity)) < 0.02,
     totalLiabilitiesAndEquity: totalLiabilities + equity,
     receivablesSchedule,
     payablesSchedule,

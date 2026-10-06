@@ -70,12 +70,32 @@ enum AccountType {
   PAYABLE
   INVENTORY
   EXPENSE
+  COGS
+  DIRECT_COST
+  EQUITY
+}
+
+enum LedgerAccountSubtype {
+  PRODUCT_SALES
+  FREIGHT_REVENUE
+  TRADE_PAYABLE
+  PARTNER_CAPITAL
+  PARTNER_PROFIT
+  PARTNER_EXPENSE_DUE
+  OPEX
+  CASH_DRAWER
+  BANK
+  JAZZCASH
+  EASYPAISA
+  OPENING_STOCK_EQUITY
 }
 
 enum PaymentMethod {
   CASH
   BANK
   CHEQUE
+  JAZZCASH
+  EASYPAISA
   OTHER
 }
 
@@ -89,6 +109,18 @@ enum Unit {
   BOX
   PCS
 }
+
+enum PartnershipType {
+  CONSIGNMENT_VMI
+  CO_INVESTED_POOL
+}
+
+enum LotStatus {
+  ACTIVE
+  EXHAUSTED
+  SETTLED
+}
+
 
 model User {
   id           String   @id @default(cuid())
@@ -170,9 +202,13 @@ model Location {
   purchaseReturns         PurchaseReturn[]
   warehouseStorageCharges WarehouseStorageCharge[]
   warehouseLots           WarehouseLot[]
+  partnershipLots         PartnershipLot[]         @relation("WarehousePartnershipLots")
   deliveryOrderItems      DeliveryOrderItem[]
   purchaseOrderItems      PurchaseOrderItem[]
   beneficiaryParties      Party[]                  @relation("PartnerWarehouseLocation")
+  costLayers              InventoryCostLayer[]
+  productCostStates       ProductCostState[]
+  costMovements           CostMovement[]
 
   @@unique([name, type])
   @@index([type, isActive])
@@ -200,6 +236,7 @@ model WarehouseLot {
   purchaseOrderItems   PurchaseOrderItem[]
   deliveryOrderItems   DeliveryOrderItem[]
   saleInvoiceItems     SaleInvoiceItem[]
+  costLayers           InventoryCostLayer[]
 
   @@unique([locationId, lotNumber])
   @@index([locationId, isActive])
@@ -256,6 +293,11 @@ model Product {
   saleInvoiceItems      SaleInvoiceItem[]
   saleReturnItems       SaleReturnItem[]
   purchaseReturnItems   PurchaseReturnItem[]
+  partnershipLotItems   PartnershipLotItem[]
+  partnershipSaleAllocations PartnershipSaleAllocation[]
+  costLayers            InventoryCostLayer[]
+  productCostStates     ProductCostState[]
+  costMovements         CostMovement[]
 
   @@index([categoryId])
   @@index([qualityId])
@@ -285,25 +327,30 @@ model StockMovement {
   id             String            @id @default(cuid())
   productId      String
   locationId     String
-  warehouseLotId String?
-  type           StockMovementType
-  quantity       Decimal           @db.Decimal(14, 4)
-  referenceType  String
-  referenceId    String
-  createdById    String
-  createdAt      DateTime          @default(now())
-  notes          String?
+  warehouseLotId   String?
+  partnershipLotId String?
+  ownershipType    String?
+  ownershipKey     String?
+  type             StockMovementType
+  quantity         Decimal           @db.Decimal(14, 4)
+  referenceType    String
+  referenceId      String
+  createdById      String
+  createdAt        DateTime          @default(now())
+  notes            String?
 
-  product      Product       @relation(fields: [productId], references: [id])
-  location     Location      @relation(fields: [locationId], references: [id])
-  warehouseLot WarehouseLot? @relation(fields: [warehouseLotId], references: [id])
-  createdBy    User          @relation(fields: [createdById], references: [id])
+  product        Product         @relation(fields: [productId], references: [id])
+  location       Location        @relation(fields: [locationId], references: [id])
+  warehouseLot   WarehouseLot?   @relation(fields: [warehouseLotId], references: [id])
+  partnershipLot PartnershipLot? @relation(fields: [partnershipLotId], references: [id])
+  createdBy      User            @relation(fields: [createdById], references: [id])
 
   @@index([productId, locationId, type])
   @@index([productId, locationId, warehouseLotId, type])
   @@index([locationId])
   @@index([productId, warehouseLotId])
   @@index([warehouseLotId])
+  @@index([partnershipLotId])
   @@index([referenceType, referenceId])
   @@index([createdAt])
   @@index([type])
@@ -328,6 +375,7 @@ model Party {
 
   partnerWarehouse  Location?         @relation("PartnerWarehouseLocation", fields: [partnerWarehouseId], references: [id])
   partnerLots       WarehouseLot[]    @relation("PartnerLots")
+  partnershipLots   PartnershipLot[]  @relation("PartnerPartnershipLots")
   purchaseOrders    PurchaseOrder[]
   purchaseInvoices  PurchaseInvoice[]
   deliveryOrders    DeliveryOrder[]
@@ -452,6 +500,7 @@ model PurchaseInvoiceItem {
   warehouseLotId String?
   quantity       Decimal       @db.Decimal(14, 4)
   unitCost       Decimal       @db.Decimal(14, 4)
+  landedUnitCost Decimal?      @db.Decimal(14, 4)
   lineTotal      Decimal       @db.Decimal(14, 4)
 
   invoice      PurchaseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
@@ -507,19 +556,26 @@ model DeliveryOrderItem {
   doId           String
   productId      String
   locationId     String?
+  destinationLocationId String?
   warehouseLotId String?
+  lotId          String?
+  partnershipLotId String?
+  ownershipType  String?
+  ownershipKey   String?
   quantity       Decimal       @db.Decimal(14, 4)
   unit           Unit
 
-  deliveryOrder DeliveryOrder @relation(fields: [doId], references: [id], onDelete: Cascade)
-  product       Product       @relation(fields: [productId], references: [id])
-  location      Location?     @relation(fields: [locationId], references: [id])
-  warehouseLot  WarehouseLot? @relation(fields: [warehouseLotId], references: [id])
+  deliveryOrder  DeliveryOrder   @relation(fields: [doId], references: [id], onDelete: Cascade)
+  product        Product         @relation(fields: [productId], references: [id])
+  location       Location?       @relation(fields: [locationId], references: [id])
+  warehouseLot   WarehouseLot?   @relation(fields: [warehouseLotId], references: [id])
+  lot            PartnershipLot? @relation(fields: [lotId], references: [id])
 
   @@index([doId])
   @@index([productId])
   @@index([locationId])
   @@index([warehouseLotId])
+  @@index([lotId])
 }
 
 model SaleInvoice {
@@ -540,6 +596,7 @@ model SaleInvoice {
   balanceAmount   Decimal       @default(0) @db.Decimal(14, 4)
   paymentStatus   PaymentStatus @default(UNPAID)
   freightCharges  Decimal       @default(0) @db.Decimal(14, 4)
+  actualFreightCost Decimal?    @db.Decimal(14, 4)
   walkInName      String?
   notes           String?
   createdById     String
@@ -554,8 +611,9 @@ model SaleInvoice {
   createdBy           User           @relation(fields: [createdById], references: [id])
   items               SaleInvoiceItem[]
   returns             SaleReturn[]
-  payments            Payment[]      @relation("SaleInvoicePayments")
+  payments            Payment[]                   @relation("SaleInvoicePayments")
   allocations         InvoicePaymentAllocation[]
+  partnershipSaleAllocations PartnershipSaleAllocation[]
 
   @@index([financialYearId])
   @@index([customerId])
@@ -572,20 +630,26 @@ model SaleInvoiceItem {
   productId      String
   locationId     String?
   warehouseLotId String?
+  lotId          String?
   quantity       Decimal       @db.Decimal(14, 4)
   unitPrice      Decimal       @db.Decimal(14, 4)
   unitCost       Decimal?      @db.Decimal(14, 4)
   lineTotal      Decimal       @db.Decimal(14, 4)
+  cogsAmount     Decimal?      @db.Decimal(14, 4)
+  ownershipType  String?
+  ownershipKey   String?
 
-  invoice      SaleInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
-  product      Product       @relation(fields: [productId], references: [id])
-  location     Location?     @relation(fields: [locationId], references: [id])
-  warehouseLot WarehouseLot? @relation(fields: [warehouseLotId], references: [id])
+  invoice      SaleInvoice     @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  product      Product         @relation(fields: [productId], references: [id])
+  location     Location?       @relation(fields: [locationId], references: [id])
+  warehouseLot WarehouseLot?   @relation(fields: [warehouseLotId], references: [id])
+  lot          PartnershipLot? @relation(fields: [lotId], references: [id])
 
   @@index([invoiceId])
   @@index([productId])
   @@index([locationId])
   @@index([warehouseLotId])
+  @@index([lotId])
 }
 
 model SaleReturn {
@@ -622,6 +686,7 @@ model SaleReturnItem {
   quantity  Decimal @db.Decimal(14, 4)
   unitPrice Decimal @db.Decimal(14, 4)
   lineTotal Decimal @db.Decimal(14, 4)
+  costRestoredAmount Decimal @default(0) @db.Decimal(14, 4)
 
   saleReturn SaleReturn @relation(fields: [returnId], references: [id], onDelete: Restrict)
   product    Product    @relation(fields: [productId], references: [id])
@@ -677,6 +742,12 @@ model LedgerEntry {
   partyId               String?
   sourceFinancialYearId String?
   accountType           AccountType
+  accountSubtype        LedgerAccountSubtype?
+  lineType              String?
+  lineNo                Int?
+  idempotencyKey        String?        @unique
+  ownershipType         String?
+  ownershipKey          String?
   debit                 Decimal        @default(0) @db.Decimal(14, 4)
   credit                Decimal        @default(0) @db.Decimal(14, 4)
   isPartnership         Boolean        @default(false)
@@ -806,7 +877,11 @@ enum ExpenseCategory {
 model Expense {
   id          String          @id @default(cuid())
   expenseNo   String          @unique
+  saleInvoiceId String?
+  partnershipLotId String?
   category    ExpenseCategory @default(OTHER)
+  categoryLabel String?
+  isOperatingExpense Boolean    @default(true)
   amount      Decimal         @db.Decimal(14, 4)
   method      PaymentMethod   @default(CASH)
   date        DateTime
@@ -816,8 +891,225 @@ model Expense {
   createdAt   DateTime        @default(now())
 
   createdBy   User            @relation(fields: [createdById], references: [id])
+  partnershipLot PartnershipLot? @relation(fields: [partnershipLotId], references: [id])
 
   @@index([date])
   @@index([category])
   @@index([createdById])
+  @@index([partnershipLotId])
 }
+
+model PartnershipLot {
+  id                    String              @id @default(cuid())
+  lotNumber             String              @unique // e.g., "LOT-2026-001"
+  partnerId             String
+  partner               Party               @relation("PartnerPartnershipLots", fields: [partnerId], references: [id])
+  type                  PartnershipType     @default(CO_INVESTED_POOL)
+  /// CONSIGNMENT | CO_INVESTED — mirrors type for reporting; CONSIGNMENT_VMI → CONSIGNMENT, CO_INVESTED_POOL → CO_INVESTED
+  archetype             String?
+  status                LotStatus           @default(ACTIVE)
+
+  totalCapitalCost      Decimal             @db.Decimal(14, 2)
+  entityCapitalShare    Decimal             @db.Decimal(14, 2)
+  partnerCapitalShare   Decimal             @db.Decimal(14, 2)
+  partnerMarginRatio    Decimal             @db.Decimal(5, 4) // e.g., 0.5000 for 50%
+
+  warehouseId           String
+  warehouse             Location            @relation("WarehousePartnershipLots", fields: [warehouseId], references: [id])
+  warehouseLotId        String?             @unique
+
+  items                 PartnershipLotItem[]
+  expenses              PartnershipExpense[]
+  allocations           PartnershipSaleAllocation[]
+  reconciliations       PartnershipReconciliation[]
+  saleInvoiceItems      SaleInvoiceItem[]
+  deliveryOrderItems    DeliveryOrderItem[]
+  stockMovements        StockMovement[]
+  expensesLedger        Expense[]
+  productCostStates     ProductCostState[]
+
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  @@index([partnerId])
+  @@index([warehouseId])
+  @@index([status])
+  @@index([archetype])
+}
+
+model PartnershipLotItem {
+  id                    String              @id @default(cuid())
+  lotId                 String
+  lot                   PartnershipLot      @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  productId             String
+  product               Product             @relation(fields: [productId], references: [id])
+  initialQuantity       Decimal             @db.Decimal(12, 2)
+  remainingQuantity     Decimal             @db.Decimal(12, 2)
+  unitCostRate          Decimal             @db.Decimal(12, 2)
+
+  @@index([lotId])
+  @@index([productId])
+}
+
+model PartnershipExpense {
+  id                    String              @id @default(cuid())
+  lotId                 String
+  lot                   PartnershipLot      @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  category              String              // "Carrying Cost", "Warehouse Rent", "Handling & Labor", "Freight Inward"
+  description           String
+  amount                Decimal             @db.Decimal(12, 2)
+  paidBy                String              // "ENTITY" | "PARTNER"
+  entityShare           Decimal?            @db.Decimal(12, 2)
+  partnerShare          Decimal?            @db.Decimal(12, 2)
+  createdAt             DateTime            @default(now())
+
+  @@index([lotId])
+}
+
+enum PartnershipSettlementKind {
+  CAPITAL
+  PROFIT
+  EXPENSE_REIMBURSEMENT
+}
+
+model PartnershipSettlementAllocation {
+  id          String                    @id @default(cuid())
+  paymentId   String
+  lotId       String
+  kind        PartnershipSettlementKind
+  amount      Decimal                   @db.Decimal(14, 4)
+  createdAt   DateTime                  @default(now())
+
+  @@index([paymentId])
+  @@index([lotId])
+}
+
+model PartnershipSaleAllocation {
+  id                    String              @id @default(cuid())
+  lotId                 String
+  lot                   PartnershipLot      @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  invoiceId             String?
+  invoice               SaleInvoice?        @relation(fields: [invoiceId], references: [id])
+  productId             String
+  product               Product             @relation(fields: [productId], references: [id])
+  quantity              Decimal             @db.Decimal(12, 2)
+  unitCostRate          Decimal             @db.Decimal(12, 2)
+  unitSaleRate          Decimal             @db.Decimal(12, 2)
+  grossMargin           Decimal             @db.Decimal(12, 2)
+  partnerMarginShare    Decimal             @db.Decimal(12, 2)
+  salesChannel          String              // "INTERNAL_POS" | "EXTERNAL_PARTNER"
+  soldBy                String              @default("OWNER") // "OWNER" | "PARTNER"
+  allocatedAt           DateTime            @default(now())
+
+  @@index([lotId])
+  @@index([soldBy])
+  @@index([invoiceId])
+  @@index([productId])
+}
+
+model PartnershipReconciliation {
+  id                    String              @id @default(cuid())
+  lotId                 String
+  lot                   PartnershipLot      @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  periodStart           DateTime
+  periodEnd             DateTime
+  totalUnitsSold        Decimal             @db.Decimal(12, 2)
+  netGrossMargin        Decimal             @db.Decimal(12, 2)
+  totalAccruedPayable   Decimal             @db.Decimal(12, 2)
+  distributedCapital    Decimal             @default(0) @db.Decimal(12, 2)
+  reconciledAt          DateTime?
+
+  @@index([lotId])
+}
+
+/// @deprecated Use ProductCostState + CostMovement (WAC). Do not write new rows after Phase 4.
+model InventoryCostLayer {
+  id              String        @id @default(cuid())
+  productId       String
+  locationId      String
+  warehouseLotId  String?
+  partnershipLotId String?
+  sourceType      String        // "OPENING_STOCK" | "PURCHASE" | "TRANSFER" | "ADJUSTMENT"
+  sourceId        String        // Invoice ID or Movement ID or Ref Number
+  unitCost        Decimal       @db.Decimal(14, 4)
+  initialQty      Decimal       @db.Decimal(14, 4)
+  remainingQty    Decimal       @db.Decimal(14, 4)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  product         Product       @relation(fields: [productId], references: [id])
+  location        Location      @relation(fields: [locationId], references: [id])
+  warehouseLot    WarehouseLot? @relation(fields: [warehouseLotId], references: [id])
+  consumptions    InventoryCostLayerConsumption[]
+
+  @@index([productId, locationId, remainingQty])
+  @@index([createdAt])
+  @@index([sourceType, sourceId])
+  @@index([partnershipLotId])
+}
+
+/// @deprecated See InventoryCostLayer — FIFO consumption audit; no new writes after Phase 4.
+model InventoryCostLayerConsumption {
+  id             String   @id @default(cuid())
+  layerId        String
+  productId      String
+  locationId     String
+  warehouseLotId String?
+  quantity       Decimal  @db.Decimal(14, 4)
+  unitCost       Decimal  @db.Decimal(14, 4)
+  referenceType  String
+  referenceId    String
+  createdAt      DateTime @default(now())
+
+  layer InventoryCostLayer @relation(fields: [layerId], references: [id], onDelete: Cascade)
+
+  @@index([referenceType, referenceId])
+  @@index([layerId])
+}
+
+model ProductCostState {
+  id               String   @id @default(cuid())
+  productId        String
+  locationId       String
+  ownershipType    String
+  partnershipLotId String?
+  ownershipKey     String
+  quantity         Decimal  @db.Decimal(14, 4)
+  avgCost          Decimal  @db.Decimal(14, 4)
+  totalValue       Decimal  @db.Decimal(14, 4)
+  hasNegativeStock Boolean  @default(false)
+  updatedAt        DateTime @updatedAt
+
+  product        Product         @relation(fields: [productId], references: [id])
+  location       Location        @relation(fields: [locationId], references: [id])
+  partnershipLot PartnershipLot? @relation(fields: [partnershipLotId], references: [id])
+
+  @@unique([productId, locationId, ownershipKey])
+  @@index([partnershipLotId])
+  @@index([ownershipKey])
+}
+
+model CostMovement {
+  id            String   @id @default(cuid())
+  productId     String
+  locationId    String
+  ownershipKey  String
+  movementType  String
+  referenceType String
+  referenceId   String
+  qtyBefore     Decimal  @db.Decimal(14, 4)
+  avgBefore     Decimal  @db.Decimal(14, 4)
+  qtyDelta      Decimal  @db.Decimal(14, 4)
+  unitCost      Decimal  @db.Decimal(14, 4)
+  totalCost     Decimal  @db.Decimal(14, 4)
+  qtyAfter      Decimal  @db.Decimal(14, 4)
+  avgAfter      Decimal  @db.Decimal(14, 4)
+  createdAt     DateTime @default(now())
+
+  product  Product  @relation(fields: [productId], references: [id])
+  location Location @relation(fields: [locationId], references: [id])
+
+  @@index([productId, locationId, ownershipKey, createdAt])
+  @@index([referenceType, referenceId])
+}
+
