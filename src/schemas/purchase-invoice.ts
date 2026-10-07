@@ -7,6 +7,8 @@ const lineItem = z.object({
   locationId: z.string().trim().optional().nullable(),
   warehouseLotId: z.string().trim().optional().nullable(),
   sourceWarehouseLotId: z.string().trim().optional().nullable(),
+  ownershipKey: z.string().trim().optional().nullable(),
+  lotId: z.string().trim().optional().nullable(),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unitCost: z.coerce.number().min(0),
 });

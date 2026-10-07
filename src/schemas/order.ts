@@ -5,6 +5,7 @@ export const purchaseOrderItemSchema = z.object({
   productId: z.string().min(1, "Product is required"),
   destinationLocationId: z.string().trim().optional().nullable().or(z.literal("")),
   warehouseLotId: z.string().trim().optional().nullable().or(z.literal("")),
+  ownershipKey: z.string().trim().optional().nullable().or(z.literal("")),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unitCost: z.coerce.number().min(0, "Unit cost must be 0 or greater").optional().nullable(),
 });
@@ -45,6 +46,7 @@ export const deliveryOrderItemSchema = z.object({
   productId: z.string().min(1, "Product is required"),
   locationId: z.string().trim().optional().nullable().or(z.literal("")),
   warehouseLotId: z.string().trim().optional().nullable().or(z.literal("")),
+  ownershipKey: z.string().trim().optional().nullable().or(z.literal("")),
   quantity: z.coerce.number().gt(0, "Quantity must be greater than 0"),
   unit: z.nativeEnum(Unit).default(Unit.PACKET),
 });

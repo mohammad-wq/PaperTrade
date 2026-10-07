@@ -472,10 +472,10 @@ function LedgerContent() {
       const docLabel =
         kind === "SALE_INVOICE" ? `Sale Invoice ${doc.docNo}` : `Purchase Invoice ${doc.docNo}`;
 
-      for (const line of doc.productLines) {
+      doc.productLines.forEach((line, lineIndex) => {
         const isSale = kind === "SALE_INVOICE";
         expanded.push({
-          id: `commercial-${kind}-${id}-${line.productNo}`,
+          id: `commercial-${kind}-${id}-${line.productNo}-${lineIndex}`,
           date,
           accountType: isSale ? AccountType.SALES : AccountType.PURCHASES,
           referenceType: kind,
@@ -492,7 +492,7 @@ function LedgerContent() {
           createdBy: { name: "System" },
           runningBalance: 0,
         } as LedgerRow);
-      }
+      });
 
       if (doc.freight > 0.001) {
         const isSale = kind === "SALE_INVOICE";

@@ -200,49 +200,27 @@ function allocateOwnershipSplits(
   source: CommittedLineItem["stockSource"],
   explicitKey?: string | null,
 ): { splits: NonNullable<CommittedLineItem["splits"]> } | { error: string } {
-  const pool = sortOwnershipBuckets(filterBucketsForSource(buckets, source));
-  if (explicitKey) {
-    const bucket = pool.find((b) => b.ownershipKey === explicitKey);
-    if (!bucket) return { error: "Selected ownership bucket is not available at this location." };
-    if (quantity > bucket.quantity + 0.0001) {
-      return {
-        error: `Only ${bucket.quantity} in ${bucket.label}. Leave the bucket blank to sell across lots.`,
-      };
-    }
-    return {
-      splits: [
-        {
-          ownershipKey: bucket.ownershipKey,
-          ownershipType: bucket.ownershipType,
-          partnershipLotId: bucket.partnershipLotId || null,
-          quantity,
-          avgCost: bucket.avgCost,
-          label: bucket.label,
-        },
-      ],
-    };
+  const pool = sortOwnershipBuckets(buckets);
+  const key = explicitKey || (pool.length === 1 ? pool[0].ownershipKey : "");
+  if (pool.length > 1 && !key) return { error: "Select a batch for this product." };
+  if (!key) return { splits: [] };
+  const bucket = pool.find((b) => b.ownershipKey === key);
+  if (!bucket) return { error: "Selected batch is not available at this location." };
+  if (quantity > bucket.quantity + 0.0001) {
+    return { error: `Only ${bucket.quantity} in ${bucket.label}.` };
   }
-  const splits: NonNullable<CommittedLineItem["splits"]> = [];
-  let left = quantity;
-  for (const bucket of pool) {
-    if (left <= 0.0001) break;
-    const take = Math.min(left, bucket.quantity);
-    if (take <= 0) continue;
-    splits.push({
-      ownershipKey: bucket.ownershipKey,
-      ownershipType: bucket.ownershipType,
-      partnershipLotId: bucket.partnershipLotId || null,
-      quantity: take,
-      avgCost: bucket.avgCost,
-      label: bucket.label,
-    });
-    left -= take;
-  }
-  if (left > 0.0001) {
-    const covered = quantity - left;
-    return { error: `Only ${covered} can be covered across stock sources. Requested ${quantity}.` };
-  }
-  return { splits };
+  return {
+    splits: [
+      {
+        ownershipKey: bucket.ownershipKey,
+        ownershipType: bucket.ownershipType,
+        partnershipLotId: bucket.partnershipLotId || null,
+        quantity,
+        avgCost: bucket.avgCost,
+        label: bucket.label,
+      },
+    ],
+  };
 }
 
 function describeSplits(splits: NonNullable<CommittedLineItem["splits"]>) {
@@ -902,26 +880,17 @@ export default function SalesClient({
         locationId: itLocId,
         locationName: itLoc?.name || inv.location?.name || "Location",
         locationType: itLoc?.type || "SHOP",
-        warehouseLotId: itLoc?.type === "WAREHOUSE"
-          ? it.warehouseLot?.id || it.warehouseLotId || null
-          : null,
-        lotNumber: it.warehouseLot?.lotNumber || null,
-        stockSource: itLoc?.type === "WAREHOUSE"
-          ? "AUTO_SPLIT"
-          : it.warehouseLot?.id || it.warehouseLotId
-            ? "PARTNER_ONLY"
-            : it.lotId || (it.ownershipKey && it.ownershipKey !== "OWN")
-              ? "PARTNER_ONLY"
-              : "AUTO_SPLIT",
-        lotId: it.lotId || null,
-        ownershipType: it.ownershipType || null,
-        ownershipKey: it.ownershipKey || null,
+        warehouseLotId:
+          itLoc?.type === "SHOP" ? null : it.warehouseLot?.id || it.warehouseLotId || null,
+        lotNumber: itLoc?.type === "SHOP" ? null : it.warehouseLot?.lotNumber || null,
+        stockSource: "AUTO_SPLIT",
+        lotId: it.lotId || (it.ownershipKey?.startsWith("LOT:") ? it.ownershipKey.slice(4) : null),
+        ownershipType: it.ownershipType || (it.ownershipKey === "OWN" ? "OWN" : it.ownershipKey ? "LOT" : null),
+        ownershipKey: it.ownershipKey || (it.lotId ? `LOT:${it.lotId}` : "OWN"),
         ownershipLabel:
-          it.ownershipKey === "OWN"
-            ? "Entity owned"
-            : it.ownershipKey?.startsWith("LOT:")
-              ? `Lot bucket`
-              : it.ownershipKey || null,
+          it.ownershipKey === "OWN" || (!it.ownershipKey && !it.lotId)
+            ? "Regular"
+            : it.lot?.lotNumber || "Batch",
         packetWeight: prod?.packetWeight || 0,
         reamWeight: prod?.reamWeight || 0,
       };
@@ -1577,6 +1546,20 @@ export default function SalesClient({
     );
   }
 
+  function reservedOnDocument(
+    productId: string,
+    locId: string,
+    ownershipKey: string | null,
+    warehouseLotId: string | null,
+  ) {
+    return committedItems.reduce((sum, item) => {
+      if (item.productId !== productId || item.locationId !== locId) return sum;
+      if (ownershipKey && item.ownershipKey && item.ownershipKey !== ownershipKey) return sum;
+      if (warehouseLotId && item.warehouseLotId !== warehouseLotId) return sum;
+      return sum + item.quantity;
+    }, 0);
+  }
+
   function commitActiveRow() {
     if (!matchedProduct) {
       setActiveRowError("Please select a valid product first.");
@@ -1602,16 +1585,27 @@ export default function SalesClient({
     const finalLoc = dbLocations.find((l) => l.id === finalLocId);
     const finalLocLots = warehouseLots.filter((l) => l.locationId === finalLocId);
     const matchedLot = activeLotId ? finalLocLots.find((l) => l.id === activeLotId) : null;
-    if (finalLoc?.type === "WAREHOUSE" && !matchedLot) {
-      setActiveRowError("Select a lot before adding a warehouse sale.");
+    if (finalLocLots.length > 0 && !matchedLot) {
+      setActiveRowError("Select a lot before adding this line.");
       lotComboboxInputRef.current?.focus();
       return;
     }
-    const available = finalLocId
-      ? finalLoc?.type === "WAREHOUSE"
-        ? getAvailableStock(matchedProduct.id, finalLocId, matchedLot?.id)
-        : getShopSourceAvailableStock(matchedProduct.id, finalLocId, activeStockSource)
-      : 0;
+    const batchKey =
+      activeOwnershipKey ||
+      (activeOwnershipBuckets.length === 1 ? activeOwnershipBuckets[0].ownershipKey : "");
+    if (activeOwnershipBuckets.length > 1 && !batchKey) {
+      setActiveRowError("Select a batch for this product.");
+      return;
+    }
+    const bucket = activeOwnershipBuckets.find((entry) => entry.ownershipKey === batchKey);
+    const batchLeft =
+      (bucket?.quantity ?? 0) -
+      reservedOnDocument(matchedProduct.id, finalLocId, batchKey || null, null);
+    const lotLeft = matchedLot
+      ? getAvailableStock(matchedProduct.id, finalLocId, matchedLot.id) -
+        reservedOnDocument(matchedProduct.id, finalLocId, null, matchedLot.id)
+      : batchLeft;
+    const available = Math.max(0, Math.min(batchLeft, lotLeft));
     if (qtyNum > available) {
       setActiveRowError(`Insufficient stock. Available: ${available} ${matchedProduct.unit}.`);
       qtyInputRef.current?.focus();
@@ -1619,8 +1613,7 @@ export default function SalesClient({
       return;
     }
 
-    const sourceBuckets =
-      finalLoc?.type === "SHOP" ? sortOwnershipBuckets(activeOwnershipBuckets) : undefined;
+    const sourceBuckets = sortOwnershipBuckets(activeOwnershipBuckets);
     let splits: NonNullable<CommittedLineItem["splits"]> = [];
     if (sourceBuckets && sourceBuckets.length > 0) {
       const built = allocateOwnershipSplits(
@@ -1655,7 +1648,7 @@ export default function SalesClient({
         locationId: finalLocId,
         locationName: finalLoc?.name || "Location",
         locationType: finalLoc?.type || "SHOP",
-        warehouseLotId: finalLoc?.type === "WAREHOUSE" ? activeLotId || null : null,
+        warehouseLotId: finalLocLots.length > 0 ? activeLotId || null : null,
         lotNumber: matchedLot ? matchedLot.lotNumber : null,
         lotId: described.lotId,
         stockSource: activeStockSource,
@@ -1811,27 +1804,14 @@ export default function SalesClient({
     const fallbackLocId = locationId || committedItems[0]?.locationId || dbLocations[0]?.id;
 
     for (const item of committedItems) {
-      if (item.locationType === "WAREHOUSE") {
-        if (!item.warehouseLotId) {
-          setFormError(`Line ${item.productNo}: select a warehouse lot.`);
-          return;
-        }
-        const lotQty = getAvailableStock(item.productId, item.locationId, item.warehouseLotId);
-        if (item.quantity > lotQty + 0.0001) {
-          setFormError(
-            `Line ${item.productNo}: only ${lotQty} ${item.unit} in the selected lot. Assign unassigned stock to the lot before saving.`,
-          );
-          return;
-        }
+      const lotsHere = warehouseLots.filter((lot) => lot.locationId === item.locationId);
+      if (lotsHere.length > 0 && !item.warehouseLotId) {
+        setFormError(`Line ${item.productNo}: select a lot.`);
+        return;
       }
-      if (item.locationType === "SHOP" && item.stockSource === "PARTNER_ONLY") {
-        const covered = (item.splits || []).reduce((sum, slice) => sum + slice.quantity, 0);
-        if (!item.ownershipKey && covered + 0.0001 < item.quantity) {
-          setFormError(
-            `Line ${item.productNo}: partner stock needs a lot, or enough partner lots to cover the quantity.`,
-          );
-          return;
-        }
+      if ((item.sourceBuckets || []).length > 1 && !item.ownershipKey) {
+        setFormError(`Line ${item.productNo}: select a batch.`);
+        return;
       }
     }
 
@@ -2572,7 +2552,7 @@ export default function SalesClient({
                         <th className="py-1.5 px-2 w-8 text-center border-r border-slate-200 dark:border-slate-700">#</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 min-w-[180px]">Product Code / Name</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-32 whitespace-nowrap">Location</th>
-                        <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-36 whitespace-nowrap">Lot / Stock Source</th>
+                        <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 w-36 whitespace-nowrap">Lot / Batch</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">Category</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap text-right">Available Stock</th>
                         <th className="py-1.5 px-2 border-r border-slate-200 dark:border-slate-700 text-center whitespace-nowrap">Unit</th>
@@ -2617,7 +2597,7 @@ export default function SalesClient({
                               />
                             </td>
                             <td className="py-1 px-1 border-r border-slate-100 dark:border-slate-800 text-[11px] min-w-[150px]">
-                              {item.locationType === "WAREHOUSE" ? (
+                              {warehouseLots.some((lot) => lot.locationId === item.locationId) ? (
                                 <div className="space-y-1">
                                   <SearchCombobox
                                     options={warehouseLots
@@ -2658,35 +2638,38 @@ export default function SalesClient({
                                       </button>
                                     );
                                   })()}
-                                </div>
-                              ) : (
-                                <div className="space-y-0.5">
-                                  <select
-                                    value={item.stockSource}
-                                    onChange={(e) =>
-                                      updateCommittedItemSource(idx, e.target.value as CommittedLineItem["stockSource"])
-                                    }
-                                    className="h-7 w-full text-[11px] border border-slate-200 rounded bg-white"
-                                  >
-                                    <option value="AUTO_SPLIT">Auto (all lots)</option>
-                                    <option value="REGULAR_ONLY">Regular only</option>
-                                    <option value="PARTNER_ONLY">Partner only</option>
-                                  </select>
-                                  {item.sourceBuckets && filterBucketsForSource(item.sourceBuckets, item.stockSource).length > 1 ? (
+                                  {(item.sourceBuckets || []).length > 1 ? (
                                     <select
-                                      value={item.splits && item.splits.length === 1 ? item.ownershipKey || "" : ""}
+                                      value={item.ownershipKey || ""}
                                       onChange={(e) => updateCommittedItemBucket(idx, e.target.value)}
                                       className="h-7 w-full text-[10px] border border-amber-300 rounded bg-amber-50"
                                     >
-                                      <option value="">Auto-split across lots</option>
-                                      {filterBucketsForSource(item.sourceBuckets, item.stockSource).map((bucket) => (
+                                      <option value="">Batch</option>
+                                      {(item.sourceBuckets || []).map((bucket) => (
                                         <option key={bucket.ownershipKey} value={bucket.ownershipKey}>
                                           {bucket.label} ({bucket.quantity})
                                         </option>
                                       ))}
                                     </select>
                                   ) : null}
-                                  {item.ownershipLabel ? (
+                                </div>
+                              ) : (
+                                <div className="space-y-0.5">
+                                  <span className="text-[10px] text-slate-400 italic">No lots</span>
+                                  {(item.sourceBuckets || []).length > 1 ? (
+                                    <select
+                                      value={item.ownershipKey || ""}
+                                      onChange={(e) => updateCommittedItemBucket(idx, e.target.value)}
+                                      className="h-7 w-full text-[10px] border border-amber-300 rounded bg-amber-50"
+                                    >
+                                      <option value="">Batch</option>
+                                      {(item.sourceBuckets || []).map((bucket) => (
+                                        <option key={bucket.ownershipKey} value={bucket.ownershipKey}>
+                                          {bucket.label} ({bucket.quantity})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : item.ownershipLabel ? (
                                     <span className="block text-[9px] text-violet-700 font-sans">{item.ownershipLabel}</span>
                                   ) : null}
                                 </div>
@@ -2697,9 +2680,20 @@ export default function SalesClient({
                             </td>
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right">
                               {(() => {
-                                const liveStock = item.locationType === "WAREHOUSE"
+                                const bucket = (item.sourceBuckets || []).find(
+                                  (entry) => entry.ownershipKey === item.ownershipKey,
+                                );
+                                const batchQty = bucket?.quantity ?? 0;
+                                const taken = committedItems.reduce((sum, other, otherIndex) => {
+                                  if (otherIndex === idx) return sum;
+                                  if (other.productId !== item.productId || other.locationId !== item.locationId) return sum;
+                                  if (item.ownershipKey && other.ownershipKey !== item.ownershipKey) return sum;
+                                  return sum + other.quantity;
+                                }, 0);
+                                const lotQty = item.warehouseLotId
                                   ? warehouseLineStock(item.productId, item.locationId, item.warehouseLotId)
-                                  : getShopSourceAvailableStock(item.productId, item.locationId, item.stockSource);
+                                  : batchQty;
+                                const liveStock = Math.max(0, Math.min(batchQty, lotQty) - taken);
                                 return (
                                   <span
                                     className={`px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${
@@ -2886,9 +2880,9 @@ export default function SalesClient({
                           />
                         </td>
 
-                        {/* Warehouse lot or shop stock-source selector */}
+                        {/* Physical lot, then batch when this product has more than one */}
                         <td className="py-1 px-1 border-r border-slate-200 dark:border-slate-700 min-w-[145px]">
-                          {isItemLocationWarehouse ? (
+                          {locationLots.length > 0 ? (
                             <div className="space-y-1">
                               <SearchCombobox
                                 options={locationLots.map((lot) => {
@@ -2955,43 +2949,39 @@ export default function SalesClient({
                                     );
                                   })()
                                 : null}
-                            </div>
-                          ) : activeItemLocation?.type === "SHOP" ? (
-                            <div className="space-y-1">
-                              <select
-                                value={activeStockSource}
-                                onChange={(event) => {
-                                  setActiveStockSource(event.target.value as CommittedLineItem["stockSource"]);
-                                  setActiveOwnershipKey("");
-                                }}
-                                className="h-7 w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1.5 text-[10px] font-sans"
-                              >
-                                <option value="AUTO_SPLIT">Auto / Split</option>
-                                <option value="REGULAR_ONLY">Regular Stock Only</option>
-                                <option value="PARTNER_ONLY">Partner Stock Only</option>
-                              </select>
                               {matchedProduct && activeOwnershipBuckets.length > 1 ? (
                                 <select
                                   value={activeOwnershipKey}
                                   onChange={(e) => setActiveOwnershipKey(e.target.value)}
                                   className="h-7 w-full rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-1.5 text-[10px] font-sans"
-                                  title="Required when both entity and partnership stock exist"
                                 >
-                                  <option value="">Auto-split across lots</option>
+                                  <option value="">Batch</option>
                                   {activeOwnershipBuckets.map((b) => (
                                     <option key={b.ownershipKey} value={b.ownershipKey}>
                                       {b.label} ({b.quantity} {matchedProduct.unit})
                                     </option>
                                   ))}
                                 </select>
-                              ) : matchedProduct && activeOwnershipBuckets.length === 1 ? (
-                                <span className="text-[9px] text-slate-500 block truncate" title={activeOwnershipBuckets[0].label}>
-                                  {ownershipBucketsLoading ? "…" : activeOwnershipBuckets[0].label}
-                                </span>
                               ) : null}
                             </div>
                           ) : (
-                            <span className="text-[10px] text-slate-400 font-sans italic px-1 block text-center">Not applicable</span>
+                            <div className="space-y-1">
+                              <span className="text-[10px] text-slate-400 font-sans italic px-1 block">No lots</span>
+                              {matchedProduct && activeOwnershipBuckets.length > 1 ? (
+                                <select
+                                  value={activeOwnershipKey}
+                                  onChange={(e) => setActiveOwnershipKey(e.target.value)}
+                                  className="h-7 w-full rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-1.5 text-[10px] font-sans"
+                                >
+                                  <option value="">Batch</option>
+                                  {activeOwnershipBuckets.map((b) => (
+                                    <option key={b.ownershipKey} value={b.ownershipKey}>
+                                      {b.label} ({b.quantity} {matchedProduct.unit})
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : null}
+                            </div>
                           )}
                         </td>
 
@@ -3005,18 +2995,19 @@ export default function SalesClient({
                           {matchedProduct ? (
                             (() => {
                               const targetLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
-                              const targetLocation = dbLocations.find((location) => location.id === targetLocId);
-                              const shopPool = getShopPoolTotals(matchedProduct.id, targetLocId);
-                              const currentStock = targetLocation?.type === "WAREHOUSE"
-                                ? getAvailableStock(
-                                    matchedProduct.id,
-                                    targetLocId,
-                                    activeLotId || undefined,
-                                  )
-                                : targetLocation?.type === "SHOP"
-                                  ? getShopSourceAvailableStock(matchedProduct.id, targetLocId, activeStockSource)
-                                  : getAvailableStock(matchedProduct.id, targetLocId);
-                              const totalStock = getAvailableStock(matchedProduct.id);
+                              const batchKey =
+                                activeOwnershipKey ||
+                                (activeOwnershipBuckets.length === 1 ? activeOwnershipBuckets[0].ownershipKey : "");
+                              const bucket = activeOwnershipBuckets.find((entry) => entry.ownershipKey === batchKey);
+                              const batchLeft = bucket
+                                ? bucket.quantity - reservedOnDocument(matchedProduct.id, targetLocId, batchKey, null)
+                                : 0;
+                              const lotLeft = activeLotId
+                                ? getAvailableStock(matchedProduct.id, targetLocId, activeLotId) -
+                                  reservedOnDocument(matchedProduct.id, targetLocId, null, activeLotId)
+                                : batchLeft;
+                              const currentStock = Math.max(0, Math.min(batchLeft, lotLeft));
+                              const batchLabel = bucket?.label;
                               return (
                                 <div className="flex flex-col items-end">
                                   <span
@@ -3025,19 +3016,14 @@ export default function SalesClient({
                                         ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
                                         : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
                                     }`}
-                                    title={activeLotId ? "Available in selected lot" : "Available in selected location"}
+                                    title={batchLabel ? `Available in ${batchLabel}` : "Available"}
                                   >
                                     {currentStock} {matchedProduct.unit}
-                                    {activeLotId ? " (Lot)" : ""}
                                   </span>
-                                  {targetLocation?.type === "SHOP" ? (
-                                    <span className="text-[9px] text-slate-400 font-sans">
-                                      Regular: {shopPool.regularQty} | Partner: {shopPool.partnerQty}
-                                    </span>
-                                  ) : totalStock !== currentStock ? (
-                                    <span className="text-[9px] text-slate-400 font-sans">
-                                      Total: {totalStock} {matchedProduct.unit}
-                                    </span>
+                                  {batchLabel ? (
+                                    <span className="text-[9px] text-slate-400 font-sans">{batchLabel}</span>
+                                  ) : activeOwnershipBuckets.length > 1 ? (
+                                    <span className="text-[9px] text-slate-400 font-sans">Select a batch</span>
                                   ) : null}
                                 </div>
                               );
@@ -3066,26 +3052,8 @@ export default function SalesClient({
                           />
                           {matchedProduct ? (
                             (() => {
-                              const targetLocId = activeItemLocationId || locationId || (dbLocations[0]?.id ?? "");
-                              const targetLocation = dbLocations.find((location) => location.id === targetLocId);
-                              const shopPool = getShopPoolTotals(matchedProduct.id, targetLocId);
-                              const currentStock = targetLocation?.type === "WAREHOUSE"
-                                ? getAvailableStock(
-                                    matchedProduct.id,
-                                    targetLocId,
-                                    activeLotId || undefined,
-                                  )
-                                : targetLocation?.type === "SHOP"
-                                  ? getShopSourceAvailableStock(matchedProduct.id, targetLocId, activeStockSource)
-                                  : getAvailableStock(matchedProduct.id, targetLocId);
-
                               return (
                                 <div className="mt-0.5 space-y-0.5 text-right font-mono text-[9px]">
-                                  {targetLocation?.type === "SHOP" && (
-                                    <div className="text-slate-600 dark:text-slate-300 font-medium">
-                                      Available: {currentStock} {matchedProduct.unit} (Regular: {shopPool.regularQty} | Partner: {shopPool.partnerQty})
-                                    </div>
-                                  )}
                                   {(matchedProduct.packetWeight || matchedProduct.reamWeight) ? (
                                     <div className="text-slate-400">
                                       {((parseFloat(activeQty) || 0) * (matchedProduct.packetWeight || matchedProduct.reamWeight || 0)).toFixed(2)} kg

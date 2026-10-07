@@ -8,6 +8,7 @@ import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { verifyDocShareToken } from "@/lib/tokens";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { collapseSalePrintLines } from "@/lib/collapse-sale-lines";
 
 export const dynamic = "force-dynamic";
 
@@ -160,14 +161,14 @@ export async function GET(
         freightCharges: toNumber(invoice.freightCharges),
         notes: invoice.notes,
         signatures: { leftLabel: "Prepared By", rightLabel: "Authorized Signature / Stamp" },
-        items: invoice.items.map((item) => ({
+        items: collapseSalePrintLines(invoice.items.map((item) => ({
           name: formatProductName(item.product),
           specs: formatSpecs(item.product),
           quantity: toItemNumber(item.quantity),
           unit: item.product?.unit || "Unit",
           unitPrice: toItemNumber(item.unitPrice),
           lineTotal: toItemNumber(item.lineTotal, toItemNumber(item.quantity) * toItemNumber(item.unitPrice)),
-        })),
+        }))),
       });
     } else if (type === "purchase-order") {
       const po = await prisma.purchaseOrder.findUnique({

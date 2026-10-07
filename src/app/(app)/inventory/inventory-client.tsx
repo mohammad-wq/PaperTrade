@@ -34,6 +34,8 @@ import {
 } from "@/actions/parties";
 import { listLocationsAction } from "@/actions/orders";
 import { listWarehouseLotsAction, createWarehouseLotAction } from "@/actions/warehouse-lots";
+import { listLocationBatchStockAction } from "@/actions/inventory";
+import { BatchSelect } from "@/components/stock/BatchSelect";
 import { SearchCombobox, type ComboboxOption } from "@/components/ui/search-combobox";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -114,6 +116,14 @@ export default function InventoryClient({
 
   const [selectedLocationId, setSelectedLocationId] = useState("all");
   const [selectedLotId, setSelectedLotId] = useState("all");
+  const [selectedBatchKey, setSelectedBatchKey] = useState("all");
+  const [batchSlices, setBatchSlices] = useState<
+    Array<{ productId: string; locationId: string; ownershipKey: string; quantity: number; label: string }>
+  >([]);
+  const [adjustOwnershipKey, setAdjustOwnershipKey] = useState("");
+  const [adjustBatchQty, setAdjustBatchQty] = useState<number | null>(null);
+  const [transferOwnershipKey, setTransferOwnershipKey] = useState("");
+  const [transferBatchQty, setTransferBatchQty] = useState<number | null>(null);
   const [stockFilter, setStockFilter] = useState<"NON_ZERO" | "ZERO" | "ALL">("ALL");
   const [partnerStockFilter, setPartnerStockFilter] = useState<"ALL" | "REGULAR" | "BENEFICIARY">("ALL");
   const [activeTab, setActiveTab] = useState<"ALL" | "LOW">("ALL");
@@ -400,17 +410,64 @@ export default function InventoryClient({
     [allLots, bulkTrToLocationId],
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    void listLocationBatchStockAction({
+      locationId: selectedLocationId === "all" ? null : selectedLocationId,
+    }).then((res) => {
+      if (cancelled || !res.success) return;
+      setBatchSlices(
+        (res.data as Array<{
+          productId: string;
+          locationId: string;
+          ownershipKey: string;
+          quantity: number;
+          label: string;
+        }>) || [],
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLocationId, rows]);
+
+  const locationBatches = useMemo(() => {
+    const map = new Map<string, { ownershipKey: string; label: string; quantity: number }>();
+    for (const slice of batchSlices) {
+      const prev = map.get(slice.ownershipKey);
+      map.set(slice.ownershipKey, {
+        ownershipKey: slice.ownershipKey,
+        label: slice.label,
+        quantity: (prev?.quantity ?? 0) + slice.quantity,
+      });
+    }
+    return [...map.values()];
+  }, [batchSlices]);
+
+  const sourceRows = useMemo(() => {
+    if (selectedBatchKey === "all") return rows;
+    return rows.map((row) => {
+      const slice = batchSlices.find(
+        (entry) =>
+          entry.productId === row.productId &&
+          entry.locationId === row.locationId &&
+          entry.ownershipKey === selectedBatchKey,
+      );
+      return { ...row, available: slice?.quantity ?? 0 };
+    });
+  }, [rows, batchSlices, selectedBatchKey]);
+
   const selectedLocationLots = useMemo(
     () => (selectedLocationId !== "all" ? allLots.filter((l) => l.locationId === selectedLocationId) : []),
     [allLots, selectedLocationId]
   );
 
   const locationScopedRows = useMemo(() => {
-    return rows.filter((row) => {
+    return sourceRows.filter((row) => {
       if (selectedLocationId !== "all" && row.locationId !== selectedLocationId) return false;
       return true;
     });
-  }, [rows, selectedLocationId]);
+  }, [sourceRows, selectedLocationId]);
 
   const nonZeroCount = useMemo(() => locationScopedRows.filter((r) => r.available !== 0).length, [locationScopedRows]);
   const zeroCount = useMemo(() => locationScopedRows.filter((r) => r.available === 0).length, [locationScopedRows]);
@@ -419,13 +476,13 @@ export default function InventoryClient({
 
   const filteredRows = useMemo(() => {
     const search = debouncedQuery.trim().toLowerCase();
-    return rows.filter((row) => {
+    return sourceRows.filter((row) => {
       // 1. Location Filter
       const matchesLocation = selectedLocationId === "all" || row.locationId === selectedLocationId;
       if (!matchesLocation) return false;
 
       // 2. Lot Filter (Active when selected location has multiple lots)
-      if (selectedLocationId !== "all" && selectedLocationLots.length > 1 && selectedLotId !== "all") {
+      if (selectedLocationId !== "all" && selectedLocationLots.length > 0 && selectedLotId !== "all") {
         if (selectedLotId === "unassigned") {
           const unassignedStock = row.lots?.find((l) => l.id === null)?.available ?? 0;
           if (unassignedStock === 0) return false;
@@ -464,7 +521,7 @@ export default function InventoryClient({
       const matchesTab = activeTab === "ALL" || isLowStock;
       return matchesTab;
     });
-  }, [rows, debouncedQuery, selectedLocationId, selectedLocationLots, selectedLotId, stockFilter, partnerStockFilter, activeTab]);
+  }, [sourceRows, debouncedQuery, selectedLocationId, selectedLocationLots, selectedLotId, stockFilter, partnerStockFilter, activeTab, selectedBatchKey]);
 
   const lowStockCount = useMemo(
     () => locationScopedRows.filter((r) => {
@@ -481,7 +538,7 @@ export default function InventoryClient({
         let quantity = row.available;
         const selectedLotFilterApplies =
           selectedLocationId !== "all" &&
-          selectedLocationLots.length > 1 &&
+          selectedLocationLots.length > 0 &&
           selectedLotId !== "all";
 
         if (selectedLotFilterApplies) {
@@ -528,7 +585,10 @@ export default function InventoryClient({
       return;
     }
     if (direction === "OUT") {
-      const avail = getProductStock(productId, locationId, warehouseLotId ? warehouseLotId : "");
+      const avail =
+        adjustBatchQty != null
+          ? adjustBatchQty
+          : getProductStock(productId, locationId, warehouseLotId ? warehouseLotId : "");
       if (quantity > avail) {
         setAdjError(`Cannot decrease stock by ${quantity}. Only ${avail} available.`);
         return;
@@ -539,6 +599,7 @@ export default function InventoryClient({
       productId,
       locationId,
       warehouseLotId: warehouseLotId || undefined,
+      ownershipKey: adjustOwnershipKey || undefined,
       quantity,
       direction,
       reason: reason.trim(),
@@ -575,7 +636,10 @@ export default function InventoryClient({
       return;
     }
 
-    const avail = getProductStock(transferProductId, fromLocationId, fromWarehouseLotId ? fromWarehouseLotId : "");
+    const avail =
+      transferBatchQty != null
+        ? transferBatchQty
+        : getProductStock(transferProductId, fromLocationId, fromWarehouseLotId ? fromWarehouseLotId : "");
     if (transferQuantity > avail) {
       setTrError(`Cannot transfer ${transferQuantity}. Only ${avail} available in selected source.`);
       return;
@@ -585,6 +649,7 @@ export default function InventoryClient({
       productId: transferProductId,
       fromLocationId,
       fromWarehouseLotId: fromWarehouseLotId || undefined,
+      ownershipKey: transferOwnershipKey || undefined,
       toLocationId,
       toWarehouseLotId: toWarehouseLotId || undefined,
       quantity: transferQuantity,
@@ -1149,6 +1214,7 @@ export default function InventoryClient({
             onChange={(e) => {
               setSelectedLocationId(e.target.value);
               setSelectedLotId("all");
+              setSelectedBatchKey("all");
             }}
             className="h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200"
           >
@@ -1161,7 +1227,7 @@ export default function InventoryClient({
           </select>
 
           {/* Issue 4: Lot Filter (activates when the selected location has multiple lots) */}
-          {selectedLocationId !== "all" && selectedLocationLots.length > 1 && (
+          {selectedLocationId !== "all" && selectedLocationLots.length > 0 && (
             <select
               value={selectedLotId}
               onChange={(e) => setSelectedLotId(e.target.value)}
@@ -1174,6 +1240,21 @@ export default function InventoryClient({
                 </option>
               ))}
               <option value="unassigned">Unassigned Stock</option>
+            </select>
+          )}
+
+          {selectedLocationId !== "all" && locationBatches.length > 1 && (
+            <select
+              value={selectedBatchKey}
+              onChange={(e) => setSelectedBatchKey(e.target.value)}
+              className="h-8 rounded-md border border-violet-300 dark:border-violet-700 bg-violet-50/50 dark:bg-violet-950/30 px-2.5 text-xs font-semibold text-violet-900 dark:text-violet-200"
+            >
+              <option value="all">All batches</option>
+              {locationBatches.map((batch) => (
+                <option key={batch.ownershipKey} value={batch.ownershipKey}>
+                  {batch.label} ({batch.quantity})
+                </option>
+              ))}
             </select>
           )}
 
@@ -1324,7 +1405,7 @@ export default function InventoryClient({
                   </tr>
                 ) : (
                   filteredRows.map((row) => {
-                    const isLotFiltered = selectedLocationId !== "all" && selectedLocationLots.length > 1 && selectedLotId !== "all";
+                    const isLotFiltered = selectedBatchKey === "all" && selectedLocationId !== "all" && selectedLocationLots.length > 0 && selectedLotId !== "all";
                     const lotStock = isLotFiltered
                       ? (selectedLotId === "unassigned"
                           ? (row.lots?.find((l) => l.id === null)?.available ?? 0)
@@ -1507,7 +1588,7 @@ export default function InventoryClient({
         /* Cards View */
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {filteredRows.map((row) => {
-            const isLotFiltered = selectedLocationId !== "all" && selectedLocationLots.length > 1 && selectedLotId !== "all";
+            const isLotFiltered = selectedBatchKey === "all" && selectedLocationId !== "all" && selectedLocationLots.length > 0 && selectedLotId !== "all";
             const lotStock = isLotFiltered
               ? (selectedLotId === "unassigned"
                   ? (row.lots?.find((l) => l.id === null)?.available ?? 0)
@@ -1678,10 +1759,11 @@ export default function InventoryClient({
                     <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700 border-slate-200">
                       On hand:{" "}
                       <strong className="text-slate-900 font-mono">
-                        {getProductStock(productId, locationId, warehouseLotId ? warehouseLotId : "")}
+                        {adjustBatchQty != null
+                          ? adjustBatchQty
+                          : getProductStock(productId, locationId, warehouseLotId ? warehouseLotId : "")}
                       </strong>{" "}
                       {uniqueProducts.find((p) => p.id === productId)?.unit || "units"}
-                      {warehouseLotId && " (in lot)"}
                     </span>
                   )}
                 </div>
@@ -1753,6 +1835,19 @@ export default function InventoryClient({
                     className="w-full text-xs font-mono font-medium"
                   />
                 </div>
+              )}
+
+              {productId && locationId && (
+                <BatchSelect
+                  productId={productId}
+                  locationId={locationId}
+                  value={adjustOwnershipKey}
+                  unit={uniqueProducts.find((p) => p.id === productId)?.unit}
+                  onChange={(ownershipKey, qty) => {
+                    setAdjustOwnershipKey(ownershipKey);
+                    setAdjustBatchQty(ownershipKey ? qty : null);
+                  }}
+                />
               )}
 
               <div className="grid gap-3 sm:grid-cols-2">
@@ -1850,16 +1945,19 @@ export default function InventoryClient({
                   {transferProductId && fromLocationId && (
                     <span className={cn(
                       "text-[11px] font-semibold px-2 py-0.5 rounded-full border",
-                      getProductStock(transferProductId, fromLocationId, fromWarehouseLotId ? fromWarehouseLotId : "") > 0
+                      (transferBatchQty != null
+                        ? transferBatchQty
+                        : getProductStock(transferProductId, fromLocationId, fromWarehouseLotId ? fromWarehouseLotId : "")) > 0
                         ? "bg-emerald-50 text-emerald-800 border-emerald-200"
                         : "bg-rose-50 text-rose-800 border-rose-200"
                     )}>
                       Available in {locations.find((l) => l.id === fromLocationId)?.name || "Source"}:{" "}
                       <strong className="font-mono">
-                        {getProductStock(transferProductId, fromLocationId, fromWarehouseLotId ? fromWarehouseLotId : "")}
+                        {transferBatchQty != null
+                          ? transferBatchQty
+                          : getProductStock(transferProductId, fromLocationId, fromWarehouseLotId ? fromWarehouseLotId : "")}
                       </strong>{" "}
                       {uniqueProducts.find((p) => p.id === transferProductId)?.unit || "pkts"}
-                      {fromWarehouseLotId && " (in lot)"}
                     </span>
                   )}
                 </div>
@@ -1884,6 +1982,18 @@ export default function InventoryClient({
                   className="w-full text-xs font-medium"
                   required
                 />
+                {transferProductId && fromLocationId ? (
+                  <BatchSelect
+                    productId={transferProductId}
+                    locationId={fromLocationId}
+                    value={transferOwnershipKey}
+                    unit={uniqueProducts.find((p) => p.id === transferProductId)?.unit}
+                    onChange={(ownershipKey, qty) => {
+                      setTransferOwnershipKey(ownershipKey);
+                      setTransferBatchQty(ownershipKey ? qty : null);
+                    }}
+                  />
+                ) : null}
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">

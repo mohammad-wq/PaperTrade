@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createPartnershipLotAction } from "@/actions/partnerships";
+import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
 import { Plus, Trash2, Layers, ShieldCheck, DollarSign } from "lucide-react";
 import { toast } from "@/lib/toast";
 import { useRouter } from "next/navigation";
@@ -49,6 +50,8 @@ export function CreatePartnershipLotModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [partnerId, setPartnerId] = useState(defaultPartnerId || partners[0]?.id || "");
   const [warehouseId, setWarehouseId] = useState(warehouses[0]?.id || "");
+  const [warehouseLotId, setWarehouseLotId] = useState("");
+  const [physicalLots, setPhysicalLots] = useState<Array<{ id: string; lotNumber: string }>>([]);
   const [lotNumber, setLotNumber] = useState(`LOT-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 900) + 100)}`);
   const [archetype, setArchetype] = useState<"CONSIGNMENT_VMI" | "CO_INVESTED_POOL">("CO_INVESTED_POOL");
   const [partnerMarginRatio, setPartnerMarginRatio] = useState<number>(0.5);
@@ -61,6 +64,27 @@ export function CreatePartnershipLotModal({
       unitCostRate: products[0]?.costPrice || 1000,
     },
   ]);
+
+  useEffect(() => {
+    if (!warehouseId) {
+      setPhysicalLots([]);
+      setWarehouseLotId("");
+      return;
+    }
+    let cancelled = false;
+    void listWarehouseLotsAction(warehouseId).then((res) => {
+      if (cancelled || !res.success) return;
+      const lots = ((res.data as Array<{ id: string; lotNumber: string }>) || []).map((lot) => ({
+        id: lot.id,
+        lotNumber: lot.lotNumber,
+      }));
+      setPhysicalLots(lots);
+      setWarehouseLotId((current) => (lots.some((lot) => lot.id === current) ? current : ""));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [warehouseId]);
 
   const handleAddItem = () => {
     const defaultProd = products[0];
@@ -113,6 +137,10 @@ export function CreatePartnershipLotModal({
       toast.error("Please select a warehouse location.");
       return;
     }
+    if (physicalLots.length > 0 && !warehouseLotId) {
+      toast.error("Select a lot at this warehouse.");
+      return;
+    }
     if (!lotNumber.trim()) {
       toast.error("Please enter a lot number.");
       return;
@@ -129,6 +157,7 @@ export function CreatePartnershipLotModal({
         partnerId,
         type: archetype,
         warehouseId,
+        warehouseLotId: warehouseLotId || null,
         partnerMarginRatio,
         entityCapitalShare: entityCapital,
         partnerCapitalShare: partnerCapital,
@@ -236,7 +265,10 @@ export function CreatePartnershipLotModal({
               </Label>
               <select
                 value={warehouseId}
-                onChange={(e) => setWarehouseId(e.target.value)}
+                onChange={(e) => {
+                  setWarehouseId(e.target.value);
+                  setWarehouseLotId("");
+                }}
                 className="w-full mt-1 px-3 py-2 text-sm border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 {warehouses.map((w) => (
@@ -245,6 +277,23 @@ export function CreatePartnershipLotModal({
                   </option>
                 ))}
               </select>
+              {physicalLots.length > 0 ? (
+                <select
+                  value={warehouseLotId}
+                  onChange={(e) => setWarehouseLotId(e.target.value)}
+                  className="w-full mt-2 px-3 py-2 text-sm border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  required
+                >
+                  <option value="">Lot</option>
+                  {physicalLots.map((lot) => (
+                    <option key={lot.id} value={lot.id}>
+                      Lot {lot.lotNumber}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="mt-2 text-[11px] text-slate-400">No lots at this location</p>
+              )}
             </div>
           </div>
 

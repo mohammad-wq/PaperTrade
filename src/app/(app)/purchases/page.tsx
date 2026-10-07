@@ -35,6 +35,7 @@ import { format } from "date-fns";
 import { formatDateTime, cn, getLocalDateTimeInputValue } from "@/lib/utils";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
+import { BatchSelect } from "@/components/stock/BatchSelect";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { useSession } from "next-auth/react";
@@ -103,6 +104,7 @@ type LineItem = {
   locationId?: string;
   warehouseLotId?: string;
   sourceWarehouseLotId?: string;
+  ownershipKey?: string;
   quantity: number;
   unitCost: number;
 };
@@ -863,6 +865,7 @@ export default function PurchasesPage() {
           locationId: i.locationId || finalLocationId,
           warehouseLotId: i.warehouseLotId || undefined,
           sourceWarehouseLotId: i.sourceWarehouseLotId || undefined,
+          ownershipKey: i.ownershipKey || undefined,
           quantity: i.quantity,
           unitCost: i.unitCost,
         })),
@@ -1434,11 +1437,11 @@ export default function PurchasesPage() {
                         {/* Lot SearchCombobox */}
                         <div>
                           <Label className="text-[10px] text-slate-500 mb-0.5 block sm:hidden">Lot #</Label>
-                          {isRowWarehouse ? (
+                          {rowLots.length > 0 ? (
+                            <div className="space-y-1">
                             <div className="flex items-center gap-1">
                               <SearchCombobox
                                 options={[
-                                  { id: "", label: "No Lot" },
                                   ...rowLots.map((lot) => ({
                                     id: lot.id,
                                     label: `#${lot.lotNumber}${lot.description ? ` (${lot.description})` : ""}`,
@@ -1468,8 +1471,39 @@ export default function PurchasesPage() {
                                 <Plus className="h-3.5 w-3.5" />
                               </Button>
                             </div>
+                            {item.productId && itemLocId ? (
+                              <BatchSelect
+                                productId={item.productId}
+                                locationId={itemLocId}
+                                value={item.ownershipKey || ""}
+                                onChange={(ownershipKey) => {
+                                  setItems((prev) =>
+                                    prev.map((row, rowIndex) =>
+                                      rowIndex === idx ? { ...row, ownershipKey } : row,
+                                    ),
+                                  );
+                                }}
+                              />
+                            ) : null}
+                            </div>
                           ) : (
-                            <span className="text-[10px] text-slate-400 italic text-center block">N/A (Shop)</span>
+                            <div className="space-y-1">
+                              <span className="text-[10px] text-slate-400 italic text-center block">No lots</span>
+                              {item.productId && itemLocId ? (
+                                <BatchSelect
+                                  productId={item.productId}
+                                  locationId={itemLocId}
+                                  value={item.ownershipKey || ""}
+                                  onChange={(ownershipKey) => {
+                                    setItems((prev) =>
+                                      prev.map((row, rowIndex) =>
+                                        rowIndex === idx ? { ...row, ownershipKey } : row,
+                                      ),
+                                    );
+                                  }}
+                                />
+                              ) : null}
+                            </div>
                           )}
                         </div>
 

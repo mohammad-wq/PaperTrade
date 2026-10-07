@@ -19,6 +19,29 @@ import {
   type CommercialPaymentLine,
 } from "@/lib/ledger-commercial";
 
+function collapseCommercialProductLines(
+  lines: Array<{ productNo: string; name: string; quantity: number; unit: string; unitPrice: number; lineTotal: number }>,
+) {
+  const grouped = new Map<string, { productNo: string; name: string; quantity: number; unit: string; lineTotal: number }>();
+  for (const line of lines) {
+    const key = `${line.productNo}|${Number(line.unitPrice).toFixed(4)}`;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, {
+        productNo: line.productNo,
+        name: line.name,
+        quantity: line.quantity,
+        unit: line.unit,
+        lineTotal: line.lineTotal,
+      });
+      continue;
+    }
+    existing.quantity += line.quantity;
+    existing.lineTotal += line.lineTotal;
+  }
+  return [...grouped.values()];
+}
+
 async function walkInSaleInvoiceIds(filter: string): Promise<string[]> {
   const rows = await prisma.saleInvoice.findMany({
     select: { id: true, walkInName: true, customer: { select: { name: true } } },
@@ -314,13 +337,14 @@ export async function listLedgerEntriesAction(filters?: {
         freight: Number(s.freightCharges ?? 0),
         total: Number(s.totalAmount),
         paid: Number(s.amountPaid ?? 0),
-        productLines: (s.items || []).map((i) => ({
+        productLines: collapseCommercialProductLines((s.items || []).map((i) => ({
           productNo: i.product.productNo,
           name: i.product.name,
           quantity: Number(i.quantity),
           unit: i.product.unit || "pkts",
+          unitPrice: Number(i.unitPrice ?? 0),
           lineTotal: Number(i.lineTotal ?? Number(i.quantity) * Number(i.unitPrice ?? 0)),
-        })),
+        }))),
         paymentLines: extractCommercialPaymentLines(
           (s.payments || []).filter((pay) => !entries.some((e) => e.referenceType === "PAYMENT" && e.referenceId === pay.id)),
           (s.payments || []).length === 0 ? Number(s.amountPaid ?? 0) : 0,
@@ -345,13 +369,14 @@ export async function listLedgerEntriesAction(filters?: {
         freight: Number(p.freightCharges ?? 0),
         total: Number(p.totalAmount),
         paid: Number(p.amountPaid ?? 0),
-        productLines: (p.items || []).map((i) => ({
+        productLines: collapseCommercialProductLines((p.items || []).map((i) => ({
           productNo: i.product.productNo,
           name: i.product.name,
           quantity: Number(i.quantity),
           unit: i.product.unit || "pkts",
+          unitPrice: Number(i.unitCost ?? 0),
           lineTotal: Number(i.lineTotal ?? Number(i.quantity) * Number(i.unitCost ?? 0)),
-        })),
+        }))),
         paymentLines: extractCommercialPaymentLines(
           (p.payments || []).filter((pay) => !entries.some((e) => e.referenceType === "PAYMENT" && e.referenceId === pay.id)),
           (p.payments || []).length === 0 ? Number(p.amountPaid ?? 0) : 0,

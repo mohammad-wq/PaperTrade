@@ -1882,6 +1882,7 @@ const createPartnershipLotSchema = z.object({
   partnerId: z.string().min(1, "Partner is required"),
   type: z.enum(["CONSIGNMENT_VMI", "CO_INVESTED_POOL"]).default("CO_INVESTED_POOL"),
   warehouseId: z.string().min(1, "Warehouse Location is required"),
+  warehouseLotId: z.string().trim().optional().nullable(),
   partnerMarginRatio: z.coerce.number().min(0).max(1).default(0.5),
   entityCapitalShare: z.coerce.number().min(0).optional(),
   partnerCapitalShare: z.coerce.number().min(0).optional(),
@@ -1916,9 +1917,25 @@ export async function createPartnershipLotAction(raw: unknown) {
 
     const warehouse = await prisma.location.findUnique({
       where: { id: input.warehouseId },
-      select: { id: true, name: true, type: true },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        warehouseLots: {
+          where: { isActive: true, deletedAt: null },
+          select: { id: true, lotNumber: true, description: true },
+        },
+      },
     });
     if (!warehouse) throw userError("Warehouse location not found.");
+    const tags = await loadPartnershipTagIndex();
+    const physicalLots = warehouse.warehouseLots.filter((lot) => !isPartnershipTagLot(lot, tags));
+    const warehouseLotId = input.warehouseLotId?.trim() || null;
+    if (physicalLots.length > 0) {
+      if (!warehouseLotId || !physicalLots.some((lot) => lot.id === warehouseLotId)) {
+        throw userError(`Select a lot at ${warehouse.name}.`);
+      }
+    }
 
     // Check duplicate lot number
     const existing = await prisma.partnershipLot.findUnique({
@@ -1993,7 +2010,10 @@ export async function createPartnershipLotAction(raw: unknown) {
           data: {
             productId: it.productId,
             locationId: warehouse.id,
+            warehouseLotId: physicalLots.length > 0 ? warehouseLotId : null,
             partnershipLotId: lot.id,
+            ownershipType: "LOT",
+            ownershipKey: `LOT:${lot.id}`,
             type: StockMovementType.PURCHASE_IN,
             quantity: it.initialQuantity,
             referenceType: "PARTNERSHIP_INTAKE",

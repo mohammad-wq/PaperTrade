@@ -7,7 +7,7 @@ import { requireSession } from "@/lib/auth/session";
 import { userError } from "@/lib/errors";
 import { StockMovementType, AccountType, LedgerAccountSubtype } from "@prisma/client";
 import { postJournal } from "@/lib/ledger";
-import { assertStockDeductionsAvailable, getStockOnHand } from "@/lib/stock";
+import { assertStockDeductionsAvailable, getNonPartnershipOnHand, getStockOnHand } from "@/lib/stock";
 import { generateDocumentNumber, withResourceQueue } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { revalidatePath } from "next/cache";
@@ -25,7 +25,29 @@ import {
   resolveOwnershipKey,
   resolvePurchaseOwnership,
   resolveSaleOwnership,
+  ownershipTypeFromKey,
+  getProductCostState,
 } from "@/lib/inventoryCost.service";
+import { isPartnershipTagLot, loadPartnershipTagIndex } from "@/lib/location-lots";
+
+async function ownershipForLine(
+  tx: Parameters<typeof getProductCostState>[0],
+  productId: string,
+  locationId: string,
+  ownershipKey?: string | null,
+) {
+  if (ownershipKey) {
+    const parsed = ownershipTypeFromKey(ownershipKey);
+    return parsed.ownershipType === "LOT"
+      ? { ownershipType: "LOT" as const, partnershipLotId: parsed.partnershipLotId }
+      : { ownershipType: "OWN" as const, partnershipLotId: null as string | null };
+  }
+  const resolved = await resolveSaleOwnership(tx, { productId, locationId });
+  return {
+    ownershipType: resolved.ownershipType === "LOT" ? ("LOT" as const) : ("OWN" as const),
+    partnershipLotId: resolved.partnershipLotId ?? null,
+  };
+}
 
 /**
  * Adjust stock for a single product with CPA-grade double entry posting:
@@ -51,10 +73,12 @@ export async function adjustStockAction(raw: unknown) {
     });
     if (!location) throw userError("Location not found.");
 
+    const tagIndex = await loadPartnershipTagIndex();
+    const physicalLots = location.warehouseLots.filter((lot) => !isPartnershipTagLot(lot, tagIndex));
     if (input.warehouseLotId) {
-      const lot = location.warehouseLots.find((l) => l.id === input.warehouseLotId);
+      const lot = physicalLots.find((l) => l.id === input.warehouseLotId);
       if (!lot) throw userError("Selected lot does not exist in this location.");
-    } else if (location.warehouseLots.length > 0) {
+    } else if (physicalLots.length > 0) {
       throw userError(`Select a specific lot before adjusting stock at ${location.name}.`);
     }
 
@@ -135,9 +159,12 @@ export async function adjustStockAction(raw: unknown) {
           );
         }
 
-        const ownership = await resolvePurchaseOwnership(tx, {
-          warehouseLotId: input.warehouseLotId,
-        });
+        const ownership = await ownershipForLine(
+          tx,
+          input.productId,
+          input.locationId,
+          input.ownershipKey,
+        );
         const ownershipKey = resolveOwnershipKey(ownership);
         await postInflow(tx, {
           productId: input.productId,
@@ -151,14 +178,19 @@ export async function adjustStockAction(raw: unknown) {
         });
         await tx.stockMovement.updateMany({
           where: { referenceType: "ADJUSTMENT", referenceId },
-          data: { ownershipType: ownership.ownershipType, ownershipKey },
+          data: {
+            ownershipType: ownership.ownershipType,
+            ownershipKey,
+            partnershipLotId: ownership.partnershipLotId,
+          },
         });
       } else {
-        const ownership = await resolveSaleOwnership(tx, {
-          productId: input.productId,
-          locationId: input.locationId,
-          warehouseLotId: input.warehouseLotId,
-        });
+        const ownership = await ownershipForLine(
+          tx,
+          input.productId,
+          input.locationId,
+          input.ownershipKey,
+        );
         await postOutflow(tx, {
           productId: input.productId,
           locationId: input.locationId,
@@ -171,7 +203,11 @@ export async function adjustStockAction(raw: unknown) {
         const ownershipKey = resolveOwnershipKey(ownership);
         await tx.stockMovement.updateMany({
           where: { referenceType: "ADJUSTMENT", referenceId },
-          data: { ownershipType: ownership.ownershipType, ownershipKey },
+          data: {
+            ownershipType: ownership.ownershipType,
+            ownershipKey,
+            partnershipLotId: ownership.partnershipLotId,
+          },
         });
       }
 
@@ -291,9 +327,7 @@ export async function bulkAdjustStockAction(raw: unknown) {
             : Number(p?.costPrice || 0);
           totalUpwardValuation += Number(item.quantity) * unitCost;
 
-          const ownership = await resolvePurchaseOwnership(tx, {
-            warehouseLotId: item.warehouseLotId,
-          });
+          const ownership = await ownershipForLine(tx, item.productId, item.locationId, (item as any).ownershipKey);
           await postInflow(tx, {
             productId: item.productId,
             locationId: item.locationId,
@@ -305,11 +339,12 @@ export async function bulkAdjustStockAction(raw: unknown) {
             referenceId,
           });
         } else {
-          const ownership = await resolveSaleOwnership(tx, {
-            productId: item.productId,
-            locationId: item.locationId,
-            warehouseLotId: item.warehouseLotId,
-          });
+          const ownership = await ownershipForLine(
+            tx,
+            item.productId,
+            item.locationId,
+            (item as any).ownershipKey,
+          );
           await postOutflow(tx, {
             productId: item.productId,
             locationId: item.locationId,
@@ -396,14 +431,17 @@ export async function transferStockAction(raw: unknown) {
     if (!fromLoc) throw userError("Source location not found.");
     if (!toLoc) throw userError("Destination location not found.");
 
+    const tagIndex = await loadPartnershipTagIndex();
+    const fromPhysical = fromLoc.warehouseLots.filter((lot) => !isPartnershipTagLot(lot, tagIndex));
+    const toPhysical = toLoc.warehouseLots.filter((lot) => !isPartnershipTagLot(lot, tagIndex));
     if (input.fromWarehouseLotId) {
-      const lot = fromLoc.warehouseLots.find((l) => l.id === input.fromWarehouseLotId);
+      const lot = fromPhysical.find((l) => l.id === input.fromWarehouseLotId);
       if (!lot) throw userError("Selected lot does not exist in source location.");
-    } else if (fromLoc.warehouseLots.length > 0) {
+    } else if (fromPhysical.length > 0) {
       throw userError(`Select a specific lot before transferring stock from ${fromLoc.name}.`);
     }
 
-    if (toLoc.warehouseLots.length > 0 && !input.toWarehouseLotId) {
+    if (toPhysical.length > 0 && !input.toWarehouseLotId) {
       throw userError(`Select a specific lot to receive stock at ${toLoc.name}.`);
     }
 
@@ -453,11 +491,12 @@ export async function transferStockAction(raw: unknown) {
         },
       });
 
-      const ownership = await resolveSaleOwnership(tx, {
-        productId: input.productId,
-        locationId: input.fromLocationId,
-        warehouseLotId: input.fromWarehouseLotId,
-      });
+      const ownership = await ownershipForLine(
+        tx,
+        input.productId,
+        input.fromLocationId,
+        input.ownershipKey,
+      );
       const ownershipKey = resolveOwnershipKey(ownership);
       await postTransfer(tx, {
         productId: input.productId,
@@ -470,7 +509,11 @@ export async function transferStockAction(raw: unknown) {
       });
       await tx.stockMovement.updateMany({
         where: { referenceType: "TRANSFER", referenceId },
-        data: { ownershipType: ownership.ownershipType, ownershipKey },
+        data: {
+            ownershipType: ownership.ownershipType,
+            ownershipKey,
+            partnershipLotId: ownership.partnershipLotId,
+          },
       });
 
       return { success: true, referenceId };
@@ -517,19 +560,37 @@ export async function listSaleOwnershipBucketsAction(raw: unknown) {
       orderBy: [{ ownershipKey: "asc" }],
     });
 
-    const buckets = rows.map((row) => ({
-      ownershipType: row.ownershipType,
-      ownershipKey: row.ownershipKey,
-      partnershipLotId: row.partnershipLotId,
-      quantity: Number(row.quantity),
-      avgCost: Number(row.avgCost),
-      label:
-        row.ownershipKey === "OWN"
-          ? "Entity owned"
-          : row.partnershipLot
-            ? `Lot ${row.partnershipLot.lotNumber}`
-            : row.ownershipKey,
-    }));
+    const ownRow = rows.find((row) => row.ownershipKey === "OWN");
+    const buckets = rows
+      .filter((row) => row.ownershipKey !== "OWN")
+      .map((row) => ({
+        ownershipType: row.ownershipType,
+        ownershipKey: row.ownershipKey,
+        partnershipLotId: row.partnershipLotId,
+        quantity: Number(row.quantity),
+        avgCost: Number(row.avgCost),
+        label: row.partnershipLot?.lotNumber || row.ownershipKey,
+      }));
+
+    const regularOnHand = await getNonPartnershipOnHand(
+      input.productId,
+      input.locationId,
+      prisma,
+      input.warehouseLotId || null,
+    );
+    const regularQty = input.warehouseLotId
+      ? regularOnHand
+      : Math.max(Number(ownRow?.quantity ?? 0), regularOnHand);
+    if (regularQty > 0.0001) {
+      buckets.unshift({
+        ownershipType: "OWN",
+        ownershipKey: "OWN",
+        partnershipLotId: null,
+        quantity: regularQty,
+        avgCost: Number(ownRow?.avgCost ?? 0),
+        label: "Regular",
+      });
+    }
 
     let suggestedOwnershipKey: string | null = null;
     if (input.warehouseLotId) {
@@ -550,6 +611,76 @@ export async function listSaleOwnershipBucketsAction(raw: unknown) {
     }
 
     return { buckets, suggestedOwnershipKey };
+  });
+}
+
+const locationBatchStockSchema = z.object({
+  locationId: z.string().optional().nullable(),
+});
+
+export async function listLocationBatchStockAction(raw: unknown) {
+  return runAction("inventory.locationBatchStock", async () => {
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "inventory", "view", (session.user as any).permissions)) {
+      throw userError("You do not have permission to view stock batches.");
+    }
+    const input = parseInput(locationBatchStockSchema, raw ?? {});
+    const rows = await prisma.productCostState.findMany({
+      where: {
+        quantity: { gt: 0 },
+        ownershipKey: { not: "OWN" },
+        ...(input.locationId ? { locationId: input.locationId } : {}),
+      },
+      include: { partnershipLot: { select: { lotNumber: true } } },
+    });
+    const movements = await prisma.stockMovement.groupBy({
+      by: ["productId", "locationId", "type"],
+      where: {
+        partnershipLotId: null,
+        ...(input.locationId ? { locationId: input.locationId } : {}),
+      },
+      _sum: { quantity: true },
+    });
+    const regularQty = new Map<string, number>();
+    for (const movement of movements) {
+      const key = `${movement.productId}:${movement.locationId}`;
+      const qty = Number(movement._sum.quantity ?? 0);
+      const signed =
+        movement.type === "ADJUSTMENT" ||
+        movement.type === "PURCHASE_IN" ||
+        movement.type === "TRANSFER_IN" ||
+        movement.type === "SALE_RETURN"
+          ? qty
+          : movement.type === "SALE_OUT" ||
+              movement.type === "TRANSFER_OUT" ||
+              movement.type === "DELIVERY_OUT" ||
+              movement.type === "PURCHASE_RETURN"
+            ? -qty
+            : 0;
+      regularQty.set(key, (regularQty.get(key) ?? 0) + signed);
+    }
+    const regularRows = [...regularQty.entries()]
+      .filter(([, quantity]) => quantity > 0.0001)
+      .map(([key, quantity]) => {
+        const [productId, locationId] = key.split(":");
+        return {
+          productId,
+          locationId,
+          ownershipKey: "OWN",
+          quantity,
+          label: "Regular",
+        };
+      });
+    return [
+      ...regularRows,
+      ...rows.map((row) => ({
+        productId: row.productId,
+        locationId: row.locationId,
+        ownershipKey: row.ownershipKey,
+        quantity: Number(row.quantity),
+        label: row.partnershipLot?.lotNumber || row.ownershipKey,
+      })),
+    ];
   });
 }
 

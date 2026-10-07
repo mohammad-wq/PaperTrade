@@ -38,6 +38,7 @@ import { format } from "date-fns";
 import { cn, formatDateTime } from "@/lib/utils";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
+import { BatchSelect } from "@/components/stock/BatchSelect";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf, printDraftPdf } from "@/lib/print-pdf";
@@ -106,6 +107,7 @@ type LineItem = {
   productId: string;
   locationId?: string;
   warehouseLotId?: string;
+  ownershipKey?: string;
   quantity: number;
   unit: Unit;
 };
@@ -404,11 +406,15 @@ export default function DeliveryOrdersPage() {
       setFormError("Please select a warehouse dispatch location.");
       return;
     }
-    const missingLot = items.find((i) => !i.warehouseLotId || !i.warehouseLotId.trim());
+    const missingLot = items.find((i) => {
+      const locId = i.locationId || locationId;
+      const lotsHere = warehouseLots.filter((lot) => lot.locationId === locId);
+      return lotsHere.length > 0 && !i.warehouseLotId?.trim();
+    });
     if (missingLot) {
       const prod = products.find((p) => p.id === missingLot.productId);
       setFormError(
-        `A warehouse lot must be specified for "${prod?.productNo ?? ""} ${prod?.name ?? "each item"}". All warehouse consignments require lot tracking.`
+        `Select a lot for "${prod?.productNo ?? ""} ${prod?.name ?? "this item"}". This location has lots.`
       );
       return;
     }
@@ -723,6 +729,7 @@ export default function DeliveryOrdersPage() {
           productId: i.productId,
           locationId: i.locationId || locationId || undefined,
           warehouseLotId: i.warehouseLotId || undefined,
+          ownershipKey: i.ownershipKey || undefined,
           quantity: i.quantity,
           unit: i.unit,
         })),
@@ -1474,6 +1481,23 @@ export default function DeliveryOrdersPage() {
                             <Plus className="h-3.5 w-3.5" />
                           </Button>
                         </div>
+                        {lineLots.length === 0 ? (
+                          <span className="text-[10px] text-slate-400 italic">No lots</span>
+                        ) : null}
+                        {item.productId && (item.locationId || locationId) ? (
+                          <BatchSelect
+                            productId={item.productId}
+                            locationId={item.locationId || locationId}
+                            value={item.ownershipKey || ""}
+                            onChange={(ownershipKey) => {
+                              setItems((prev) =>
+                                prev.map((row, rowIndex) =>
+                                  rowIndex === idx ? { ...row, ownershipKey } : row,
+                                ),
+                              );
+                            }}
+                          />
+                        ) : null}
 
                         {/* Quantity */}
                         <div>

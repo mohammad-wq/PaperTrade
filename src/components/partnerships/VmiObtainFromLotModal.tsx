@@ -106,7 +106,7 @@ export function VmiObtainFromLotModal({
             Purchase from partner (VMI)
           </DialogTitle>
           <p className="text-xs text-muted-foreground">
-            Buy consignment stock from <strong>{partnerName}</strong> on lot <strong>{lotNumber}</strong>. Stock becomes your own inventory at the destination.
+            Buy consignment stock from <strong>{partnerName}</strong> on batch <strong>{lotNumber}</strong>. Stock becomes your own inventory at the destination.
           </p>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-3">

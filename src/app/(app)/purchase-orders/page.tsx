@@ -38,6 +38,7 @@ import { format } from "date-fns";
 import { formatDateTime, getLocalDateTimeInputValue } from "@/lib/utils";
 import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
+import { BatchSelect } from "@/components/stock/BatchSelect";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf, printDraftPdf } from "@/lib/print-pdf";
@@ -107,6 +108,7 @@ type LineItem = {
   unitCost: number;
   destinationLocationId?: string;
   warehouseLotId?: string;
+  ownershipKey?: string;
 };
 
 export default function PurchaseOrdersPage() {
@@ -684,6 +686,7 @@ export default function PurchaseOrdersPage() {
           productId: i.productId,
           destinationLocationId: i.destinationLocationId || locationId || effectiveLoc || undefined,
           warehouseLotId: i.warehouseLotId || undefined,
+          ownershipKey: i.ownershipKey || undefined,
           quantity: i.quantity,
           unitCost: i.unitCost,
         })),
@@ -1323,9 +1326,23 @@ export default function PurchaseOrdersPage() {
                               qtyRefs.current[idx]?.current?.focus();
                               qtyRefs.current[idx]?.current?.select();
                             }}
-                            placeholder="Lot (Opt)"
+                            placeholder={lineLots.length > 0 ? "Lot" : "No lots"}
                             className="w-full text-xs font-mono"
                           />
+                          {item.productId && lineDestId ? (
+                            <BatchSelect
+                              productId={item.productId}
+                              locationId={lineDestId}
+                              value={item.ownershipKey || ""}
+                              onChange={(ownershipKey) => {
+                                setItems((prev) =>
+                                  prev.map((row, rowIndex) =>
+                                    rowIndex === idx ? { ...row, ownershipKey } : row,
+                                  ),
+                                );
+                              }}
+                            />
+                          ) : null}
                         </div>
 
                         {/* Quantity */}

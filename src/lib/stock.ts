@@ -38,6 +38,12 @@ export async function getStockOnHand(
     _sum: { quantity: true },
   });
 
+  return sumMovementQuantities(movements);
+}
+
+function sumMovementQuantities(
+  movements: Array<{ type: StockMovementType; _sum: { quantity: Prisma.Decimal | null } }>,
+): number {
   return movements.reduce((total, row) => {
     const qty = Number(row._sum.quantity ?? 0);
     if (row.type === StockMovementType.ADJUSTMENT) {
@@ -47,6 +53,32 @@ export async function getStockOnHand(
     if (OUTBOUND.includes(row.type)) return total - qty;
     return total;
   }, 0);
+}
+
+/** On-hand that is not tagged to a partnership batch. */
+export async function getNonPartnershipOnHand(
+  productId: string,
+  locationId: string,
+  tx?: StockDatabase,
+  warehouseLotId?: string | null,
+): Promise<number> {
+  const db = tx ?? prisma;
+  const whereClause: Prisma.StockMovementWhereInput = {
+    productId,
+    locationId,
+    partnershipLotId: null,
+  };
+  if (warehouseLotId) {
+    whereClause.warehouseLotId = warehouseLotId;
+  }
+
+  const movements = await db.stockMovement.groupBy({
+    by: ["type"],
+    where: whereClause,
+    _sum: { quantity: true },
+  });
+
+  return sumMovementQuantities(movements);
 }
 
 export async function assertStockAvailableForDeduction(

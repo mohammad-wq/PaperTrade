@@ -106,9 +106,7 @@ export async function resolveSaleOwnership(
   });
   const keys = [...new Set(buckets.map((b) => b.ownershipKey))];
   if (keys.length > 1) {
-    throw userError(
-      "Multiple ownership buckets hold this product at this location. Select an ownership bucket on the line.",
-    );
+    throw userError("Select a batch for this product.");
   }
   if (keys.length === 1 && keys[0] !== "OWN") {
     const parsed = ownershipTypeFromKey(keys[0]);
@@ -127,28 +125,6 @@ export async function resolvePurchaseOwnership(
 ): Promise<OwnershipInput> {
   if (params.partnershipLotId) {
     return { ownershipType: "LOT", partnershipLotId: params.partnershipLotId };
-  }
-  if (params.warehouseLotId) {
-    const linked = await tx.partnershipLot.findFirst({
-      where: { warehouseLotId: params.warehouseLotId },
-      select: { id: true },
-    });
-    if (linked) {
-      return { ownershipType: "LOT", partnershipLotId: linked.id };
-    }
-    const warehouseLot = await tx.warehouseLot.findUnique({
-      where: { id: params.warehouseLotId },
-      select: { partnerId: true, lotNumber: true },
-    });
-    if (warehouseLot?.partnerId) {
-      const byPartner = await tx.partnershipLot.findFirst({
-        where: { partnerId: warehouseLot.partnerId, lotNumber: warehouseLot.lotNumber },
-        select: { id: true },
-      });
-      if (byPartner) {
-        return { ownershipType: "LOT", partnershipLotId: byPartner.id };
-      }
-    }
   }
   return { ownershipType: "OWN" };
 }

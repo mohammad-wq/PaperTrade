@@ -82,7 +82,7 @@ export function PartnershipLotClient({
             </Link>
           </div>
           <div className="flex items-center gap-3 mt-1.5">
-            <h1 className="text-2xl font-black text-gray-900 font-mono tracking-tight">{lot.lotNumber}</h1>
+            <h1 className="text-2xl font-black text-gray-900 font-mono tracking-tight">Batch {lot.lotNumber}</h1>
             <span
               className={`text-xs px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
                 isConsignment
@@ -119,7 +119,7 @@ export function PartnershipLotClient({
             onClick={() => setShowIntakeModal(true)}
             className="gap-1 text-xs border-indigo-300 text-indigo-800"
           >
-            <Package className="h-3.5 w-3.5" /> Lot intake
+            <Package className="h-3.5 w-3.5" /> Batch intake
           </Button>
 
           {isConsignment ? (
@@ -231,7 +231,7 @@ export function PartnershipLotClient({
         {/* 2. Lot Inventory */}
         <div className="bg-white p-4 rounded-xl border shadow-sm relative overflow-hidden">
           <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-            Lot Inventory Balance
+            Batch inventory
           </div>
           <div className="text-lg font-black text-gray-900 mt-1">
             {metrics.totalRemainingUnits}{" "}
@@ -436,7 +436,7 @@ export function PartnershipLotClient({
                   <th className="px-4 py-3 text-right font-bold text-gray-700">Unit Cost Rate</th>
                   <th className="px-4 py-3 text-right font-bold text-gray-700">Pulled to Shop (DO)</th>
                   <th className="px-4 py-3 text-right font-bold text-gray-700">Partner Liquidated</th>
-                  <th className="px-4 py-3 text-right font-bold text-gray-700">Remaining in Lot</th>
+                  <th className="px-4 py-3 text-right font-bold text-gray-700">Remaining in batch</th>
                   <th className="px-4 py-3 text-right font-bold text-gray-700">Current Valuation</th>
                   <th className="px-4 py-3 text-center font-bold text-gray-700">Action</th>
                 </tr>

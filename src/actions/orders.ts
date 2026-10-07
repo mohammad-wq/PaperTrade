@@ -203,7 +203,6 @@ async function createDeliveryOrderStockMovements(
     const ownership = await resolveSaleOwnership(tx, {
       productId: item.productId,
       locationId: sourceLocId,
-      warehouseLotId: item.warehouseLotId,
       partnershipLotId: (item as any).partnershipLotId,
       ownershipType: (item as any).ownershipType,
       ownershipKey: (item as any).ownershipKey,
@@ -227,6 +226,7 @@ async function createDeliveryOrderStockMovements(
       data: {
         ownershipType: ownership.ownershipType,
         ownershipKey,
+        partnershipLotId: ownership.partnershipLotId ?? null,
       },
     });
 

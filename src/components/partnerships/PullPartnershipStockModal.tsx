@@ -185,7 +185,7 @@ export function PullPartnershipStockModal({
               <thead className="bg-gray-50 border-b">
                 <tr>
                   <th className="px-3 py-2 text-left font-semibold">Product</th>
-                  <th className="px-3 py-2 text-right font-semibold">Available in Lot</th>
+                  <th className="px-3 py-2 text-right font-semibold">Available in batch</th>
                   <th className="px-3 py-2 text-right font-semibold">Unit Cost</th>
                   <th className="px-3 py-2 text-right font-semibold w-32">Pull Quantity</th>
                   <th className="px-3 py-2 text-right font-semibold">Valuation</th>

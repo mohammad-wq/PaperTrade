@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth/options";
 import { renderDocumentPdfKit } from "@/lib/pdfkit-generator";
 import { format } from "date-fns";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { collapseSalePrintLines } from "@/lib/collapse-sale-lines";
 
 export const dynamic = "force-dynamic";
 
@@ -95,19 +96,19 @@ export async function POST(request: NextRequest) {
       deliveryDetails: recipientName ? { recipientName } : undefined,
       notes,
       signatures: { leftLabel: "Prepared By", rightLabel: "Authorized Signature" },
-      items: items.map((item: any) => {
+      items: (type === "sale-invoice" ? collapseSalePrintLines : (lines: any[]) => lines)(items.map((item: any) => {
         const quantity = toNumber(item.quantity);
         const unitPrice = toNumber(item.unitPrice);
         return {
           name: item.name || "Product Item",
           specs: item.specs || "Standard Paper",
-          lot: item.lot || null,
+          lot: type === "sale-invoice" ? null : item.lot || null,
           quantity,
           unit: item.unit || "Unit",
           unitPrice,
           lineTotal: toNumber(item.lineTotal, quantity * unitPrice),
         };
-      }),
+      })),
     });
 
     return new NextResponse(new Uint8Array(pdfBuffer), {
