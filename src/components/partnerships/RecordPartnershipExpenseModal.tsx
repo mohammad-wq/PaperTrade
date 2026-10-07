@@ -9,6 +9,7 @@ import { recordPartnershipExpenseAction } from "@/actions/partnerships";
 import { Receipt, ArrowRight } from "lucide-react";
 import { toast } from "@/lib/toast";
 import { useRouter } from "next/navigation";
+import { getLocalDateTimeInputValue } from "@/lib/utils";
 
 interface RecordPartnershipExpenseModalProps {
   open: boolean;
@@ -31,7 +32,7 @@ export function RecordPartnershipExpenseModal({
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState<number>(0);
   const [paidBy, setPaidBy] = useState<"ENTITY" | "PARTNER">("ENTITY");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => getLocalDateTimeInputValue());
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -101,7 +102,7 @@ export function RecordPartnershipExpenseModal({
             <div>
               <Label className="text-xs font-semibold">Expense Date</Label>
               <Input
-                type="date"
+                type="datetime-local"
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
                 required

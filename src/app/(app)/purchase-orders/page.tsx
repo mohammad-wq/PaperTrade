@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useMemo, useRef, createRef } from "react";
+import React, { useCallback, useEffect, useState, useMemo, useRef, createRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
   Layers,
@@ -40,9 +40,14 @@ import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
-import { printDocumentPdf } from "@/lib/print-pdf";
+import { printDocumentPdf, printDraftPdf } from "@/lib/print-pdf";
+import { PrintPaperSizeControl, type PrintPaperSize } from "@/components/print/PrintPaperSizeControl";
+import { withPaperSizeQuery } from "@/components/ui/print-with-paper-size";
 import { useSession } from "next-auth/react";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { DocumentWorkspace } from "@/components/documents/DocumentWorkspace";
+import { useDockedDraft } from "@/components/documents/DocumentWorkspaceDock";
+import { useDocumentWorkspaceStore } from "@/lib/document-workspace-store";
 
 type PORow = {
   id: string;
@@ -127,6 +132,7 @@ export default function PurchaseOrdersPage() {
   const [warehouseLots, setWarehouseLots] = useState<Array<{ id: string; locationId: string; lotNumber: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [docPaperSize, setDocPaperSize] = useState<PrintPaperSize>("A4");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -142,6 +148,40 @@ export default function PurchaseOrdersPage() {
   const qtyRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
   const costRefs = useRef<React.RefObject<HTMLInputElement>[]>([]);
 
+  function closePoDialog() {
+    setIsDialogOpen(false);
+    setEditingOrderId(null);
+    setFormError(null);
+    useDocumentWorkspaceStore.getState().clearDock();
+  }
+
+  function detachPoDialog() {
+    const order = editingOrderId ? orders.find((o) => o.id === editingOrderId) : null;
+    const title = order
+      ? `Edit PO ${formatSequenceDisplay(order.sequenceNo, order.orderNo)}`
+      : "New purchase order draft";
+    useDocumentWorkspaceStore.getState().setDock({
+      kind: "PO",
+      title,
+      restorePath: "/purchase-orders",
+      snapshot: {
+        editingOrderId,
+        supplierType,
+        oneTimeSupplierName,
+        oneTimeSupplierPhone,
+        supplierId,
+        locationId,
+        orderDate,
+        notes,
+        items,
+        includePricing,
+        isSourceSharedStock,
+      },
+    });
+    setIsDialogOpen(false);
+    setFormError(null);
+  }
+
   // Global keydown with Ctrl+Enter save support
   const handleSubmitRef = useRef<(e: React.FormEvent) => Promise<void>>(async () => {});
   useEffect(() => {
@@ -154,7 +194,7 @@ export default function PurchaseOrdersPage() {
         searchInputRef.current?.focus();
       } else if (e.key === "Escape" && isDialogOpen) {
         e.preventDefault();
-        setIsDialogOpen(false);
+        closePoDialog();
       } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && isDialogOpen) {
         e.preventDefault();
         const fakeEv = { preventDefault: () => {} } as React.FormEvent;
@@ -180,6 +220,33 @@ export default function PurchaseOrdersPage() {
   const [includePricing, setIncludePricing] = useState(true);
   const [isSourceSharedStock, setIsSourceSharedStock] = useState(false);
   const [inventory, setInventory] = useState<any[]>([]);
+
+  useDockedDraft("PO", (snap: {
+    editingOrderId: string | null;
+    supplierType: "REGISTERED" | "ONE_TIME";
+    oneTimeSupplierName: string;
+    oneTimeSupplierPhone: string;
+    supplierId: string;
+    locationId: string;
+    orderDate: string;
+    notes: string;
+    items: LineItem[];
+    includePricing: boolean;
+    isSourceSharedStock: boolean;
+  }) => {
+    setEditingOrderId(snap.editingOrderId);
+    setSupplierType(snap.supplierType);
+    setOneTimeSupplierName(snap.oneTimeSupplierName);
+    setOneTimeSupplierPhone(snap.oneTimeSupplierPhone);
+    setSupplierId(snap.supplierId);
+    setLocationId(snap.locationId);
+    setOrderDate(snap.orderDate);
+    setNotes(snap.notes);
+    setItems(snap.items);
+    setIncludePricing(snap.includePricing);
+    setIsSourceSharedStock(snap.isSourceSharedStock);
+    setIsDialogOpen(true);
+  });
 
   const searchParams = useSearchParams();
 
@@ -246,6 +313,7 @@ export default function PurchaseOrdersPage() {
 
       const payload = {
         type: "purchase-order",
+        paperSize: docPaperSize,
         docNumber: activeDocNo,
         date: orderDate,
         partyName,
@@ -268,24 +336,7 @@ export default function PurchaseOrdersPage() {
         }),
       };
 
-      const res = await fetch("/api/pdf/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || "Failed to generate preview PDF");
-      }
-
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const iframe = document.createElement("iframe");
-      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;";
-      iframe.src = objectUrl;
-      document.body.appendChild(iframe);
-      iframe.onload = () => { setTimeout(() => { iframe.contentWindow?.focus(); iframe.contentWindow?.print(); setTimeout(() => { URL.revokeObjectURL(objectUrl); document.body.removeChild(iframe); }, 2000); }, 300); };
+      await printDraftPdf(payload);
     } catch (err: any) {
       await confirm.alert(err.message || "Failed to print PO preview", { variant: "destructive" });
     } finally {
@@ -711,6 +762,7 @@ export default function PurchaseOrdersPage() {
 
       {/* Filter and Search Bar */}
       <div className="flex flex-col sm:flex-row gap-2 items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs">
+        <PrintPaperSizeControl value={docPaperSize} onChange={setDocPaperSize} />
         <div className="relative flex-1 w-full">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <Input
@@ -852,7 +904,7 @@ export default function PurchaseOrdersPage() {
                             className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100"
                             title="Print Purchase Order"
                             onClick={() => {
-                              printDocumentPdf(`/api/pdf/purchase-order/${order.id}`).catch((e) =>
+                              printDocumentPdf(withPaperSizeQuery(`/api/pdf/purchase-order/${order.id}`, docPaperSize)).catch((e) =>
                                 confirm.alert(e.message, { variant: "destructive" })
                               );
                             }}
@@ -905,75 +957,71 @@ export default function PurchaseOrdersPage() {
         </div>
       )}
 
-      {/* New Purchase Order Modal */}
-      {isDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs overflow-y-auto">
-          <div className="w-[96vw] max-w-5xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
-            {/* Quick Navigation Strip */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 text-xs">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold text-slate-500">Quick Jump:</span>
-                <a
-                  href="/sales"
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
-                >
-                  + Sales Invoice
-                </a>
-                <a
-                  href="/purchases"
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
-                >
-                  + Purchase Invoice
-                </a>
-                <a
-                  href="/delivery-orders"
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
-                >
-                  + Delivery Order
-                </a>
-              </div>
-              <span className="text-[11px] text-slate-400 font-mono">Press [Esc] to close</span>
-            </div>
-
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">{editingOrderId ? "Edit Purchase Order" : "New Purchase Order"}</h2>
-                <p className="text-xs text-slate-500">Draft order to send to paper mills or suppliers</p>
-              </div>
-              <div className="flex items-center gap-3">
-                {/* Include Pricing Toggle */}
-                <button
-                  type="button"
-                  onClick={() => setIncludePricing((v) => !v)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all ${
-                    includePricing
-                      ? "bg-emerald-50 border-emerald-300 text-emerald-800"
-                      : "bg-slate-100 border-slate-300 text-slate-600"
-                  }`}
-                  title="Toggle to include or exclude pricing/rates in this purchase order"
-                >
-                  <span className={`inline-block h-3.5 w-3.5 rounded border-2 transition-all flex-shrink-0 ${
-                    includePricing ? "bg-emerald-600 border-emerald-600" : "border-slate-400 bg-white"
-                  }`} />
-                  {includePricing ? "Include Pricing / Rates" : "Qty Only (No Rates)"}
-                </button>
-                <button
-                  onClick={() => setIsDialogOpen(false)}
-                  className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-            </div>
-
-            {formError && (
-              <div className="mt-4 rounded-lg bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+      <DocumentWorkspace
+        open={isDialogOpen}
+        icon={<Layers className="h-4 w-4 text-sky-400" />}
+        title={editingOrderId ? "Edit purchase order" : "New purchase order"}
+        onClose={closePoDialog}
+        onDetach={detachPoDialog}
+        error={formError}
+        toolbar={
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-[11px] font-semibold text-slate-500">Quick jump:</span>
+            <a href="/sales" className="rounded bg-white dark:bg-slate-900 border border-slate-300 px-2 py-0.5 text-[11px] font-medium hover:border-sky-500">
+              + Sales
+            </a>
+            <a href="/purchases" className="rounded bg-white dark:bg-slate-900 border border-slate-300 px-2 py-0.5 text-[11px] font-medium hover:border-sky-500">
+              + PI
+            </a>
+            <a href="/delivery-orders" className="rounded bg-white dark:bg-slate-900 border border-slate-300 px-2 py-0.5 text-[11px] font-medium hover:border-sky-500">
+              + DO
+            </a>
+          </div>
+        }
+        header={
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] text-slate-500">Draft order for mills or suppliers</p>
+            <button
+              type="button"
+              onClick={() => setIncludePricing((v) => !v)}
+              className={`flex items-center gap-2 px-3 py-1 rounded-lg border text-xs font-semibold transition-all ${
+                includePricing
+                  ? "bg-emerald-50 border-emerald-300 text-emerald-800"
+                  : "bg-slate-100 border-slate-300 text-slate-600"
+              }`}
+            >
+              {includePricing ? "Include pricing" : "Qty only"}
+            </button>
+          </div>
+        }
+        footer={
+          <div className="px-4 py-2.5 flex flex-wrap items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handlePreviewPdf}
+              disabled={previewLoading || items.length === 0}
+              className="text-xs border-sky-400 h-8 gap-1.5"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              {previewLoading ? "Printing..." : "Print"}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={closePoDialog} className="text-xs h-8">
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="purchase-order-form"
+              disabled={submitting}
+              className="bg-sky-800 text-white hover:bg-sky-700 text-xs font-semibold h-8"
+            >
+              {submitting ? "Saving..." : editingOrderId ? "Update PO" : "Create PO"}
+            </Button>
+          </div>
+        }
+      >
+            <form id="purchase-order-form" onSubmit={handleSubmit} className="space-y-4 px-1">
               {/* Supplier Type Toggle */}
               <div className="flex items-center gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-md w-fit">
                 <button
@@ -1396,35 +1444,8 @@ export default function PurchaseOrdersPage() {
                 )}
               </div>
 
-              <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-4">
-                <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
-                  Preview official purchase order before submitting
-                </span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handlePreviewPdf}
-                    disabled={previewLoading || items.length === 0}
-                    className="text-xs border-sky-400 text-sky-800 hover:bg-sky-50 dark:hover:bg-sky-950/40 gap-1.5"
-                    title="Preview PO in PDF format"
-                  >
-                    <Eye className="h-3.5 w-3.5 text-sky-700" />
-                    {previewLoading ? "Rendering..." : "Preview PDF"}
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={submitting} className="bg-sky-800 text-white hover:bg-sky-700 text-xs font-semibold">
-                    {submitting ? "Saving..." : editingOrderId ? "Update Purchase Order" : "Create Purchase Order"}
-                  </Button>
-                </div>
-              </div>
             </form>
-          </div>
-        </div>
-      )}
+      </DocumentWorkspace>
 
       {/* PDF modal removed — using browser print dialog */}
     </div>

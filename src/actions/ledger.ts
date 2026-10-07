@@ -8,9 +8,30 @@ import { formatSequenceDisplay } from "@/lib/financial-year";
 import { userError } from "@/lib/errors";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { cleanPartyDisplayName } from "@/lib/party-display";
+import {
+  extractCommercialPaymentLines,
+  specificLedgerLineLabel,
+  isGenericWalkInName,
+  isWalkInSaleInvoiceRow,
+  walkInDisplayLabel,
+  WALK_IN_LEDGER_FILTER_ALL,
+  WALK_IN_LEDGER_LABEL,
+  type CommercialPaymentLine,
+} from "@/lib/ledger-commercial";
+
+async function walkInSaleInvoiceIds(filter: string): Promise<string[]> {
+  const rows = await prisma.saleInvoice.findMany({
+    select: { id: true, walkInName: true, customer: { select: { name: true } } },
+  });
+  if (filter === WALK_IN_LEDGER_FILTER_ALL) {
+    return rows.filter((s) => isWalkInSaleInvoiceRow(s)).map((s) => s.id);
+  }
+  return rows.filter((s) => walkInDisplayLabel(s.walkInName) === filter).map((s) => s.id);
+}
 
 export async function listLedgerEntriesAction(filters?: {
   partyId?: string;
+  walkInCustomer?: string;
   accountType?: AccountType | "ALL";
   referenceType?: string | "ALL";
   partnershipFilter?: "REGULAR" | "PARTNERSHIP" | "ALL";
@@ -30,8 +51,37 @@ export async function listLedgerEntriesAction(filters?: {
 
     const where: Record<string, unknown> = {};
 
-    if (filters?.partyId && filters.partyId !== "ALL") {
-      where.partyId = filters.partyId;
+    if (filters?.walkInCustomer?.trim()) {
+      const walkInIds = await walkInSaleInvoiceIds(filters.walkInCustomer.trim());
+      if (walkInIds.length === 0) {
+        return {
+          entries: [],
+          totalDebit: 0,
+          totalCredit: 0,
+          openingBalance: 0,
+          closingBalance: 0,
+          documentTotals: { sales: {}, purchases: {} },
+          commercialDocuments: { sales: {}, purchases: {} },
+        };
+      }
+      where.referenceType = "SALE_INVOICE";
+      where.referenceId = { in: walkInIds };
+    } else if (filters?.partyId && filters.partyId !== "ALL") {
+      const pid = filters.partyId;
+      const [saleRefs, purchaseRefs] = await Promise.all([
+        prisma.saleInvoice.findMany({ where: { customerId: pid }, select: { id: true } }),
+        prisma.purchaseInvoice.findMany({ where: { supplierId: pid }, select: { id: true } }),
+      ]);
+      const saleIds = saleRefs.map((s) => s.id);
+      const purchaseIds = purchaseRefs.map((p) => p.id);
+      const orClause: Record<string, unknown>[] = [{ partyId: pid }];
+      if (saleIds.length > 0) {
+        orClause.push({ referenceType: "SALE_INVOICE", referenceId: { in: saleIds } });
+      }
+      if (purchaseIds.length > 0) {
+        orClause.push({ referenceType: "PURCHASE_INVOICE", referenceId: { in: purchaseIds } });
+      }
+      where.OR = orClause;
     }
     if (filters?.accountType && filters.accountType !== "ALL") {
       where.accountType = filters.accountType;
@@ -110,9 +160,25 @@ export async function listLedgerEntriesAction(filters?: {
               id: true,
               invoiceNo: true,
               sequenceNo: true,
+              totalAmount: true,
+              amountPaid: true,
+              freightCharges: true,
+              date: true,
+              customerId: true,
+              walkInName: true,
+              customer: { select: { id: true, name: true, type: true } },
+              payments: {
+                select: {
+                  amount: true,
+                  method: true,
+                  splits: { select: { method: true, amount: true } },
+                },
+              },
               items: {
                 select: {
                   quantity: true,
+                  unitPrice: true,
+                  lineTotal: true,
                   product: { select: { productNo: true, name: true, unit: true } },
                 },
               },
@@ -127,9 +193,23 @@ export async function listLedgerEntriesAction(filters?: {
               invoiceNo: true,
               sequenceNo: true,
               isPartnership: true,
+              totalAmount: true,
+              amountPaid: true,
+              freightCharges: true,
+              date: true,
+              supplier: { select: { id: true, name: true, type: true } },
+              payments: {
+                select: {
+                  amount: true,
+                  method: true,
+                  splits: { select: { method: true, amount: true } },
+                },
+              },
               items: {
                 select: {
                   quantity: true,
+                  unitCost: true,
+                  lineTotal: true,
                   product: { select: { productNo: true, name: true, unit: true } },
                 },
               },
@@ -178,61 +258,91 @@ export async function listLedgerEntriesAction(filters?: {
     ]);
 
     const docMap = new Map<string, { voucherType: string; docNo: string }>();
-    const itemsMap = new Map<string, string>();
-    const itemsListMap = new Map<string, Array<{ productNo: string; name: string; quantity: number; unit: string }>>();
     const paymentAllocationsMap = new Map<string, Array<{ amount: number; docNo: string; date?: Date }>>();
+    const documentTotals: {
+      sales: Record<string, { total: number; paid: number }>;
+      purchases: Record<string, { total: number; paid: number }>;
+    } = { sales: {}, purchases: {} };
+
+    type CommercialDocMeta = {
+      date: Date;
+      docNo: string;
+      party: { id: string; name: string; type: string } | null;
+      freight: number;
+      total: number;
+      paid: number;
+      productLines: Array<{ name: string; productNo: string; quantity: number; unit: string; lineTotal: number }>;
+      paymentLines: CommercialPaymentLine[];
+    };
+    const commercialDocuments: {
+      sales: Record<string, CommercialDocMeta>;
+      purchases: Record<string, CommercialDocMeta>;
+    } = { sales: {}, purchases: {} };
 
     for (const s of saleInvoices) {
+      documentTotals.sales[s.id] = {
+        total: Number(s.totalAmount),
+        paid: Number(s.amountPaid ?? 0),
+      };
       docMap.set(s.id, {
         voucherType: "Estimate",
         docNo: `#${formatSequenceDisplay(s.sequenceNo, s.invoiceNo)}`,
       });
-      if (s.items && s.items.length > 0) {
-        itemsListMap.set(
-          s.id,
-          s.items.map((i) => ({
-            productNo: i.product.productNo,
-            name: i.product.name,
-            quantity: Number(i.quantity),
-            unit: i.product.unit || "pkts",
-          }))
-        );
-        itemsMap.set(
-          s.id,
-          s.items
-            .map(
-              (i) =>
-                `[${i.product.productNo}] ${i.product.name} (${Number(i.quantity)} ${i.product.unit || "pkts"})`
-            )
-            .join(", ")
-        );
-      }
+      commercialDocuments.sales[s.id] = {
+        date: s.date,
+        docNo: `#${formatSequenceDisplay(s.sequenceNo, s.invoiceNo)}`,
+        party: s.customer
+          ? {
+              id: s.customer.id,
+              name:
+                s.walkInName?.trim() && !isGenericWalkInName(s.walkInName)
+                  ? s.walkInName.trim()
+                  : walkInDisplayLabel(s.walkInName) === WALK_IN_LEDGER_LABEL
+                    ? WALK_IN_LEDGER_LABEL
+                    : cleanPartyDisplayName(s.customer.name),
+              type: s.customer.type,
+            }
+          : null,
+        freight: Number(s.freightCharges ?? 0),
+        total: Number(s.totalAmount),
+        paid: Number(s.amountPaid ?? 0),
+        productLines: (s.items || []).map((i) => ({
+          productNo: i.product.productNo,
+          name: i.product.name,
+          quantity: Number(i.quantity),
+          unit: i.product.unit || "pkts",
+          lineTotal: Number(i.lineTotal ?? Number(i.quantity) * Number(i.unitPrice ?? 0)),
+        })),
+        paymentLines: extractCommercialPaymentLines(s.payments, Number(s.amountPaid ?? 0)),
+      };
     }
     for (const p of purchaseInvoices) {
+      documentTotals.purchases[p.id] = {
+        total: Number(p.totalAmount),
+        paid: Number(p.amountPaid ?? 0),
+      };
       docMap.set(p.id, {
         voucherType: p.isPartnership ? "Partnership Intake" : "Purchase",
         docNo: `#${formatSequenceDisplay(p.sequenceNo, p.invoiceNo)}`,
       });
-      if (p.items && p.items.length > 0) {
-        itemsListMap.set(
-          p.id,
-          p.items.map((i) => ({
-            productNo: i.product.productNo,
-            name: i.product.name,
-            quantity: Number(i.quantity),
-            unit: i.product.unit || "pkts",
-          }))
-        );
-        itemsMap.set(
-          p.id,
-          p.items
-            .map(
-              (i) =>
-                `[${i.product.productNo}] ${i.product.name} (${Number(i.quantity)} ${i.product.unit || "pkts"})`
-            )
-            .join(", ")
-        );
-      }
+      commercialDocuments.purchases[p.id] = {
+        date: p.date,
+        docNo: `#${formatSequenceDisplay(p.sequenceNo, p.invoiceNo)}`,
+        party: p.supplier
+          ? { id: p.supplier.id, name: cleanPartyDisplayName(p.supplier.name), type: p.supplier.type }
+          : null,
+        freight: Number(p.freightCharges ?? 0),
+        total: Number(p.totalAmount),
+        paid: Number(p.amountPaid ?? 0),
+        productLines: (p.items || []).map((i) => ({
+          productNo: i.product.productNo,
+          name: i.product.name,
+          quantity: Number(i.quantity),
+          unit: i.product.unit || "pkts",
+          lineTotal: Number(i.lineTotal ?? Number(i.quantity) * Number(i.unitCost ?? 0)),
+        })),
+        paymentLines: extractCommercialPaymentLines(p.payments, Number(p.amountPaid ?? 0)),
+      };
     }
     for (const pay of payments) {
       const isOut = pay.direction === "OUT";
@@ -307,15 +417,7 @@ export async function listLedgerEntriesAction(filters?: {
         docNo: e.referenceId.length > 10 ? `#${e.referenceId.slice(-6)}` : e.referenceId,
       };
 
-      let description = e.description || "";
-      if (
-        (e.referenceType === "SALE_INVOICE" || e.referenceType === "PURCHASE_INVOICE") &&
-        !description.includes("[") &&
-        itemsMap.has(e.referenceId)
-      ) {
-        const itemSummary = itemsMap.get(e.referenceId)!;
-        description = description ? `${description} • ${itemSummary}` : itemSummary;
-      }
+      const description = e.description || "";
 
       // Generate clean document label
       let docLabel = "";
@@ -342,11 +444,8 @@ export async function listLedgerEntriesAction(filters?: {
         docLabel = `${docInfo.voucherType} ${docInfo.docNo}`;
       }
 
-      // Clean up description boilerplate
-      let cleanDesc = (e.description || "")
-        .replace(/^(?:Payable to|Receivable from)\s+(?:vendor|supplier|customer)\s+.+?\s+for\s+/i, "")
-        .replace(/^Payment (?:to|from)\s+.+?\s+[—–-]\s*/i, "")
-        .trim();
+      const lineAmount = debit > 0 ? debit : credit;
+      const cleanDesc = specificLedgerLineLabel(e.description || "", lineAmount);
 
       return {
         ...e,
@@ -356,7 +455,7 @@ export async function listLedgerEntriesAction(filters?: {
         description,
         cleanDescription: cleanDesc,
         docLabel,
-        lineItems: itemsListMap.get(e.referenceId) || [],
+        lineItems: [],
         debit,
         credit,
         runningBalance: currentBalance,
@@ -379,6 +478,8 @@ export async function listLedgerEntriesAction(filters?: {
       totalCredit,
       openingBalance,
       closingBalance,
+      documentTotals,
+      commercialDocuments,
     };
   });
 }

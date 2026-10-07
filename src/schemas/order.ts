@@ -56,6 +56,7 @@ export const deliveryOrderSchema = z
     customerId: z.string().optional().nullable().or(z.literal("")),
     locationId: z.string().optional().nullable().or(z.literal("")),
     destinationLocationId: z.string().optional().nullable().or(z.literal("")),
+    destinationWarehouseLotId: z.string().optional().nullable().or(z.literal("")),
     saleInvoiceId: z.string().optional().nullable(),
     date: z.coerce.date(),
     status: z.nativeEnum(DeliveryOrderStatus).default(DeliveryOrderStatus.DISPATCHED),

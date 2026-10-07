@@ -23,6 +23,19 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FormalFinancialStatement } from "@/components/financial/FormalFinancialStatement";
+import {
+  PrintPaperSizeControl,
+  PrintPaperSizeStyle,
+  type PrintPaperSize,
+} from "@/components/print/PrintPaperSizeControl";
+import { withPaperSizeQuery } from "@/components/ui/print-with-paper-size";
+import {
+  buildBalanceSheetStatementRows,
+  buildCashFlowStatementRows,
+  buildProfitLossStatementRows,
+} from "@/lib/financial-statement-rows";
+import { getSettingsAction } from "@/actions/settings";
 import {
   getProfitLossAction,
   getBalanceSheetAction,
@@ -43,6 +56,8 @@ type ProfitLossData = {
   salesReturns?: number;
   grossPurchases?: number;
   purchaseReturns?: number;
+  cogs?: number;
+  directCosts?: number;
   grossMarginPct?: number;
   netMarginPct?: number;
   expenseBreakdown?: Array<{ name: string; amount: number }>;
@@ -263,13 +278,26 @@ export default function ReportsPage() {
   }
 
   const [loading, setLoading] = useState(false);
+  const [businessName, setBusinessName] = useState("Paper Trade Co.");
+  const [reportPaperSize, setReportPaperSize] = useState<PrintPaperSize>("A4");
+
+  function formatPeriodLabel(start: string, end: string) {
+    if (start && end) return `For the period ${start} to ${end}`;
+    if (start) return `From ${start}`;
+    if (end) return `Up to ${end}`;
+    return "All dates";
+  }
 
   useEffect(() => {
     async function loadLookups() {
-      const [partyRes, prodRes] = await Promise.all([
+      const [partyRes, prodRes, settingsRes] = await Promise.all([
         listPartiesAction(),
         listProductsAction(),
+        getSettingsAction(),
       ]);
+      if (settingsRes.success && settingsRes.data?.businessName) {
+        setBusinessName(settingsRes.data.businessName);
+      }
       if (partyRes.success && partyRes.data) {
         const partyList = partyRes.data as Array<{ id: string; name: string; type: string }>;
         setParties(partyList);
@@ -354,11 +382,12 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-3">
-      {/* Printable Black & White Header (Only visible when printing) */}
-      <div className="hidden print:block mb-4 border-b-2 border-black pb-2 text-black">
+      <PrintPaperSizeStyle paperSize={reportPaperSize} />
+      {/* Legacy print header — formal statements include their own letterhead */}
+      <div className="hidden print:hidden mb-4 border-b-2 border-black pb-2 text-black">
         <div className="flex justify-between items-start">
           <div>
-            <h1 className="text-xl font-bold uppercase tracking-tight">Paper Trade Management</h1>
+            <h1 className="text-xl font-bold uppercase tracking-tight">{businessName}</h1>
             <p className="text-xs font-semibold uppercase">
               {tab === "PL" && "Income Statement (Profit & Loss)"}
               {tab === "CASH" && "Cash Flow Statement"}
@@ -491,6 +520,7 @@ export default function ReportsPage() {
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                <PrintPaperSizeControl value={reportPaperSize} onChange={setReportPaperSize} />
                 <Button onClick={fetchPL} size="sm" variant="outline" className="text-xs">
                   Recalculate
                 </Button>
@@ -501,6 +531,18 @@ export default function ReportsPage() {
                   >
                     <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-emerald-700" />
                     Download Excel
+                  </a>
+                </Button>
+                <Button asChild size="sm" variant="outline" className="text-xs">
+                  <a
+                    href={withPaperSizeQuery(
+                      `/api/pdf/reports/profit-loss?${plStart ? `startDate=${plStart}&` : ""}${plEnd ? `endDate=${plEnd}` : ""}`,
+                      reportPaperSize,
+                    )}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    PDF
                   </a>
                 </Button>
                 <Button
@@ -518,155 +560,18 @@ export default function ReportsPage() {
 
           {plData && (
             <div className="space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <Card className="border-emerald-900/15 bg-white">
-                  <CardContent className="p-4">
-                    <p className="text-xs font-semibold text-emerald-800 uppercase tracking-wider">Trading Revenue (Sales)</p>
-                    <p className="text-2xl font-bold text-slate-900 mt-1">PKR {plData.sales.toLocaleString()}</p>
-                  </CardContent>
-                </Card>
-
-                <Card className="border-amber-900/15 bg-white">
-                  <CardContent className="p-4">
-                    <p className="text-xs font-semibold text-amber-800 uppercase tracking-wider">Cost of Purchases</p>
-                    <p className="text-2xl font-bold text-slate-900 mt-1">PKR {plData.purchases.toLocaleString()}</p>
-                  </CardContent>
-                </Card>
-
-                <Card className="border-slate-200 bg-white">
-                  <CardContent className="p-4">
-                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Operating & Storage Expenses</p>
-                    <p className="text-2xl font-bold text-slate-900 mt-1">PKR {plData.expenses.toLocaleString()}</p>
-                  </CardContent>
-                </Card>
-
-                <Card className={`border-2 ${plData.netProfit >= 0 ? "border-emerald-500 bg-emerald-50/50" : "border-rose-500 bg-rose-50/50"}`}>
-                  <CardContent className="p-4">
-                    <p className={`text-xs font-bold uppercase tracking-wider ${plData.netProfit >= 0 ? "text-emerald-800" : "text-rose-800"}`}>
-                      Net {plData.netProfit >= 0 ? "Profit" : "Loss"}
-                    </p>
-                    <p className={`text-2xl font-extrabold mt-1 ${plData.netProfit >= 0 ? "text-emerald-900" : "text-rose-900"}`}>
-                      PKR {plData.netProfit.toLocaleString()}
-                    </p>
-                  </CardContent>
-                </Card>
+              <div className="financial-statement-print">
+                <FormalFinancialStatement
+                  businessName={businessName}
+                  title="Income Statement"
+                  periodLabel={formatPeriodLabel(plStart, plEnd)}
+                  rows={buildProfitLossStatementRows(plData)}
+                  footerNote="Amounts in PKR. Accrual basis per ledger and invoice records."
+                />
               </div>
 
-              {/* Statement Breakdown */}
-              <Card className="border-slate-200 bg-white">
-                <CardHeader className="pb-3 border-b border-slate-100 flex flex-row items-center justify-between">
-                  <div>
-                    <CardTitle className="text-base font-bold">Income Statement (Profit & Loss)</CardTitle>
-                    <CardDescription className="text-xs">Formal accrual basis summary of revenue and costs</CardDescription>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button asChild variant="outline" size="sm" className="h-8 text-xs border-slate-200">
-                      <a
-                        href={`/api/excel/reports/profit-loss?${plStart ? `startDate=${plStart}&` : ""}${plEnd ? `endDate=${plEnd}` : ""}`}
-                        download
-                      >
-                        <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-emerald-700" />
-                        Excel
-                      </a>
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => window.print()}
-                      className="h-8 text-xs border-slate-200 gap-1.5"
-                    >
-                      <Printer className="h-3.5 w-3.5 text-slate-600" />
-                      Print
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="divide-y divide-slate-100 text-sm">
-                    {/* Sales Section */}
-                    {plData.grossSales !== undefined && plData.salesReturns !== undefined && plData.salesReturns > 0 ? (
-                      <>
-                        <div className="p-3 flex justify-between text-xs text-slate-600">
-                          <span>Gross Trading Sales</span>
-                          <span>PKR {plData.grossSales.toLocaleString()}</span>
-                        </div>
-                        <div className="p-3 flex justify-between text-xs text-rose-700 bg-rose-50/30">
-                          <span>Less: Sales Returns & Credit Notes</span>
-                          <span>(PKR {plData.salesReturns.toLocaleString()})</span>
-                        </div>
-                      </>
-                    ) : null}
-                    <div className="p-3.5 flex justify-between bg-slate-50/70 font-semibold text-slate-800">
-                      <span>Net Sales Revenue</span>
-                      <span className="font-bold text-slate-900">PKR {plData.sales.toLocaleString()}</span>
-                    </div>
-
-                    {/* Purchases Section */}
-                    {plData.grossPurchases !== undefined && plData.purchaseReturns !== undefined && plData.purchaseReturns > 0 ? (
-                      <>
-                        <div className="p-3 flex justify-between text-xs text-slate-600">
-                          <span>Gross Mill Purchases</span>
-                          <span>(PKR {plData.grossPurchases.toLocaleString()})</span>
-                        </div>
-                        <div className="p-3 flex justify-between text-xs text-emerald-700 bg-emerald-50/30">
-                          <span>Less: Purchase Returns & Debit Notes</span>
-                          <span>+ PKR {plData.purchaseReturns.toLocaleString()}</span>
-                        </div>
-                      </>
-                    ) : null}
-                    <div className="p-3.5 flex justify-between bg-slate-50/50 text-slate-700">
-                      <span>Net Cost of Purchased Stock (COGS)</span>
-                      <span className="font-semibold">(PKR {plData.purchases.toLocaleString()})</span>
-                    </div>
-
-                    {/* Gross Margin */}
-                    <div className="p-3.5 flex justify-between font-bold bg-amber-50/50 text-amber-950">
-                      <div className="flex items-center gap-2">
-                        <span>Gross Trading Margin</span>
-                        {plData.grossMarginPct !== undefined && (
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">
-                            {plData.grossMarginPct}% Margin
-                          </span>
-                        )}
-                      </div>
-                      <span>PKR {plData.grossProfit.toLocaleString()}</span>
-                    </div>
-
-                    {/* Operating Expenses */}
-                    {plData.expenseBreakdown && plData.expenseBreakdown.length > 0 ? (
-                      plData.expenseBreakdown.map((exp) => (
-                        <div key={exp.name} className="p-3 flex justify-between text-xs text-slate-600 pl-6">
-                          <span>Less: {exp.name}</span>
-                          <span>(PKR {exp.amount.toLocaleString()})</span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="p-3.5 flex justify-between bg-slate-50/50 text-slate-600">
-                        <span>Less: Operating & Storage Expenses</span>
-                        <span>(PKR {plData.expenses.toLocaleString()})</span>
-                      </div>
-                    )}
-
-                    {/* Net Income */}
-                    <div className="p-4 flex justify-between text-base font-bold bg-emerald-50/60 text-emerald-950 border-t border-emerald-200">
-                      <div className="flex items-center gap-2">
-                        <span>Net Operating Income (Profit)</span>
-                        {plData.netMarginPct !== undefined && (
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${plData.netProfit >= 0 ? "bg-emerald-100 text-emerald-900" : "bg-rose-100 text-rose-900"}`}>
-                            {plData.netMarginPct}% Net Margin
-                          </span>
-                        )}
-                      </div>
-                      <span className={plData.netProfit >= 0 ? "text-emerald-900" : "text-rose-900"}>
-                        PKR {plData.netProfit.toLocaleString()}
-                      </span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
               {/* Detailed Transaction Breakdown (Sales, Purchases, Expenses) with Party ID & Reference ID */}
-              <Card className="border-slate-200 bg-white">
+              <Card className="border-slate-200 bg-white print:hidden">
                 <CardHeader className="pb-3 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <CardTitle className="text-sm font-bold">Transaction Audit Breakdown</CardTitle>
@@ -880,6 +785,7 @@ export default function ReportsPage() {
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                <PrintPaperSizeControl value={reportPaperSize} onChange={setReportPaperSize} />
                 <Button onClick={fetchCashFlow} size="sm" variant="outline" className="text-xs">
                   Recalculate
                 </Button>
@@ -890,6 +796,18 @@ export default function ReportsPage() {
                   >
                     <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-teal-700" />
                     Download Excel
+                  </a>
+                </Button>
+                <Button asChild size="sm" variant="outline" className="text-xs">
+                  <a
+                    href={withPaperSizeQuery(
+                      `/api/pdf/reports/cash-flow?${cfStart ? `startDate=${cfStart}&` : ""}${cfEnd ? `endDate=${cfEnd}` : ""}`,
+                      reportPaperSize,
+                    )}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    PDF
                   </a>
                 </Button>
                 <Button
@@ -907,46 +825,18 @@ export default function ReportsPage() {
 
           {cfData && (
             <div className="space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <Card className="border-emerald-900/15 bg-white">
-                  <CardContent className="p-4">
-                    <p className="text-xs font-semibold text-emerald-800 uppercase tracking-wider">Total Cash Inflow</p>
-                    <p className="text-2xl font-bold text-emerald-900 mt-1">PKR {cfData.cashInflow.toLocaleString()}</p>
-                    <p className="text-[11px] text-slate-500 mt-1">Customer payments & receipts</p>
-                  </CardContent>
-                </Card>
-
-                <Card className="border-amber-900/15 bg-white">
-                  <CardContent className="p-4">
-                    <p className="text-xs font-semibold text-amber-800 uppercase tracking-wider">Total Cash Outflow</p>
-                    <p className="text-2xl font-bold text-amber-900 mt-1">PKR {cfData.cashOutflow.toLocaleString()}</p>
-                    <p className="text-[11px] text-slate-500 mt-1">Supplier & operational payments</p>
-                  </CardContent>
-                </Card>
-
-                <Card className={`border-2 ${cfData.netCashFlow >= 0 ? "border-emerald-500 bg-emerald-50/50" : "border-rose-500 bg-rose-50/50"}`}>
-                  <CardContent className="p-4">
-                    <p className={`text-xs font-bold uppercase tracking-wider ${cfData.netCashFlow >= 0 ? "text-emerald-800" : "text-rose-800"}`}>
-                      Net Cash Flow
-                    </p>
-                    <p className={`text-2xl font-extrabold mt-1 ${cfData.netCashFlow >= 0 ? "text-emerald-900" : "text-rose-900"}`}>
-                      PKR {cfData.netCashFlow.toLocaleString()}
-                    </p>
-                    <p className="text-[11px] text-slate-600 mt-1">Period liquidity change</p>
-                  </CardContent>
-                </Card>
-
-                <Card className="border-slate-200 bg-white">
-                  <CardContent className="p-4">
-                    <p className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Current Liquid Balance</p>
-                    <p className="text-2xl font-bold text-slate-900 mt-1">PKR {cfData.endingBalance.toLocaleString()}</p>
-                    <p className="text-[11px] text-slate-500 mt-1">Cash on hand & in bank</p>
-                  </CardContent>
-                </Card>
+              <div className="financial-statement-print">
+                <FormalFinancialStatement
+                  businessName={businessName}
+                  title="Statement of Cash Flows"
+                  periodLabel={formatPeriodLabel(cfStart, cfEnd)}
+                  rows={buildCashFlowStatementRows(cfData)}
+                  footerNote="Amounts in PKR. Derived from cash and bank ledger activity."
+                />
               </div>
 
               {/* Cash Movement Ledger */}
-              <Card className="border-slate-200 bg-white">
+              <Card className="border-slate-200 bg-white print:hidden">
                 <CardHeader className="pb-3 border-b border-slate-100 flex flex-row items-center justify-between">
                   <div>
                     <CardTitle className="text-base font-bold">Cash Flow Audit Trail</CardTitle>
@@ -1062,6 +952,7 @@ export default function ReportsPage() {
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <PrintPaperSizeControl value={reportPaperSize} onChange={setReportPaperSize} />
                 <Button onClick={fetchBS} size="sm" variant="outline" className="text-xs">
                   Recalculate
                 </Button>
@@ -1072,6 +963,18 @@ export default function ReportsPage() {
                   >
                     <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5 text-amber-700" />
                     Download Excel
+                  </a>
+                </Button>
+                <Button asChild size="sm" variant="outline" className="text-xs">
+                  <a
+                    href={withPaperSizeQuery(
+                      `/api/pdf/reports/balance-sheet?${bsDate ? `asOfDate=${bsDate}` : ""}`,
+                      reportPaperSize,
+                    )}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    PDF
                   </a>
                 </Button>
                 <Button
@@ -1089,85 +992,22 @@ export default function ReportsPage() {
 
           {bsData && (
             <div className="space-y-6">
-              <div className="grid gap-6 md:grid-cols-2">
-                {/* Assets Column */}
-              <Card className="border-emerald-900/15 bg-white">
-                <CardHeader className="border-b border-slate-100 pb-3">
-                  <div className="flex justify-between items-center">
-                    <CardTitle className="text-base font-bold text-emerald-900">Current Assets</CardTitle>
-                    <span className="text-xs font-bold text-emerald-800">
-                      PKR {bsData.assets.totalAssets.toLocaleString()}
-                    </span>
-                  </div>
-                </CardHeader>
-                <CardContent className="p-0 divide-y divide-slate-100 text-xs">
-                  <div className="p-3.5 flex justify-between">
-                    <div>
-                      <p className="font-semibold text-slate-900">Cash & Bank Balances</p>
-                      <p className="text-[10px] text-slate-500">Liquid operational funds</p>
-                    </div>
-                    <span className="font-bold text-slate-800">PKR {bsData.assets.cash.toLocaleString()}</span>
-                  </div>
-                  <div className="p-3.5 flex justify-between">
-                    <div>
-                      <p className="font-semibold text-slate-900">Accounts Receivable</p>
-                      <p className="text-[10px] text-slate-500">Outstanding credit sales from customers</p>
-                    </div>
-                    <span className="font-bold text-slate-800">PKR {bsData.assets.receivables.toLocaleString()}</span>
-                  </div>
-                  <div className="p-3.5 flex justify-between">
-                    <div>
-                      <p className="font-semibold text-slate-900">Physical Paper Inventory</p>
-                      <p className="text-[10px] text-slate-500">Stock on hand @ cost valuation</p>
-                    </div>
-                    <span className="font-bold text-slate-800">PKR {bsData.assets.inventory.toLocaleString()}</span>
-                  </div>
-                  <div className="p-3.5 flex justify-between font-bold bg-emerald-50 text-emerald-950 text-sm">
-                    <span>Total Assets</span>
-                    <span>PKR {bsData.assets.totalAssets.toLocaleString()}</span>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Liabilities & Equity */}
-              <Card className="border-amber-900/15 bg-white">
-                <CardHeader className="border-b border-slate-100 pb-3">
-                  <div className="flex justify-between items-center">
-                    <CardTitle className="text-base font-bold text-amber-900">Liabilities & Net Equity</CardTitle>
-                    <span className="text-xs font-bold text-amber-800">
-                      PKR {(bsData.liabilities.totalLiabilities + bsData.equity).toLocaleString()}
-                    </span>
-                  </div>
-                </CardHeader>
-                <CardContent className="p-0 divide-y divide-slate-100 text-xs">
-                  <div className="p-3.5 flex justify-between">
-                    <div>
-                      <p className="font-semibold text-slate-900">Accounts Payable</p>
-                      <p className="text-[10px] text-slate-500">Owed to paper mills / suppliers</p>
-                    </div>
-                    <span className="font-bold text-slate-800">PKR {bsData.liabilities.payables.toLocaleString()}</span>
-                  </div>
-                  <div className="p-3.5 flex justify-between font-bold bg-amber-50/50 text-amber-950">
-                    <span>Total Liabilities</span>
-                    <span>PKR {bsData.liabilities.totalLiabilities.toLocaleString()}</span>
-                  </div>
-                  <div className="p-3.5 flex justify-between">
-                    <div>
-                      <p className="font-semibold text-slate-900">Owner&apos;s Equity & Retained Capital</p>
-                      <p className="text-[10px] text-slate-500">Cumulative business net worth</p>
-                    </div>
-                    <span className="font-bold text-emerald-800">PKR {bsData.equity.toLocaleString()}</span>
-                  </div>
-                  <div className="p-3.5 flex justify-between font-bold bg-slate-50 text-slate-900 text-sm">
-                    <span>Total Liabilities & Equity</span>
-                    <span>PKR {(bsData.liabilities.totalLiabilities + bsData.equity).toLocaleString()}</span>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+              <div className="financial-statement-print">
+                <FormalFinancialStatement
+                  businessName={businessName}
+                  title="Balance Sheet"
+                  periodLabel={`As of ${bsDate || bsData.asOf}`}
+                  rows={buildBalanceSheetStatementRows(bsData)}
+                  footerNote={
+                    bsData.isBalanced === false
+                      ? "Warning: assets do not equal liabilities plus equity."
+                      : "Amounts in PKR. Inventory at cost; receivables and payables per open balances."
+                  }
+                />
+              </div>
 
               {/* Receivables & Payables Detailed Party Schedules with Party ID & Reference ID */}
-              <div className="grid gap-6 md:grid-cols-2">
+              <div className="grid gap-6 md:grid-cols-2 print:hidden">
                 {/* Receivables Schedule */}
                 <Card className="border-slate-200 bg-white">
                   <CardHeader className="border-b border-slate-100 pb-3">

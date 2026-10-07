@@ -231,7 +231,9 @@ export function CreatePartnershipLotModal({
             </div>
 
             <div>
-              <Label className="text-xs font-semibold">Warehouse Location</Label>
+              <Label className="text-xs font-semibold">
+                Existing warehouse <span className="text-slate-500 font-normal">(where this stock already sits)</span>
+              </Label>
               <select
                 value={warehouseId}
                 onChange={(e) => setWarehouseId(e.target.value)}

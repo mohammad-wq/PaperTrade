@@ -80,6 +80,7 @@ export async function GET(
   const productId = getCleanParam(searchParams.get("productId"));
   const accountType = getCleanParam(searchParams.get("accountType"));
   const referenceType = getCleanParam(searchParams.get("referenceType"));
+  const paperSize = searchParams.get("paperSize") === "A5" ? "A5" : "A4";
 
   // Input validation with clear error messages instead of 500
   if (startDate && isNaN(new Date(startDate).getTime())) {
@@ -125,6 +126,7 @@ export async function GET(
 
       filename = `Income-Statement-${startDate || "all"}-to-${endDate || "present"}.pdf`;
       docElement = React.createElement(ProfitLossPdfView, {
+        paperSize,
         period,
         sales: data.sales,
         purchases: data.purchases,
@@ -164,6 +166,7 @@ export async function GET(
 
       filename = `Cash-Flow-${startDate || "all"}-to-${endDate || "present"}.pdf`;
       docElement = React.createElement(CashFlowPdfView, {
+        paperSize,
         period,
         cashInflow: data.cashInflow,
         cashOutflow: data.cashOutflow,
@@ -181,6 +184,7 @@ export async function GET(
       const formattedAsOf = safeFormatDate(data.asOf) || format(new Date(), "dd/MM/yyyy");
       filename = `Balance-Sheet-${asOfDate || "latest"}.pdf`;
       docElement = React.createElement(BalanceSheetPdfView, {
+        paperSize,
         asOfDate: formattedAsOf,
         assets: data.assets,
         liabilities: data.liabilities,
@@ -493,6 +497,7 @@ export async function GET(
 
       filename = `General-Ledger-${startDate || "all"}-to-${endDate || "present"}.pdf`;
       const pdfBuffer = await renderGeneralLedgerPdfKit({
+        pageSize: paperSize,
         companyName: process.env.BUSINESS_NAME || "PAPER TRADE CO.",
         companyAddress: process.env.BUSINESS_ADDRESS || "Wholesale Paper Market, Station Road",
         companyPhone: process.env.BUSINESS_PHONE || "+92-300-1234567",

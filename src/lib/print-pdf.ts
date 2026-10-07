@@ -1,19 +1,7 @@
 /**
- * Replaces the unreliable PDF viewer (new tab approach) with browser print dialog.
- * Fetches the PDF from the API, creates a blob URL, loads it in a hidden iframe, and triggers print.
- * If iframe printing is blocked or restricted, gracefully falls back to opening the generated PDF.
+ * Opens the system print dialog for a PDF blob. Falls back to a new tab only if print is blocked.
  */
-export async function printDocumentPdf(url: string): Promise<void> {
-  // Remove any ?download=true since we are printing, not downloading
-  const printUrl = url.replace(/[?&]download=true/g, "").replace(/&&/g, "&").replace(/\?&/, "?");
-
-  const res = await fetch(printUrl, { credentials: "include" });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to load document (${res.status})`);
-  }
-
-  const blob = await res.blob();
+export async function printPdfBlob(blob: Blob): Promise<void> {
   const objectUrl = URL.createObjectURL(blob);
 
   try {
@@ -28,7 +16,9 @@ export async function printDocumentPdf(url: string): Promise<void> {
         if (!printed) {
           try {
             window.open(objectUrl, "_blank");
-          } catch {}
+          } catch {
+            /* ignore */
+          }
           resolve();
         }
       }, 3000);
@@ -52,13 +42,48 @@ export async function printDocumentPdf(url: string): Promise<void> {
             URL.revokeObjectURL(objectUrl);
             try {
               document.body.removeChild(iframe);
-            } catch {}
+            } catch {
+              /* ignore */
+            }
             resolve();
           }, 2500);
         }, 300);
       };
     });
-  } catch (err) {
+  } catch {
     window.open(objectUrl, "_blank");
   }
 }
+
+/**
+ * Replaces the unreliable PDF viewer (new tab approach) with browser print dialog.
+ * Fetches the PDF from the API, creates a blob URL, loads it in a hidden iframe, and triggers print.
+ * If iframe printing is blocked or restricted, gracefully falls back to opening the generated PDF.
+ */
+export async function printDocumentPdf(url: string): Promise<void> {
+  const printUrl = url.replace(/[?&]download=true/g, "").replace(/&&/g, "&").replace(/\?&/, "?");
+
+  const res = await fetch(printUrl, { credentials: "include" });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to load document (${res.status})`);
+  }
+
+  await printPdfBlob(await res.blob());
+}
+
+/** Draft documents: POST /api/pdf/preview then print immediately (no in-app preview). */
+export async function printDraftPdf(payload: object): Promise<void> {
+  const res = await fetch("/api/pdf/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || "Failed to generate document PDF");
+  }
+  await printPdfBlob(await res.blob());
+}
+

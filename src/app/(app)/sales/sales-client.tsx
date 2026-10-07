@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import {
   Receipt,
@@ -38,12 +38,14 @@ import {
   updateSaleInvoiceAction,
   deleteSaleInvoiceAction,
 } from "@/actions/invoices";
-import { printDocumentPdf } from "@/lib/print-pdf";
+import { printDocumentPdf, printDraftPdf } from "@/lib/print-pdf";
+import { PrintPaperSizeControl, type PrintPaperSize } from "@/components/print/PrintPaperSizeControl";
+import { withPaperSizeQuery } from "@/components/ui/print-with-paper-size";
 import { listPartiesAction, listInventoryAction } from "@/actions/parties";
 import { listProductsAction } from "@/actions/products";
 import { listLocationsAction } from "@/actions/locations";
 import { listWarehouseLotsAction } from "@/actions/warehouse-lots";
-import { listSaleOwnershipBucketsAction } from "@/actions/inventory";
+import { listSaleOwnershipBucketsAction, assignUnassignedStockToLotAction } from "@/actions/inventory";
 import { format } from "date-fns";
 import { formatDateTime, getLocalDateTimeInputValue } from "@/lib/utils";
 import { formatSequenceDisplay } from "@/lib/financial-year";
@@ -53,6 +55,9 @@ import { useConfirm } from "@/components/providers/confirm-provider";
 import { useSession } from "next-auth/react";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { cleanPartyDisplayName } from "@/lib/party-display";
+import { DocumentWorkspace } from "@/components/documents/DocumentWorkspace";
+import { useDockedDraft } from "@/components/documents/DocumentWorkspaceDock";
+import { useDocumentWorkspaceStore } from "@/lib/document-workspace-store";
 
 type WarehouseLotOption = {
   id: string;
@@ -158,9 +163,115 @@ type CommittedLineItem = {
   ownershipType?: string | null;
   ownershipKey?: string | null;
   ownershipLabel?: string | null;
+  splits?: Array<{
+    ownershipKey: string;
+    ownershipType: string;
+    partnershipLotId: string | null;
+    quantity: number;
+    avgCost: number;
+    label: string;
+  }>;
   packetWeight?: number;
   reamWeight?: number;
+  sourceBuckets?: OwnershipBucketOption[];
 };
+
+function sortOwnershipBuckets(buckets: OwnershipBucketOption[]) {
+  return [...buckets].sort((a, b) => {
+    const rank = (key: string) => (key === "OWN" ? 0 : 1);
+    const byOwn = rank(a.ownershipKey) - rank(b.ownershipKey);
+    if (byOwn !== 0) return byOwn;
+    return a.label.localeCompare(b.label, undefined, { numeric: true });
+  });
+}
+
+function filterBucketsForSource(
+  buckets: OwnershipBucketOption[],
+  source: CommittedLineItem["stockSource"],
+) {
+  if (source === "REGULAR_ONLY") return buckets.filter((b) => b.ownershipKey === "OWN");
+  if (source === "PARTNER_ONLY") return buckets.filter((b) => b.ownershipKey !== "OWN");
+  return buckets;
+}
+
+function allocateOwnershipSplits(
+  buckets: OwnershipBucketOption[],
+  quantity: number,
+  source: CommittedLineItem["stockSource"],
+  explicitKey?: string | null,
+): { splits: NonNullable<CommittedLineItem["splits"]> } | { error: string } {
+  const pool = sortOwnershipBuckets(filterBucketsForSource(buckets, source));
+  if (explicitKey) {
+    const bucket = pool.find((b) => b.ownershipKey === explicitKey);
+    if (!bucket) return { error: "Selected ownership bucket is not available at this location." };
+    if (quantity > bucket.quantity + 0.0001) {
+      return {
+        error: `Only ${bucket.quantity} in ${bucket.label}. Leave the bucket blank to sell across lots.`,
+      };
+    }
+    return {
+      splits: [
+        {
+          ownershipKey: bucket.ownershipKey,
+          ownershipType: bucket.ownershipType,
+          partnershipLotId: bucket.partnershipLotId || null,
+          quantity,
+          avgCost: bucket.avgCost,
+          label: bucket.label,
+        },
+      ],
+    };
+  }
+  const splits: NonNullable<CommittedLineItem["splits"]> = [];
+  let left = quantity;
+  for (const bucket of pool) {
+    if (left <= 0.0001) break;
+    const take = Math.min(left, bucket.quantity);
+    if (take <= 0) continue;
+    splits.push({
+      ownershipKey: bucket.ownershipKey,
+      ownershipType: bucket.ownershipType,
+      partnershipLotId: bucket.partnershipLotId || null,
+      quantity: take,
+      avgCost: bucket.avgCost,
+      label: bucket.label,
+    });
+    left -= take;
+  }
+  if (left > 0.0001) {
+    const covered = quantity - left;
+    return { error: `Only ${covered} can be covered across stock sources. Requested ${quantity}.` };
+  }
+  return { splits };
+}
+
+function describeSplits(splits: NonNullable<CommittedLineItem["splits"]>) {
+  if (splits.length === 0) {
+    return {
+      ownershipType: null as string | null,
+      ownershipKey: null as string | null,
+      lotId: null as string | null,
+      ownershipLabel: null as string | null,
+      unitCost: null as number | null,
+    };
+  }
+  if (splits.length === 1) {
+    return {
+      ownershipType: splits[0].ownershipType,
+      ownershipKey: splits[0].ownershipKey,
+      lotId: splits[0].partnershipLotId,
+      ownershipLabel: splits[0].label,
+      unitCost: splits[0].avgCost as number | null,
+    };
+  }
+  return {
+    ownershipType: null as string | null,
+    ownershipKey: null as string | null,
+    lotId: null as string | null,
+    ownershipLabel: splits.map((slice) => `${slice.label} ${slice.quantity}`).join(" + "),
+    unitCost: null as number | null,
+  };
+}
 
 export default function SalesClient({
   initialInvoices,
@@ -201,6 +312,7 @@ export default function SalesClient({
 
   const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("ALL");
+  const [docPaperSize, setDocPaperSize] = useState<PrintPaperSize>("A4");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   // Form state - Header
@@ -298,8 +410,7 @@ export default function SalesClient({
         setProducts(prodRes.data as ProductOption[]);
       }
       if (stockRes.success && stockRes.data) {
-        const invRows = stockRes.data as Array<{ productId: string; locationId: string; available: number }>;
-        setInventory(invRows);
+        setInventory(stockRes.data as StockInfo[]);
       }
       if (locRes.success && locRes.data) {
         const locs = locRes.data as Array<{ id: string; name: string; type: "SHOP" | "WAREHOUSE" }>;
@@ -382,8 +493,8 @@ export default function SalesClient({
   // Global keyboard shortcuts
   const handleSaveInvoiceRef = useRef(handleSaveInvoice);
   handleSaveInvoiceRef.current = handleSaveInvoice;
-  const handlePreviewPdfRef = useRef(handlePreviewPdf);
-  handlePreviewPdfRef.current = handlePreviewPdf;
+  const handlePrintInvoiceRef = useRef(handlePrintInvoice);
+  handlePrintInvoiceRef.current = handlePrintInvoice;
   const openNewInvoiceDialogRef = useRef(openNewInvoiceDialog);
   openNewInvoiceDialogRef.current = openNewInvoiceDialog;
   const closeInvoiceDialogRef = useRef(closeInvoiceDialog);
@@ -420,7 +531,7 @@ export default function SalesClient({
       // Ctrl+P inside dialog triggers live PDF preview
       if ((e.ctrlKey || e.metaKey) && (e.key === "p" || e.key === "P") && isDialogOpen) {
         e.preventDefault();
-        void handlePreviewPdfRef.current();
+        void handlePrintInvoiceRef.current();
       }
     }
     window.addEventListener("keydown", handleGlobalKeyDown);
@@ -442,6 +553,23 @@ export default function SalesClient({
       );
     }
     return matchingInventory.reduce((sum, item) => sum + item.available, 0);
+  }
+
+  function getUnassignedStock(prodId: string, locId: string) {
+    return inventory
+      .filter((row) => row.productId === prodId && row.locationId === locId)
+      .reduce(
+        (sum, row) =>
+          sum +
+          (row.lots || []).filter((lot) => !lot.id).reduce((lotSum, lot) => lotSum + lot.available, 0),
+        0,
+      );
+  }
+
+  function warehouseLineStock(productId: string, locationId: string, warehouseLotId?: string | null) {
+    return warehouseLotId
+      ? getAvailableStock(productId, locationId, warehouseLotId)
+      : getAvailableStock(productId, locationId);
   }
 
   function getShopPoolTotals(prodId: string, locId: string) {
@@ -815,12 +943,119 @@ export default function SalesClient({
     setIsDialogOpen(false);
     setEditingInvoiceId(null);
     setFormError(null);
+    useDocumentWorkspaceStore.getState().clearDock();
   }
 
-  // Live pre-posting PDF preview
-  async function handlePreviewPdf() {
+  function detachInvoiceDialog() {
+    const title = editingInvoiceId
+      ? `Edit estimate ${formatSequenceDisplay(
+          invoices.find((i) => i.id === editingInvoiceId)?.sequenceNo,
+          invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo,
+        )}`
+      : "New estimate draft";
+    useDocumentWorkspaceStore.getState().setDock({
+      kind: "SALE",
+      title,
+      restorePath: "/sales",
+      snapshot: {
+        editingInvoiceId,
+        customerType,
+        customerId,
+        walkInName,
+        walkInPhone,
+        walkInAddress,
+        saveCustomer,
+        locationId,
+        invoiceDate,
+        notes,
+        committedItems,
+        amountPaid,
+        freightCharges,
+        paymentMethod,
+        isSplitPayment,
+        paymentSplits,
+        activeCodeInput,
+        activeItemLocationId,
+        activeLotId,
+        activeStockSource,
+        activeQty,
+        activeRate,
+        activeOwnershipKey,
+      },
+    });
+    setIsDialogOpen(false);
+    setFormError(null);
+  }
+
+  useDockedDraft("SALE", (snap: {
+    editingInvoiceId: string | null;
+    customerType: "REGISTERED" | "WALK_IN";
+    customerId: string;
+    walkInName: string;
+    walkInPhone: string;
+    walkInAddress: string;
+    saveCustomer: boolean;
+    locationId: string;
+    invoiceDate: string;
+    notes: string;
+    committedItems: CommittedLineItem[];
+    amountPaid: string;
+    freightCharges: string;
+    paymentMethod: "CASH" | "BANK" | "CHEQUE" | "OTHER";
+    isSplitPayment: boolean;
+    paymentSplits: Array<{ method: "CASH" | "BANK" | "CHEQUE" | "OTHER"; amount: string; reference: string }>;
+    activeCodeInput: string;
+    activeItemLocationId: string;
+    activeLotId: string;
+    activeStockSource: CommittedLineItem["stockSource"];
+    activeQty: string;
+    activeRate: string;
+    activeOwnershipKey: string;
+  }) => {
+    setEditingInvoiceId(snap.editingInvoiceId);
+    setCustomerType(snap.customerType);
+    setCustomerId(snap.customerId);
+    setWalkInName(snap.walkInName);
+    setWalkInPhone(snap.walkInPhone);
+    setWalkInAddress(snap.walkInAddress);
+    setSaveCustomer(snap.saveCustomer);
+    setLocationId(snap.locationId);
+    setInvoiceDate(snap.invoiceDate);
+    setNotes(snap.notes);
+    setCommittedItems(snap.committedItems);
+    setAmountPaid(snap.amountPaid);
+    setFreightCharges(snap.freightCharges);
+    setPaymentMethod(snap.paymentMethod);
+    setIsSplitPayment(snap.isSplitPayment);
+    setPaymentSplits(snap.paymentSplits);
+    setActiveCodeInput(snap.activeCodeInput);
+    setActiveItemLocationId(snap.activeItemLocationId);
+    setActiveLotId(snap.activeLotId);
+    setActiveStockSource(snap.activeStockSource);
+    setActiveQty(snap.activeQty);
+    setActiveRate(snap.activeRate);
+    setActiveOwnershipKey(snap.activeOwnershipKey);
+    setIsDialogOpen(true);
+  });
+
+  async function handlePrintInvoice() {
     if (committedItems.length === 0) {
-      setFormError("Add at least one product before previewing.");
+      setFormError("Add at least one product before printing.");
+      return;
+    }
+    const linked = editingInvoiceId
+      ? invoices.find((i) => i.id === editingInvoiceId)?.id
+      : null;
+    if (linked) {
+      setPreviewLoading(true);
+      try {
+        await printDocumentPdf(withPaperSizeQuery(`/api/pdf/sale-invoice/${linked}`, docPaperSize));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Failed to print invoice";
+        await confirm.alert(message, { variant: "destructive" });
+      } finally {
+        setPreviewLoading(false);
+      }
       return;
     }
     setPreviewLoading(true);
@@ -834,30 +1069,31 @@ export default function SalesClient({
         const foundCust = parties.find((p) => p.id === customerId);
         if (foundCust) {
           partyName = foundCust.name;
-          partyPhone = (foundCust as any).phone || null;
-          partyAddress = (foundCust as any).address || null;
+          partyPhone = (foundCust as { phone?: string }).phone || null;
+          partyAddress = (foundCust as { address?: string }).address || null;
         }
       }
 
       const activeDocNo = editingInvoiceId
         ? invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo || "INV-001"
         : invoices[0]?.invoiceNo
-        ? invoices[0].invoiceNo.replace(/\d+$/, (n) => String(Number(n) + 1).padStart(n.length, "0"))
-        : `${new Date().getFullYear()}-001`;
+          ? invoices[0].invoiceNo.replace(/\d+$/, (n) => String(Number(n) + 1).padStart(n.length, "0"))
+          : `${new Date().getFullYear()}-001`;
 
       const subtotal = committedItems.reduce((acc, it) => acc + it.quantity * it.unitPrice, 0);
       const numF = Math.max(0, parseFloat(freightCharges) || 0);
       const total = subtotal + numF;
       const paid = Math.max(0, parseFloat(amountPaid) || 0);
 
-      const payload = {
+      await printDraftPdf({
         type: "sale-invoice",
+        paperSize: docPaperSize,
         docNumber: activeDocNo,
         date: invoiceDate,
         partyName,
         partyPhone,
         partyAddress,
-        walkInName: customerType === "WALK_IN" ? (walkInName?.trim() || null) : null,
+        walkInName: customerType === "WALK_IN" ? walkInName?.trim() || null : null,
         locationName: selectedLocName,
         subtotalAmount: subtotal,
         freightCharges: numF,
@@ -873,38 +1109,54 @@ export default function SalesClient({
           unitPrice: item.unitPrice,
           lineTotal: item.quantity * item.unitPrice,
         })),
-      };
-
-      // Fetch preview PDF then immediately trigger print dialog
-      const res = await fetch("/api/pdf/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
       });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to print invoice";
+      await confirm.alert(message, { variant: "destructive" });
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
 
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || "Failed to generate preview PDF");
+  async function handlePrintDeliveryOrder() {
+    if (committedItems.length === 0) {
+      setFormError("Add at least one product before printing a delivery order.");
+      return;
+    }
+    const linkedDo = editingInvoiceId
+      ? invoices.find((i) => i.id === editingInvoiceId)?.deliveryOrder
+      : null;
+    setPreviewLoading(true);
+    try {
+      if (linkedDo?.id) {
+        await printDocumentPdf(withPaperSizeQuery(`/api/pdf/delivery-order/${linkedDo.id}`, docPaperSize));
+        return;
       }
-
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const iframe = document.createElement("iframe");
-      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;";
-      iframe.src = objectUrl;
-      document.body.appendChild(iframe);
-      iframe.onload = () => {
-        setTimeout(() => {
-          iframe.contentWindow?.focus();
-          iframe.contentWindow?.print();
-          setTimeout(() => {
-            URL.revokeObjectURL(objectUrl);
-            document.body.removeChild(iframe);
-          }, 2000);
-        }, 300);
-      };
-    } catch (err: any) {
-      await confirm.alert(err.message || "Failed to print invoice preview", { variant: "destructive" });
+      let partyName = walkInName || "Customer";
+      if (customerType === "REGISTERED" && customerId) {
+        partyName = parties.find((p) => p.id === customerId)?.name || partyName;
+      }
+      const selectedLocName = dbLocations.find((l) => l.id === locationId)?.name || "Shop";
+      await printDraftPdf({
+        type: "delivery-order",
+        paperSize: docPaperSize,
+        docNumber: "DRAFT-DO",
+        date: invoiceDate,
+        partyLabel: "Deliver To",
+        partyName,
+        locationName: selectedLocName,
+        notes: notes.trim() || null,
+        items: committedItems.map((item) => ({
+          name: `${item.productNo} - ${item.productName}`,
+          specs: item.unit,
+          lot: item.lotNumber,
+          quantity: item.quantity,
+          unit: item.unit,
+        })),
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to print delivery order";
+      await confirm.alert(message, { variant: "destructive" });
     } finally {
       setPreviewLoading(false);
     }
@@ -1157,6 +1409,174 @@ export default function SalesClient({
   }
 
   // Commit the active row to the invoice table
+  function updateCommittedItemLocation(index: number, nextLocationId: string) {
+    const loc = dbLocations.find((l) => l.id === nextLocationId);
+    if (!loc) return;
+    setCommittedItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        const available =
+          loc.type === "WAREHOUSE"
+            ? getAvailableStock(item.productId, nextLocationId)
+            : getShopSourceAvailableStock(item.productId, nextLocationId, "AUTO_SPLIT");
+        if (item.quantity > available + 0.0001) {
+          setFormError(`Only ${available} ${item.unit} available at ${loc.name}.`);
+          return item;
+        }
+        setFormError(null);
+        const next = {
+          ...item,
+          locationId: nextLocationId,
+          locationName: loc.name,
+          locationType: loc.type,
+          warehouseLotId: null,
+          lotNumber: null,
+          lotId: null,
+          splits: undefined,
+          sourceBuckets: undefined,
+          ownershipKey: null,
+          ownershipType: null,
+          ownershipLabel: null,
+          stockSource: "AUTO_SPLIT" as const,
+          availableStock: available,
+        };
+        if (loc.type === "SHOP") {
+          void refreshCommittedShopSplits(index, nextLocationId, item.productId, item.quantity, "AUTO_SPLIT");
+        }
+        return next;
+      }),
+    );
+  }
+
+  async function refreshCommittedShopSplits(
+    index: number,
+    nextLocationId: string,
+    productId: string,
+    quantity: number,
+    source: CommittedLineItem["stockSource"],
+  ) {
+    const res = await listSaleOwnershipBucketsAction({
+      productId,
+      locationId: nextLocationId,
+      warehouseLotId: null,
+      stockSource: source,
+    });
+    if (!res.success || !res.data) return;
+    const buckets = sortOwnershipBuckets(
+      (res.data as { buckets: OwnershipBucketOption[] }).buckets || [],
+    );
+    const built = allocateOwnershipSplits(buckets, quantity, source, null);
+    setCommittedItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index || item.productId !== productId || item.locationId !== nextLocationId) return item;
+        if ("error" in built) return { ...item, sourceBuckets: buckets };
+        const described = describeSplits(built.splits);
+        return {
+          ...item,
+          sourceBuckets: buckets,
+          splits: built.splits.length > 0 ? built.splits : undefined,
+          ownershipType: described.ownershipType,
+          ownershipKey: described.ownershipKey,
+          lotId: described.lotId,
+          ownershipLabel: described.ownershipLabel,
+          unitCost: described.unitCost ?? item.unitCost,
+        };
+      }),
+    );
+  }
+
+  function updateCommittedItemLot(index: number, lotId: string) {
+    const lot = warehouseLots.find((l) => l.id === lotId);
+    setCommittedItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        const available = getAvailableStock(item.productId, item.locationId, lotId);
+        const unassigned = getUnassignedStock(item.productId, item.locationId);
+        if (item.quantity > available + unassigned + 0.0001) {
+          setFormError(
+            `Only ${available + unassigned} ${item.unit} can be covered (lot ${available}, unassigned ${unassigned}).`,
+          );
+          return item;
+        }
+        setFormError(null);
+        return {
+          ...item,
+          warehouseLotId: lotId,
+          lotNumber: lot?.lotNumber || null,
+          availableStock: available,
+        };
+      }),
+    );
+  }
+
+  function updateCommittedItemSource(index: number, source: CommittedLineItem["stockSource"]) {
+    setCommittedItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        const available = getShopSourceAvailableStock(item.productId, item.locationId, source);
+        if (item.quantity > available + 0.0001) {
+          setFormError(`Only ${available} ${item.unit} in that stock source.`);
+          return item;
+        }
+        const buckets = item.sourceBuckets || [];
+        if (buckets.length > 0) {
+          const built = allocateOwnershipSplits(buckets, item.quantity, source, null);
+          if ("error" in built) {
+            setFormError(built.error);
+            return item;
+          }
+          const described = describeSplits(built.splits);
+          setFormError(null);
+          return {
+            ...item,
+            stockSource: source,
+            splits: built.splits.length > 0 ? built.splits : undefined,
+            ownershipType: described.ownershipType,
+            ownershipKey: described.ownershipKey,
+            lotId: described.lotId,
+            ownershipLabel: described.ownershipLabel,
+            unitCost: described.unitCost ?? item.unitCost,
+            availableStock: available,
+          };
+        }
+        setFormError(null);
+        void refreshCommittedShopSplits(index, item.locationId, item.productId, item.quantity, source);
+        return {
+          ...item,
+          stockSource: source,
+          splits: undefined,
+          ownershipKey: null,
+          ownershipLabel: source === "AUTO_SPLIT" ? null : source === "REGULAR_ONLY" ? "Regular" : "Partner",
+          availableStock: available,
+        };
+      }),
+    );
+  }
+
+  function updateCommittedItemBucket(index: number, ownershipKey: string) {
+    setCommittedItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        const built = allocateOwnershipSplits(item.sourceBuckets || [], item.quantity, item.stockSource, ownershipKey || null);
+        if ("error" in built) {
+          setFormError(built.error);
+          return item;
+        }
+        const described = describeSplits(built.splits);
+        setFormError(null);
+        return {
+          ...item,
+          splits: built.splits.length > 0 ? built.splits : undefined,
+          ownershipType: described.ownershipType,
+          ownershipKey: described.ownershipKey,
+          lotId: described.lotId,
+          ownershipLabel: described.ownershipLabel,
+          unitCost: described.unitCost ?? item.unitCost,
+        };
+      }),
+    );
+  }
+
   function commitActiveRow() {
     if (!matchedProduct) {
       setActiveRowError("Please select a valid product first.");
@@ -1199,18 +1619,23 @@ export default function SalesClient({
       return;
     }
 
-    const needsOwnershipPick = activeOwnershipBuckets.length > 1;
-    const chosenKey =
-      activeOwnershipKey ||
-      (activeOwnershipBuckets.length === 1 ? activeOwnershipBuckets[0].ownershipKey : "");
-    if (needsOwnershipPick && !chosenKey) {
-      setActiveRowError("Select an ownership bucket (entity vs partnership lot) for this line.");
-      return;
+    const sourceBuckets =
+      finalLoc?.type === "SHOP" ? sortOwnershipBuckets(activeOwnershipBuckets) : undefined;
+    let splits: NonNullable<CommittedLineItem["splits"]> = [];
+    if (sourceBuckets && sourceBuckets.length > 0) {
+      const built = allocateOwnershipSplits(
+        sourceBuckets,
+        qtyNum,
+        activeStockSource,
+        activeOwnershipKey || null,
+      );
+      if ("error" in built) {
+        setActiveRowError(built.error);
+        return;
+      }
+      splits = built.splits;
     }
-    const chosenBucket =
-      activeOwnershipBuckets.find((b) => b.ownershipKey === chosenKey) ||
-      activeOwnershipBuckets[0] ||
-      null;
+    const described = describeSplits(splits);
 
     // Add to committed items list
     setCommittedItems((prev) => [
@@ -1224,7 +1649,7 @@ export default function SalesClient({
         quantity: qtyNum,
         unitPrice: rateNum,
         unitCost:
-          chosenBucket?.avgCost ??
+          described.unitCost ??
           (matchedLot?.unitCost != null ? Number(matchedLot.unitCost) : null),
         availableStock: available,
         locationId: finalLocId,
@@ -1232,11 +1657,13 @@ export default function SalesClient({
         locationType: finalLoc?.type || "SHOP",
         warehouseLotId: finalLoc?.type === "WAREHOUSE" ? activeLotId || null : null,
         lotNumber: matchedLot ? matchedLot.lotNumber : null,
-        lotId: chosenBucket?.partnershipLotId || null,
+        lotId: described.lotId,
         stockSource: activeStockSource,
-        ownershipType: chosenBucket?.ownershipType ?? (activeStockSource === "REGULAR_ONLY" ? "OWN" : null),
-        ownershipKey: chosenKey || (activeStockSource === "REGULAR_ONLY" ? "OWN" : null),
-        ownershipLabel: chosenBucket?.label ?? (chosenKey === "OWN" ? "Entity owned" : null),
+        ownershipType: described.ownershipType,
+        ownershipKey: described.ownershipKey,
+        ownershipLabel: described.ownershipLabel,
+        splits: splits.length > 0 ? splits : undefined,
+        sourceBuckets,
         packetWeight: matchedProduct.packetWeight || 0,
         reamWeight: matchedProduct.reamWeight || 0,
       },
@@ -1267,13 +1694,78 @@ export default function SalesClient({
 
   function updateCommittedItemQuantity(index: number, quantity: number) {
     setCommittedItems((prev) =>
-      prev.map((item, i) => (i === index ? { ...item, quantity: Math.max(0, quantity) } : item))
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        const qty = Math.max(0, quantity);
+        if (item.locationType === "SHOP" && item.sourceBuckets && item.sourceBuckets.length > 0) {
+          const explicit = item.splits && item.splits.length === 1 ? item.ownershipKey : null;
+          const built = allocateOwnershipSplits(item.sourceBuckets, qty, item.stockSource, explicit);
+          if ("error" in built) {
+            setFormError(built.error);
+            return item;
+          }
+          const described = describeSplits(built.splits);
+          setFormError(null);
+          return {
+            ...item,
+            quantity: qty,
+            splits: built.splits.length > 0 ? built.splits : undefined,
+            ownershipType: described.ownershipType,
+            ownershipKey: described.ownershipKey,
+            lotId: described.lotId,
+            ownershipLabel: described.ownershipLabel,
+            unitCost: described.unitCost ?? item.unitCost,
+          };
+        }
+        const available =
+          item.locationType === "WAREHOUSE"
+            ? warehouseLineStock(item.productId, item.locationId, item.warehouseLotId)
+            : getShopSourceAvailableStock(item.productId, item.locationId, item.stockSource);
+        if (qty > available + 0.0001) {
+          setFormError(`Only ${available} ${item.unit} available.`);
+          return item;
+        }
+        setFormError(null);
+        return {
+          ...item,
+          quantity: qty,
+          splits: undefined,
+          ownershipKey: item.locationType === "SHOP" ? null : item.ownershipKey,
+          ownershipLabel: item.locationType === "SHOP" ? item.ownershipLabel : item.ownershipLabel,
+        };
+      }),
     );
   }
 
   function updateCommittedItemRate(index: number, unitPrice: number) {
     setCommittedItems((prev) =>
       prev.map((item, i) => (i === index ? { ...item, unitPrice: Math.max(0, unitPrice) } : item))
+    );
+  }
+
+  function updateCommittedItemProduct(index: number, productId: string) {
+    const prod = products.find((p) => p.id === productId);
+    if (!prod) return;
+    setCommittedItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        const loc = dbLocations.find((l) => l.id === item.locationId);
+        const available =
+          loc?.type === "WAREHOUSE"
+            ? warehouseLineStock(prod.id, item.locationId, item.warehouseLotId)
+            : getShopSourceAvailableStock(prod.id, item.locationId, item.stockSource);
+        return {
+          ...item,
+          productId: prod.id,
+          productNo: prod.productNo,
+          productName: prod.name,
+          categoryName: prod.category?.name || "—",
+          unit: prod.unit,
+          availableStock: available,
+          packetWeight: prod.packetWeight || 0,
+          reamWeight: prod.reamWeight || 0,
+        };
+      }),
     );
   }
 
@@ -1319,11 +1811,27 @@ export default function SalesClient({
     const fallbackLocId = locationId || committedItems[0]?.locationId || dbLocations[0]?.id;
 
     for (const item of committedItems) {
-      if (item.locationType === "SHOP" && !item.ownershipKey && item.stockSource === "PARTNER_ONLY") {
-        setFormError(
-          `Line ${item.productNo}: partner stock requires an ownership bucket. Re-add the line and select the lot bucket.`,
-        );
-        return;
+      if (item.locationType === "WAREHOUSE") {
+        if (!item.warehouseLotId) {
+          setFormError(`Line ${item.productNo}: select a warehouse lot.`);
+          return;
+        }
+        const lotQty = getAvailableStock(item.productId, item.locationId, item.warehouseLotId);
+        if (item.quantity > lotQty + 0.0001) {
+          setFormError(
+            `Line ${item.productNo}: only ${lotQty} ${item.unit} in the selected lot. Assign unassigned stock to the lot before saving.`,
+          );
+          return;
+        }
+      }
+      if (item.locationType === "SHOP" && item.stockSource === "PARTNER_ONLY") {
+        const covered = (item.splits || []).reduce((sum, slice) => sum + slice.quantity, 0);
+        if (!item.ownershipKey && covered + 0.0001 < item.quantity) {
+          setFormError(
+            `Line ${item.productNo}: partner stock needs a lot, or enough partner lots to cover the quantity.`,
+          );
+          return;
+        }
       }
     }
 
@@ -1348,18 +1856,37 @@ export default function SalesClient({
                   reference: s.reference.trim() || undefined,
                 }))
             : undefined,
-        items: committedItems.map((item) => ({
-          productId: item.productId,
-          locationId: item.locationId || fallbackLocId,
-          warehouseLotId: item.warehouseLotId || undefined,
-          lotId: item.lotId || undefined,
-          stockSource: item.stockSource,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          unitCost: item.unitCost ?? undefined,
-          ownershipType: item.ownershipType || undefined,
-          ownershipKey: item.ownershipKey || undefined,
-        })),
+        items: committedItems.flatMap((item) => {
+          const slices = item.splits && item.splits.length > 0 ? item.splits : null;
+          if (!slices) {
+            return [
+              {
+                productId: item.productId,
+                locationId: item.locationId || fallbackLocId,
+                warehouseLotId: item.warehouseLotId || undefined,
+                lotId: item.lotId || undefined,
+                stockSource: item.stockSource,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice,
+                unitCost: item.unitCost ?? undefined,
+                ownershipType: item.ownershipType || undefined,
+                ownershipKey: item.ownershipKey || undefined,
+              },
+            ];
+          }
+          return slices.map((slice) => ({
+            productId: item.productId,
+            locationId: item.locationId || fallbackLocId,
+            warehouseLotId: item.warehouseLotId || undefined,
+            lotId: slice.partnershipLotId || undefined,
+            stockSource: item.stockSource,
+            quantity: slice.quantity,
+            unitPrice: item.unitPrice,
+            unitCost: slice.avgCost,
+            ownershipType: slice.ownershipType,
+            ownershipKey: slice.ownershipKey,
+          }));
+        }),
       };
 
       if (customerType === "REGISTERED") {
@@ -1457,6 +1984,7 @@ export default function SalesClient({
 
       {/* Pattern 1: Universal Search Bar with Status & Financial Year Archive Toggles */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2 rounded-md shadow-xs flex flex-col md:flex-row gap-2 items-center justify-between">
+        <PrintPaperSizeControl value={docPaperSize} onChange={setDocPaperSize} className="shrink-0" />
         <div className="relative flex-1 w-full">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <Input
@@ -1703,7 +2231,11 @@ export default function SalesClient({
                             size="sm"
                             className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100"
                             title="Print Invoice"
-                            onClick={() => printDocumentPdf(`/api/pdf/sale-invoice/${inv.id}`).catch((e) => confirm.alert(e.message, { variant: "destructive" }))}
+                            onClick={() =>
+                              printDocumentPdf(withPaperSizeQuery(`/api/pdf/sale-invoice/${inv.id}`, docPaperSize)).catch(
+                                (e) => confirm.alert(e.message, { variant: "destructive" }),
+                              )
+                            }
                           >
                             <Printer className="h-3 w-3 mr-1" />
                             Print
@@ -1739,35 +2271,23 @@ export default function SalesClient({
         </div>
       </div>
 
-      {/* Pattern 3: Rapid Keyboard-Driven Sale Invoice Entry Window */}
-      {isDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 overflow-y-auto">
-          <div
-            ref={dialogRef}
-            className="w-[96vw] max-w-6xl bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[96vh]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Title Bar (Desktop Style) */}
-            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
-              <div className="flex items-center gap-2">
-                <Receipt className="h-4 w-4 text-emerald-400" />
-                <span className="font-bold text-xs">
-                  {editingInvoiceId
-                    ? `Edit Estimate Form - [#${formatSequenceDisplay(invoices.find((i) => i.id === editingInvoiceId)?.sequenceNo, invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo)}]`
-                    : "Estimate Entry Form - [New Estimate]"}
-                </span>
-              </div>
-              <button
-                onClick={closeInvoiceDialog}
-                className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1 transition-colors"
-                title="Close Window (Esc)"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Keyboard Shortcuts & Quick Cross-Document Links Banner */}
-            <div className="bg-slate-100 dark:bg-slate-800 px-4 py-1.5 border-b border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+      <DocumentWorkspace
+        open={isDialogOpen}
+        dialogRef={dialogRef}
+        icon={<Receipt className="h-4 w-4 text-emerald-400" />}
+        title={
+          editingInvoiceId
+            ? `Edit estimate #${formatSequenceDisplay(
+                invoices.find((i) => i.id === editingInvoiceId)?.sequenceNo,
+                invoices.find((i) => i.id === editingInvoiceId)?.invoiceNo,
+              )}`
+            : "New sales estimate"
+        }
+        onClose={closeInvoiceDialog}
+        onDetach={detachInvoiceDialog}
+        error={formError}
+        toolbar={
+          <div className="flex flex-wrap items-center justify-between gap-2 text-slate-600 dark:text-slate-300">
               <div className="flex items-center gap-3 font-mono text-[11px]">
                 <span>↵ Enter: Autofill & Advance</span>
                 <span>•</span>
@@ -1808,18 +2328,10 @@ export default function SalesClient({
                   <ExternalLink className="h-2.5 w-2.5 opacity-60" />
                 </button>
               </div>
-            </div>
-
-            {/* Validation Error Banner */}
-            {formError && (
-              <div className="bg-rose-50 dark:bg-rose-950/50 border-b border-rose-200 dark:border-rose-800 px-4 py-2 flex items-center gap-2 text-xs text-rose-700 dark:text-rose-300">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
-
-            {/* Dialog Body */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs bg-slate-50/50 dark:bg-slate-950/40">
+          </div>
+        }
+        header={
+          <div className="space-y-3">
               {/* Header Section: Customer & Date */}
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 bg-white dark:bg-slate-900 p-3 rounded-md border border-slate-200 dark:border-slate-800">
                 {/* Customer Column */}
@@ -1976,7 +2488,66 @@ export default function SalesClient({
                   </p>
                 </div>
               </div>
-
+          </div>
+        }
+        footer={
+            <div className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] text-slate-500 font-mono">
+                [Ctrl+Enter] Save  •  [Ctrl+P] Print  •  [Esc] Close
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handlePrintDeliveryOrder()}
+                  disabled={previewLoading || committedItems.length === 0}
+                  className="h-8 text-xs border-amber-400 text-amber-800 hover:bg-amber-50 gap-1.5"
+                  title="Print delivery order"
+                >
+                  <Truck className="h-3.5 w-3.5" />
+                  Print DO
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handlePrintInvoice()}
+                  disabled={previewLoading || committedItems.length === 0}
+                  className="h-8 text-xs border-emerald-400 text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 gap-1.5"
+                  title="Print invoice"
+                >
+                  <Printer className="h-3.5 w-3.5 text-emerald-600" />
+                  {previewLoading ? "Printing..." : "Print invoice"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={closeInvoiceDialog}
+                  disabled={submitting}
+                  className="h-8 text-xs border-slate-300 dark:border-slate-700"
+                >
+                  Cancel (Esc)
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleSaveInvoice}
+                  disabled={
+                    submitting ||
+                    committedItems.length === 0 ||
+                    (isSplitPayment && numPaid > 0 && Math.abs(splitSum - numPaid) > 0.05)
+                  }
+                  className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-4"
+                >
+                  <Check className="h-3.5 w-3.5 mr-1.5" />
+                  {submitting ? "Posting..." : editingInvoiceId ? "Update (Ctrl+Enter)" : "Save (Ctrl+Enter)"}
+                </Button>
+              </div>
+            </div>
+        }
+      >
               {/* Pattern 3: Line Item Entry Area (Table-Like Interface) */}
               <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xs">
                 <div className="bg-slate-100 dark:bg-slate-800 px-3 py-1.5 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
@@ -2019,43 +2590,106 @@ export default function SalesClient({
                         return (
                           <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                             <td className="py-1 px-2 text-center text-slate-400 border-r border-slate-100 dark:border-slate-800">{idx + 1}</td>
-                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-800 dark:text-slate-200 font-sans">
-                              <span className="font-mono font-bold text-slate-900 dark:text-slate-100 mr-1.5">
-                                {item.productNo}
-                              </span>
-                              <span>{item.productName}</span>
+                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-800 dark:text-slate-200 font-sans min-w-[180px]">
+                              <SearchCombobox
+                                options={products.map((p) => ({
+                                  id: p.id,
+                                  label: `${p.productNo} - ${p.name}`,
+                                  sublabel: p.unit,
+                                }))}
+                                value={item.productId}
+                                onChange={(val) => updateCommittedItemProduct(idx, val)}
+                                placeholder="Product..."
+                                className="w-full text-[11px]"
+                              />
                             </td>
-                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 font-sans text-xs">
-                              <span
-                                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
-                                  item.locationType === "SHOP"
-                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-800"
-                                    : "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-800"
-                                }`}
-                              >
-                                {item.locationName}
-                              </span>
+                            <td className="py-1 px-1 border-r border-slate-100 dark:border-slate-800 font-sans text-xs min-w-[130px]">
+                              <SearchCombobox
+                                options={dbLocations.map((loc) => ({
+                                  id: loc.id,
+                                  label: loc.name,
+                                  badge: loc.type === "SHOP" ? "Shop" : "Warehouse",
+                                }))}
+                                value={item.locationId}
+                                onChange={(val) => updateCommittedItemLocation(idx, val)}
+                                placeholder="Location"
+                                className="w-full text-[11px]"
+                              />
                             </td>
-                            <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-mono text-[11px]">
-                              {item.locationType === "WAREHOUSE" && item.lotNumber ? (
-                                <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-semibold text-[10px]">
-                                  Lot #{item.lotNumber}
-                                </span>
-                              ) : item.locationType === "SHOP" ? (
-                                <span className="text-[10px] text-slate-600 dark:text-slate-300 font-sans block">
-                                  {item.stockSource === "REGULAR_ONLY"
-                                    ? "Regular"
-                                    : item.stockSource === "PARTNER_ONLY"
-                                      ? "Partner"
-                                      : "Auto"}
-                                  {item.ownershipLabel ? (
-                                    <span className="block text-[9px] text-violet-700 dark:text-violet-300 font-semibold mt-0.5">
-                                      {item.ownershipLabel}
-                                    </span>
-                                  ) : null}
-                                </span>
+                            <td className="py-1 px-1 border-r border-slate-100 dark:border-slate-800 text-[11px] min-w-[150px]">
+                              {item.locationType === "WAREHOUSE" ? (
+                                <div className="space-y-1">
+                                  <SearchCombobox
+                                    options={warehouseLots
+                                      .filter((lot) => lot.locationId === item.locationId)
+                                      .map((lot) => ({
+                                        id: lot.id,
+                                        label: `Lot #${lot.lotNumber} (${getAvailableStock(item.productId, item.locationId, lot.id)})`,
+                                      }))}
+                                    value={item.warehouseLotId || ""}
+                                    onChange={(val) => updateCommittedItemLot(idx, val)}
+                                    placeholder="Select lot"
+                                    className="w-full text-[11px]"
+                                  />
+                                  {(() => {
+                                    const unassigned = getUnassignedStock(item.productId, item.locationId);
+                                    if (unassigned <= 0.0001 || !item.warehouseLotId) return null;
+                                    return (
+                                      <button
+                                        type="button"
+                                        className="text-[10px] text-left text-amber-800 underline font-sans"
+                                        onClick={() => {
+                                          void assignUnassignedStockToLotAction({
+                                            productId: item.productId,
+                                            locationId: item.locationId,
+                                            warehouseLotId: item.warehouseLotId,
+                                            quantity: unassigned,
+                                          }).then(async (res) => {
+                                            if (!res.success) {
+                                              setFormError(res.error || "Could not assign stock to the lot.");
+                                              return;
+                                            }
+                                            setFormError(null);
+                                            await loadData(true);
+                                          });
+                                        }}
+                                      >
+                                        Assign {unassigned} unassigned to this lot
+                                      </button>
+                                    );
+                                  })()}
+                                </div>
                               ) : (
-                                <span className="text-slate-400">—</span>
+                                <div className="space-y-0.5">
+                                  <select
+                                    value={item.stockSource}
+                                    onChange={(e) =>
+                                      updateCommittedItemSource(idx, e.target.value as CommittedLineItem["stockSource"])
+                                    }
+                                    className="h-7 w-full text-[11px] border border-slate-200 rounded bg-white"
+                                  >
+                                    <option value="AUTO_SPLIT">Auto (all lots)</option>
+                                    <option value="REGULAR_ONLY">Regular only</option>
+                                    <option value="PARTNER_ONLY">Partner only</option>
+                                  </select>
+                                  {item.sourceBuckets && filterBucketsForSource(item.sourceBuckets, item.stockSource).length > 1 ? (
+                                    <select
+                                      value={item.splits && item.splits.length === 1 ? item.ownershipKey || "" : ""}
+                                      onChange={(e) => updateCommittedItemBucket(idx, e.target.value)}
+                                      className="h-7 w-full text-[10px] border border-amber-300 rounded bg-amber-50"
+                                    >
+                                      <option value="">Auto-split across lots</option>
+                                      {filterBucketsForSource(item.sourceBuckets, item.stockSource).map((bucket) => (
+                                        <option key={bucket.ownershipKey} value={bucket.ownershipKey}>
+                                          {bucket.label} ({bucket.quantity})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : null}
+                                  {item.ownershipLabel ? (
+                                    <span className="block text-[9px] text-violet-700 font-sans">{item.ownershipLabel}</span>
+                                  ) : null}
+                                </div>
                               )}
                             </td>
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-slate-600 dark:text-slate-400 font-sans">
@@ -2064,7 +2698,7 @@ export default function SalesClient({
                             <td className="py-1 px-2 border-r border-slate-100 dark:border-slate-800 text-right">
                               {(() => {
                                 const liveStock = item.locationType === "WAREHOUSE"
-                                  ? getAvailableStock(item.productId, item.locationId, item.warehouseLotId)
+                                  ? warehouseLineStock(item.productId, item.locationId, item.warehouseLotId)
                                   : getShopSourceAvailableStock(item.productId, item.locationId, item.stockSource);
                                 return (
                                   <span
@@ -2279,20 +2913,48 @@ export default function SalesClient({
                                 placeholder="Select lot"
                                 inputClassName="h-7 text-xs font-mono"
                               />
-                              {matchedProduct && activeOwnershipBuckets.length > 1 ? (
-                                <select
-                                  value={activeOwnershipKey}
-                                  onChange={(e) => setActiveOwnershipKey(e.target.value)}
-                                  className="h-7 w-full rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-1.5 text-[10px] font-sans"
-                                >
-                                  <option value="">Ownership bucket…</option>
-                                  {activeOwnershipBuckets.map((b) => (
-                                    <option key={b.ownershipKey} value={b.ownershipKey}>
-                                      {b.label} ({b.quantity} {matchedProduct.unit})
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : null}
+                              {matchedProduct && activeLotId
+                                ? (() => {
+                                    const unassigned = inventory
+                                      .filter(
+                                        (row) =>
+                                          row.productId === matchedProduct.id &&
+                                          row.locationId === currentItemLocationId,
+                                      )
+                                      .reduce(
+                                        (sum, row) =>
+                                          sum +
+                                          (row.lots || [])
+                                            .filter((lot) => !lot.id)
+                                            .reduce((lotSum, lot) => lotSum + lot.available, 0),
+                                        0,
+                                      );
+                                    if (unassigned <= 0.0001) return null;
+                                    return (
+                                      <button
+                                        type="button"
+                                        className="text-[10px] text-left text-amber-800 underline font-sans"
+                                        onClick={() => {
+                                          void assignUnassignedStockToLotAction({
+                                            productId: matchedProduct.id,
+                                            locationId: currentItemLocationId,
+                                            warehouseLotId: activeLotId,
+                                            quantity: unassigned,
+                                          }).then(async (res) => {
+                                            if (!res.success) {
+                                              setActiveRowError(res.error || "Could not assign stock to the lot.");
+                                              return;
+                                            }
+                                            setActiveRowError(null);
+                                            await loadData(true);
+                                          });
+                                        }}
+                                      >
+                                        Assign {unassigned} unassigned to this lot
+                                      </button>
+                                    );
+                                  })()
+                                : null}
                             </div>
                           ) : activeItemLocation?.type === "SHOP" ? (
                             <div className="space-y-1">
@@ -2315,7 +2977,7 @@ export default function SalesClient({
                                   className="h-7 w-full rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-1.5 text-[10px] font-sans"
                                   title="Required when both entity and partnership stock exist"
                                 >
-                                  <option value="">Select ownership bucket…</option>
+                                  <option value="">Auto-split across lots</option>
                                   {activeOwnershipBuckets.map((b) => (
                                     <option key={b.ownershipKey} value={b.ownershipKey}>
                                       {b.label} ({b.quantity} {matchedProduct.unit})
@@ -2346,9 +3008,11 @@ export default function SalesClient({
                               const targetLocation = dbLocations.find((location) => location.id === targetLocId);
                               const shopPool = getShopPoolTotals(matchedProduct.id, targetLocId);
                               const currentStock = targetLocation?.type === "WAREHOUSE"
-                                ? activeLotId
-                                  ? getAvailableStock(matchedProduct.id, targetLocId, activeLotId)
-                                  : 0
+                                ? getAvailableStock(
+                                    matchedProduct.id,
+                                    targetLocId,
+                                    activeLotId || undefined,
+                                  )
                                 : targetLocation?.type === "SHOP"
                                   ? getShopSourceAvailableStock(matchedProduct.id, targetLocId, activeStockSource)
                                   : getAvailableStock(matchedProduct.id, targetLocId);
@@ -2406,9 +3070,11 @@ export default function SalesClient({
                               const targetLocation = dbLocations.find((location) => location.id === targetLocId);
                               const shopPool = getShopPoolTotals(matchedProduct.id, targetLocId);
                               const currentStock = targetLocation?.type === "WAREHOUSE"
-                                ? activeLotId
-                                  ? getAvailableStock(matchedProduct.id, targetLocId, activeLotId)
-                                  : 0
+                                ? getAvailableStock(
+                                    matchedProduct.id,
+                                    targetLocId,
+                                    activeLotId || undefined,
+                                  )
                                 : targetLocation?.type === "SHOP"
                                   ? getShopSourceAvailableStock(matchedProduct.id, targetLocId, activeStockSource)
                                   : getAvailableStock(matchedProduct.id, targetLocId);
@@ -2467,10 +3133,8 @@ export default function SalesClient({
                 </div>
               </div>
 
-              {/* Settlement Section & Summary Totals */}
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 bg-white dark:bg-slate-900 p-3 rounded-md border border-slate-200 dark:border-slate-800">
-                {/* Payment Options */}
-                <div className="sm:col-span-7 space-y-2">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 mt-3 bg-white dark:bg-slate-900 p-3 rounded-md border border-slate-200 dark:border-slate-800">
+                <div className="lg:col-span-7 space-y-2">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     {/* Amount Paid */}
                     <div>
@@ -2703,117 +3367,65 @@ export default function SalesClient({
                   </div>
                 </div>
 
-                {/* Subtotal & 3-Figure Readout */}
-                <div className="sm:col-span-5 bg-slate-50 dark:bg-slate-800/80 p-3 rounded border border-slate-200 dark:border-slate-700 flex flex-col justify-between space-y-1.5 font-mono text-xs">
-                  {/* Weight & Tonnage Metrics */}
-                  <div className="flex justify-between items-center text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 pb-1">
-                    <span>Physical Totals:</span>
-                    <span className="font-bold text-slate-800 dark:text-slate-200 text-[11px]">
-                      {committedItems.reduce((s, it) => s + (it.quantity || 0), 0).toLocaleString()} pkts •{" "}
-                      {committedItems.reduce((s, it) => s + (it.quantity || 0) * (it.packetWeight || it.reamWeight || 0), 0).toFixed(2)} kg{" "}
-                      ({(committedItems.reduce((s, it) => s + (it.quantity || 0) * (it.packetWeight || it.reamWeight || 0), 0) / 1000).toFixed(3)} T)
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md p-3 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2 border-b border-slate-200 pb-1">
+                    Invoice summary
+                  </p>
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 text-[11px]">
+                    <span className="whitespace-nowrap text-slate-500">Packets</span>
+                    <span className="whitespace-nowrap text-right font-semibold tabular-nums text-slate-800">
+                      {committedItems.reduce((s, it) => s + (it.quantity || 0), 0).toLocaleString()}
                     </span>
-                  </div>
-
-                  <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                    <span>Subtotal:</span>
-                    <span className="font-bold text-slate-900 dark:text-slate-100">
+                    <span className="whitespace-nowrap text-slate-500">Weight</span>
+                    <span className="whitespace-nowrap text-right font-semibold tabular-nums text-slate-800">
+                      {committedItems
+                        .reduce((s, it) => s + (it.quantity || 0) * (it.packetWeight || it.reamWeight || 0), 0)
+                        .toFixed(2)}{" "}
+                      kg
+                    </span>
+                    <span className="whitespace-nowrap text-slate-500">Subtotal</span>
+                    <span className="whitespace-nowrap text-right font-semibold tabular-nums">
                       PKR {invoiceSubtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </span>
-                  </div>
-
-                  {numFreight > 0 && (
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                      <span>Freight / Packing:</span>
-                      <span className="font-bold text-slate-900 dark:text-slate-100">
-                        PKR {numFreight.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  )}
-
-                  <div className="flex justify-between text-slate-900 dark:text-slate-100 border-t border-slate-200 dark:border-slate-700 pt-1 font-bold">
-                    <span>Total Amount:</span>
-                    <span className="text-sm">
+                    {numFreight > 0 ? (
+                      <>
+                        <span className="whitespace-nowrap text-slate-500">Freight</span>
+                        <span className="whitespace-nowrap text-right font-semibold tabular-nums">
+                          PKR {numFreight.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
+                      </>
+                    ) : null}
+                    <span className="whitespace-nowrap border-t border-double border-slate-400 pt-1 font-bold uppercase">Total</span>
+                    <span className="whitespace-nowrap border-t border-double border-slate-400 pt-1 text-right font-bold tabular-nums">
                       PKR {invoiceTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </span>
-                  </div>
-
-                  <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                    <span>Amount Paid:</span>
-                    <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                    <span className="whitespace-nowrap text-slate-500">Amount paid</span>
+                    <span className="whitespace-nowrap text-right font-semibold tabular-nums text-emerald-700">
                       PKR {numPaid.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </span>
+                    <span className="whitespace-nowrap border-t border-slate-200 pt-1 font-bold">Balance due</span>
+                    <span
+                      className={`whitespace-nowrap border-t border-slate-200 pt-1 text-right font-bold tabular-nums ${
+                        balanceDue > 0 ? "text-rose-700" : "text-emerald-700"
+                      }`}
+                    >
+                      PKR {balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </span>
                   </div>
-
-                  <div className="flex justify-between items-center border-t border-slate-200 dark:border-slate-700 pt-1 text-sm font-bold">
-                    <span>Balance Due:</span>
-                    <div className="flex items-center gap-1.5">
-                      <span className={balanceDue > 0 ? "text-rose-700 dark:text-rose-400" : "text-emerald-700 dark:text-emerald-400"}>
-                        PKR {balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </span>
-                      <span
-                        className={`text-[9px] px-1.5 py-0.2 rounded font-sans uppercase font-bold ${
-                          balanceDue === 0
-                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                            : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                        }`}
-                      >
-                        {balanceDue === 0 ? "SETTLED" : "OPEN"}
-                      </span>
-                    </div>
+                  <div className="mt-2 flex justify-end">
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded font-sans uppercase font-bold ${
+                        balanceDue === 0
+                          ? "bg-emerald-100 text-emerald-800"
+                          : "bg-amber-100 text-amber-800"
+                      }`}
+                    >
+                      {balanceDue === 0 ? "SETTLED" : "OPEN"}
+                    </span>
                   </div>
                 </div>
               </div>
-            </div>
-
-            {/* Window Footer Action Bar */}
-            <div className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[11px] text-slate-500 font-mono">
-                [Ctrl+Enter] Save Estimate  •  [Ctrl+P] Preview PDF  •  [Esc] Cancel
-              </span>
-
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handlePreviewPdf}
-                  disabled={previewLoading || committedItems.length === 0}
-                  className="h-8 text-xs border-emerald-400 text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 gap-1.5"
-                  title="Generate & View Live Document PDF"
-                >
-                  <Eye className="h-3.5 w-3.5 text-emerald-600" />
-                  {previewLoading ? "Printing..." : "Print Preview"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={closeInvoiceDialog}
-                  disabled={submitting}
-                  className="h-8 text-xs border-slate-300 dark:border-slate-700"
-                >
-                  Cancel (Esc)
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleSaveInvoice}
-                  disabled={
-                    submitting ||
-                    committedItems.length === 0 ||
-                    (isSplitPayment && numPaid > 0 && Math.abs(splitSum - numPaid) > 0.05)
-                  }
-                  className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs px-4"
-                >
-                  <Check className="h-3.5 w-3.5 mr-1.5" />
-                  {submitting ? "Posting Estimate..." : editingInvoiceId ? "Update Estimate (Ctrl+Enter)" : "Save Estimate (Ctrl+Enter)"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      </DocumentWorkspace>
 
       {/* PDF preview replaced with browser print dialog (printDocumentPdf) */}
     </div>

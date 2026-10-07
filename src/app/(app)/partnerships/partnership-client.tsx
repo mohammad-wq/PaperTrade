@@ -45,7 +45,7 @@ import { createPaymentAction } from "@/actions/payments";
 import { listLocationsAction } from "@/actions/orders";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
-import { cn } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
 import { format } from "date-fns";
 import { handleFormEnterKeyDown } from "@/lib/keyboard-nav";
 import { useSession } from "next-auth/react";
@@ -78,6 +78,9 @@ export type HubData = {
     netGrossMargin: number;
     partnerProfitShare: number;
     netPayableToPartner: number;
+    partnerPaidExpenses?: number;
+    entityPaidExpenses?: number;
+    settlementGrossOwed?: number;
     currentPayableToB?: number;
     totalPurchasedFromB?: number;
     partnershipLedgerBalance: number;
@@ -114,8 +117,9 @@ export type HubData = {
   settlementLog: Array<{
     id: string;
     date: Date;
-    invoiceId: string;
+    invoiceId: string | null;
     invoiceNo: string;
+    salesChannel?: string;
     customerName: string;
     productId: string;
     productName: string;
@@ -168,6 +172,15 @@ export type HubData = {
     partnerSharePct: number;
     clientSharePct: number;
     unitCost: number;
+  }>;
+  partnershipLots?: Array<{
+    id: string;
+    lotNumber: string;
+    type: string;
+    partnerCapitalShare: number;
+    entityCapitalShare: number;
+    partnerMarginRatioPct: number;
+    totalCapitalCost: number;
   }>;
   recentAdjustments?: Array<{
     id: string;
@@ -1140,92 +1153,6 @@ export default function PartnershipClient({
             </select>
           </div>
 
-          {/* Action 0: Record Partner Settlement Payout */}
-          {canRecordSettlement && (
-            <Button
-              size="sm"
-              onClick={openSettlementPayoutModal}
-              className="bg-emerald-700 hover:bg-emerald-800 text-white text-xs gap-1.5 h-8 font-bold shadow-xs"
-              title="Record a settlement payment to Person B directly isolated in their partnership ledger"
-            >
-              <DollarSign className="h-3.5 w-3.5" />
-              Record Settlement Payment
-            </Button>
-          )}
-
-          {/* Action 1: Dedicated Purchase Intake */}
-          {canIntake && (
-            <Button
-              size="sm"
-              onClick={openIntakeModal}
-              className="bg-amber-700 hover:bg-amber-800 text-white text-xs gap-1.5 h-8 font-bold shadow-xs"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Partnership Intake
-            </Button>
-          )}
-
-
-
-          {/* Action 3: Generate Settlement Statement */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={openSettlementModal}
-            className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold shadow-xs hover:bg-slate-50"
-          >
-            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-700" />
-            Settlement Statement
-          </Button>
-
-          {/* Action 4: Warehouse Stock Adjustment */}
-          {canAdjustStock && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => openAdjustModalForProduct()}
-              className="text-xs gap-1.5 h-8 font-medium text-amber-900 border-amber-300 dark:border-amber-800 hover:bg-amber-50"
-            >
-              <Sliders className="h-3.5 w-3.5" />
-              Direct WH Adjustment
-            </Button>
-          )}
-
-          {/* Quick Create PO & PI for Partnership */}
-          {canCreatePO && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => router.push(`/purchase-orders?partnerId=${selectedPartnerId}&action=new`)}
-              className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold text-slate-800 dark:text-slate-200 shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800"
-              title="Create Purchase Order for this Partner"
-            >
-              <ShoppingCart className="h-3.5 w-3.5 text-blue-600" />
-              + New Shared PO
-            </Button>
-          )}
-
-          {canCreatePI && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => router.push(`/purchases?partnerId=${selectedPartnerId}&action=new`)}
-              className="border-slate-300 dark:border-slate-700 text-xs gap-1.5 h-8 font-bold text-slate-800 dark:text-slate-200 shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800"
-              title="Create Purchase Invoice for this Partner"
-            >
-              <Receipt className="h-3.5 w-3.5 text-purple-600" />
-              + PI
-            </Button>
-          )}
-
-          <Button
-            size="sm"
-            onClick={() => setShowCreateLotModal(true)}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs gap-1.5 h-8 font-bold shadow-xs"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            New Partnership Lot
-          </Button>
         </div>
       </div>
 
@@ -1251,9 +1178,52 @@ export default function PartnershipClient({
         </div>
       )}
 
-      {/* ========================================================= */}
-      {/* REQUIREMENT 4: 7 FINANCIAL SUMMARY CARDS                 */}
-      {/* ========================================================= */}
+      {/* Partnership workflows (VMI vs shared pool) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 print:hidden">
+        <Card className="border-violet-200 bg-violet-50/40">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Consignment (VMI)</CardTitle>
+            <CardDescription className="text-xs">
+              Partner owns stock until you purchase it. Pay via purchase invoice, then sell as regular stock.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-xs space-y-2">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Unpaid consignment pulls</span>
+              <span className="font-mono font-semibold">
+                PKR {(hubData?.metrics?.unpaidCapitalReimbursement ?? 0).toLocaleString()}
+              </span>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              No profit share on VMI sales after buyout — only open payables until settled.
+            </p>
+          </CardContent>
+        </Card>
+        <Card className="border-indigo-200 bg-indigo-50/40">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Co-invested shared pool</CardTitle>
+            <CardDescription className="text-xs">
+              Both parties fund the lot. Pull to shop is a transfer. Sales keep the lot flag; margin splits by equity %.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-xs space-y-2">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Partner margin accrued</span>
+              <span className="font-mono font-semibold text-indigo-800">
+                PKR {(hubData?.metrics?.partnerProfitShare ?? 0).toLocaleString()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Contributed capital (B / A)</span>
+              <span className="font-mono">
+                PKR {(hubData?.metrics?.partnerCapitalInvested ?? 0).toLocaleString()} /{" "}
+                PKR {(hubData?.metrics?.clientCapitalInvested ?? 0).toLocaleString()}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3">
         {/* Card 1: Total Initial Capital Invested */}
         <Card className="border-indigo-200 dark:border-indigo-900 bg-indigo-50/50 dark:bg-indigo-950/20 shadow-xs">
@@ -1290,15 +1260,15 @@ export default function PartnershipClient({
         <Card className="border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs">
           <CardContent className="p-3.5 space-y-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 block">
-              Capital Reimbursed
+              VMI / settlements paid
             </span>
             <div className="text-lg font-black font-mono text-emerald-800 dark:text-emerald-400">
               PKR {(hubData?.metrics?.capitalReimbursedToPartner || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
             </div>
             <p className="text-[10px] text-slate-500 font-mono leading-tight">
-              Accrued: PKR {(hubData?.metrics?.capitalLiabilityAccrued || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              VMI owed: PKR {(hubData?.metrics?.capitalLiabilityAccrued || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
               <br />
-              Unpaid: PKR {(hubData?.metrics?.unpaidCapitalReimbursement || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              VMI unpaid: PKR {(hubData?.metrics?.unpaidCapitalReimbursement || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
             </p>
           </CardContent>
         </Card>
@@ -1313,7 +1283,7 @@ export default function PartnershipClient({
               PKR {(hubData?.metrics?.totalSalesRevenue || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
             </div>
             <p className="text-[10px] text-slate-500">
-              From partner lot batches
+              Co-invested lot sales (POS + partner-reported)
             </p>
           </CardContent>
         </Card>
@@ -1366,7 +1336,7 @@ export default function PartnershipClient({
               PKR {(hubData?.metrics?.netPayableToPartner || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
             </div>
             <p className="text-[10px] text-slate-500 leading-tight">
-              Unpaid Cap + Profit Share
+              VMI unpaid + margin share + partner expenses − payments
             </p>
           </CardContent>
         </Card>
@@ -1623,7 +1593,7 @@ export default function PartnershipClient({
                   ) : filteredProducts.length === 0 ? (
                     <tr>
                       <td colSpan={9} className="py-10 text-center text-slate-500">
-                        No products found. Click &quot;Partnership Intake&quot; to intake inventory into the shared warehouse.
+                        No products found. Use &quot;New Partnership Lot&quot; on the Lots tab to register stock in an existing warehouse.
                       </td>
                     </tr>
                   ) : (
@@ -1918,12 +1888,16 @@ export default function PartnershipClient({
                     filteredSettlementLog.map((log) => (
                       <tr key={log.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/60 transition-colors">
                         <td className="py-2 px-3 border-r border-slate-200/60 font-mono text-slate-600 whitespace-nowrap">
-                          {format(new Date(log.date), "dd/MM/yyyy")}
+                          {formatDateTime(log.date)}
                         </td>
                         <td className="py-2 px-3 border-r border-slate-200/60 font-mono font-bold text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                          <a href={`/sales?invoiceId=${log.invoiceId}`} className="hover:underline text-blue-700">
-                            {log.invoiceNo}
-                          </a>
+                          {log.invoiceId ? (
+                            <a href={`/sales?invoiceId=${log.invoiceId}`} className="hover:underline text-blue-700">
+                              {log.invoiceNo}
+                            </a>
+                          ) : (
+                            <span>{log.invoiceNo}</span>
+                          )}
                         </td>
                         <td className="py-2 px-3 border-r border-slate-200/60 font-medium text-slate-800 dark:text-slate-200">
                           {log.customerName}
@@ -2043,7 +2017,7 @@ export default function PartnershipClient({
                             {po.orderNo}
                           </td>
                           <td className="py-2 px-3 border-r border-slate-200/60 text-slate-600">
-                            {format(new Date(po.date), "dd/MM/yyyy")}
+                            {formatDateTime(po.date)}
                           </td>
                           <td className="py-2 px-3 border-r border-slate-200/60">
                             <span
@@ -2154,7 +2128,7 @@ export default function PartnershipClient({
                             {pi.invoiceNo}
                           </td>
                           <td className="py-2 px-3 border-r border-slate-200/60 text-slate-600">
-                            {format(new Date(pi.date), "dd/MM/yyyy")}
+                            {formatDateTime(pi.date)}
                           </td>
                           <td className="py-2 px-3 border-r border-slate-200/60 text-right font-mono font-bold text-slate-900 dark:text-slate-100">
                             PKR {pi.totalAmount.toLocaleString()}
@@ -2761,7 +2735,7 @@ export default function PartnershipClient({
                       <tbody className="divide-y divide-slate-100">
                         {statementData.filteredMoved.map((m) => (
                           <tr key={m.id}>
-                            <td className="py-1 px-2 font-mono text-slate-600">{format(new Date(m.date), "dd/MM/yyyy")}</td>
+                            <td className="py-1 px-2 font-mono text-slate-600">{formatDateTime(m.date)}</td>
                             <td className="py-1 px-2 font-mono font-bold text-blue-700">{m.invoiceNo}</td>
                             <td className="py-1 px-2 font-mono">{m.lotNumber}</td>
                             <td className="py-1 px-2 font-medium">{m.productName}</td>
@@ -2813,7 +2787,7 @@ export default function PartnershipClient({
                       <tbody className="divide-y divide-slate-100">
                         {statementData.filteredSales.map((s) => (
                           <tr key={s.id}>
-                            <td className="py-1 px-2 font-mono text-slate-600">{format(new Date(s.date), "dd/MM/yyyy")}</td>
+                            <td className="py-1 px-2 font-mono text-slate-600">{formatDateTime(s.date)}</td>
                             <td className="py-1 px-2 font-mono text-blue-700">{s.invoiceNo}</td>
                             <td className="py-1 px-2">{s.customerName}</td>
                             <td className="py-1 px-2 font-medium">{s.productName}</td>

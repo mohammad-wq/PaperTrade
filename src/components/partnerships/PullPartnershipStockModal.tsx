@@ -28,7 +28,13 @@ interface PullPartnershipStockModalProps {
   lotType: "CONSIGNMENT_VMI" | "CO_INVESTED_POOL";
   partnerName: string;
   items: LotItem[];
-  shopLocations: Array<{ id: string; name: string }>;
+  destinationLocations: Array<{
+    id: string;
+    name: string;
+    lots?: Array<{ id: string; lotNumber: string; quantity: number }>;
+  }>;
+  sourceLots?: Array<{ id: string; lotNumber: string; quantity: number }>;
+  linkedSourceLotId?: string | null;
 }
 
 export function PullPartnershipStockModal({
@@ -39,12 +45,18 @@ export function PullPartnershipStockModal({
   lotType,
   partnerName,
   items,
-  shopLocations,
+  destinationLocations,
+  sourceLots = [],
+  linkedSourceLotId = null,
 }: PullPartnershipStockModalProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [destinationLocationId, setDestinationLocationId] = useState(shopLocations[0]?.id || "");
+  const [destinationLocationId, setDestinationLocationId] = useState(destinationLocations[0]?.id || "");
+  const [destinationWarehouseLotId, setDestinationWarehouseLotId] = useState("");
+  const [sourceWarehouseLotId, setSourceWarehouseLotId] = useState(linkedSourceLotId || "");
   const [notes, setNotes] = useState("");
+  const destinationLots =
+    destinationLocations.find((location) => location.id === destinationLocationId)?.lots ?? [];
 
   const [pullQuantities, setPullQuantities] = useState<Record<string, number>>(() => {
     const initial: Record<string, number> = {};
@@ -78,6 +90,14 @@ export function PullPartnershipStockModal({
       toast.error("Please select a destination shop location.");
       return;
     }
+    if (destinationLots.length > 0 && !destinationWarehouseLotId) {
+      toast.error("Select a lot at the destination. This location already has lots.");
+      return;
+    }
+    if (!linkedSourceLotId && sourceLots.length > 0 && !sourceWarehouseLotId) {
+      toast.error("Select the source lot at the partnership warehouse.");
+      return;
+    }
     if (totalPullItems.length === 0) {
       toast.error("Please enter a quantity greater than 0 for at least one item.");
       return;
@@ -88,6 +108,8 @@ export function PullPartnershipStockModal({
       const res = await pullPartnershipLotStockAction({
         lotId,
         destinationLocationId,
+        destinationWarehouseLotId: destinationWarehouseLotId || null,
+        sourceWarehouseLotId: sourceWarehouseLotId || linkedSourceLotId || null,
         items: totalPullItems.map((it) => ({
           productId: it.productId,
           quantity: it.quantity,
@@ -117,44 +139,74 @@ export function PullPartnershipStockModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-lg font-bold">
             <Truck className="h-5 w-5 text-indigo-600" />
-            Pull Stock to Shop Floor (Delivery Order)
+            Transfer lot stock
           </DialogTitle>
           <p className="text-xs text-muted-foreground">
-            Transfer inventory from Lot <strong className="text-gray-900">{lotNumber}</strong> to Main Shop stock.
+            Move inventory from lot <strong className="text-gray-900">{lotNumber}</strong> to another location. Stock stays tagged to this lot for margin sharing on sales.
           </p>
         </DialogHeader>
 
-        {lotType === "CONSIGNMENT_VMI" ? (
-          <div className="p-3 bg-emerald-50 rounded-lg border border-emerald-200 text-xs text-emerald-800 flex gap-2 items-start">
-            <AlertCircle className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
-            <div>
-              <strong>Consignment VMI Notice:</strong> Pulled stock becomes fungible regular shop stock. This action automatically creates an inward Purchase Invoice crediting <strong>Accounts Payable – Consignor ({partnerName})</strong> at unit cost rate.
-            </div>
+        <div className="p-3 bg-indigo-50 rounded-lg border border-indigo-200 text-xs text-indigo-800 flex gap-2 items-start">
+          <AlertCircle className="h-4 w-4 text-indigo-600 mt-0.5 shrink-0" />
+          <div>
+            <strong>Co-invested transfer:</strong> Destination keeps <strong>{lotNumber}</strong> ownership. No purchase invoice is created; profit is split when you sell from the destination.
           </div>
-        ) : (
-          <div className="p-3 bg-indigo-50 rounded-lg border border-indigo-200 text-xs text-indigo-800 flex gap-2 items-start">
-            <AlertCircle className="h-4 w-4 text-indigo-600 mt-0.5 shrink-0" />
-            <div>
-              <strong>Co-Invested Shared Pool Notice:</strong> Stock pulled to the shop retains <strong>{lotNumber}</strong> tag. No trade payable is posted now; profit margin will be split upon downstream sales.
-            </div>
-          </div>
-        )}
+        </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <Label className="text-xs font-semibold">Destination Shop Location</Label>
+            <Label className="text-xs font-semibold">Destination location</Label>
             <select
               value={destinationLocationId}
-              onChange={(e) => setDestinationLocationId(e.target.value)}
+              onChange={(e) => {
+                setDestinationLocationId(e.target.value);
+                setDestinationWarehouseLotId("");
+              }}
               className="w-full mt-1 px-3 py-2 text-sm border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
-              {shopLocations.map((s) => (
+              {destinationLocations.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name} (Shop Floor)
+                  {s.name}
                 </option>
               ))}
             </select>
           </div>
+
+          {destinationLots.length > 0 && (
+            <div>
+              <Label className="text-xs font-semibold">Destination lot</Label>
+              <select
+                value={destinationWarehouseLotId}
+                onChange={(e) => setDestinationWarehouseLotId(e.target.value)}
+                className="w-full mt-1 px-3 py-2 text-sm border rounded-md bg-white"
+              >
+                <option value="">Select lot</option>
+                {destinationLots.map((lot) => (
+                  <option key={lot.id} value={lot.id}>
+                    Lot {lot.lotNumber} — {lot.quantity}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {!linkedSourceLotId && sourceLots.length > 0 && (
+            <div>
+              <Label className="text-xs font-semibold">Source lot</Label>
+              <select
+                value={sourceWarehouseLotId}
+                onChange={(e) => setSourceWarehouseLotId(e.target.value)}
+                className="w-full mt-1 px-3 py-2 text-sm border rounded-md bg-white"
+              >
+                <option value="">Select lot</option>
+                {sourceLots.map((lot) => (
+                  <option key={lot.id} value={lot.id}>
+                    Lot {lot.lotNumber} — {lot.quantity}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="border rounded-lg overflow-hidden">
             <table className="w-full text-xs">

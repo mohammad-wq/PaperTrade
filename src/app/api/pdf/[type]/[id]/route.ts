@@ -29,6 +29,9 @@ const toNumber = (value: unknown, fallback = 0) => {
 
 const toItemNumber = (value: unknown, fallback = 0) => toNumber(value, fallback);
 
+const pdfPageSizeFromRequest = (request: NextRequest): "A4" | "A5" =>
+  request.nextUrl.searchParams.get("paperSize") === "A5" ? "A5" : "A4";
+
 const ALLOWED_DOC_TYPES = new Set([
   "sale-invoice",
   "purchase-order",
@@ -91,6 +94,7 @@ export async function GET(
   try {
     let pdfBuffer: Buffer | null = null;
     let filename = `document-${id}.pdf`;
+    const pageSize = pdfPageSizeFromRequest(request);
 
     const safeFormatDate = (val?: string | null | Date) => {
       if (!val) return format(new Date(), "dd-MM-yyyy h:mm a");
@@ -136,6 +140,7 @@ export async function GET(
 
       filename = `Estimate-${invoice.invoiceNo}.pdf`;
       pdfBuffer = await renderDocumentPdfKit({
+        pageSize,
         docType: "Estimate",
         docNumber: invoice.invoiceNo,
         sequenceNo: invoice.sequenceNo,
@@ -183,6 +188,7 @@ export async function GET(
       const totalAmount = po.items.reduce((sum, item) => sum + toItemNumber(item.lineTotal), 0);
 
       pdfBuffer = await renderDocumentPdfKit({
+        pageSize,
         docType: "Purchase Order",
         docNumber: po.orderNo,
         sequenceNo: po.sequenceNo,
@@ -225,6 +231,7 @@ export async function GET(
 
       filename = `DO-${doRecord.doNo}.pdf`;
       pdfBuffer = await renderDocumentPdfKit({
+        pageSize,
         docType: doRecord.customer ? "Delivery Order" : "Internal Stock Transfer Order",
         docNumber: doRecord.doNo,
         sequenceNo: doRecord.sequenceNo,
@@ -282,6 +289,7 @@ export async function GET(
 
       filename = `Purchase-${invoice.invoiceNo}.pdf`;
       pdfBuffer = await renderDocumentPdfKit({
+        pageSize,
         docType: "Purchase Invoice",
         docNumber: invoice.invoiceNo,
         sequenceNo: invoice.sequenceNo,
@@ -332,6 +340,7 @@ export async function GET(
 
       filename = `CreditNote-${sReturn.returnNo}.pdf`;
       pdfBuffer = await renderDocumentPdfKit({
+        pageSize,
         docType: "Credit Note / Sale Return",
         docNumber: sReturn.returnNo,
         sequenceNo: sReturn.sequenceNo,
@@ -373,6 +382,7 @@ export async function GET(
 
       filename = `DebitNote-${pReturn.returnNo}.pdf`;
       pdfBuffer = await renderDocumentPdfKit({
+        pageSize,
         docType: "Purchase Debit Note / Return",
         docNumber: pReturn.returnNo,
         sequenceNo: pReturn.sequenceNo,
@@ -415,6 +425,7 @@ export async function GET(
       const receiptNo = payment.receiptNo || `RCT-${payment.id.slice(0, 8)}`;
       filename = `Receipt-${receiptNo}.pdf`;
       pdfBuffer = await renderPaymentReceiptPdfKit({
+        pageSize,
         receiptNo,
         sequenceNo: payment.sequenceNo,
         direction: payment.direction || (payment.party?.type === "CUSTOMER" ? "IN" : "OUT"),

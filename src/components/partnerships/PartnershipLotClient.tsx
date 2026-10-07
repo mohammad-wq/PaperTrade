@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { toast } from "@/lib/toast";
+import { deletePartnershipLotAction } from "@/actions/partnerships";
 import { Button } from "@/components/ui/button";
 import {
   Layers,
@@ -17,28 +20,52 @@ import {
   History,
   ShieldCheck,
   Building,
+  Trash2,
 } from "lucide-react";
 import { PullPartnershipStockModal } from "./PullPartnershipStockModal";
+import { PartnershipLotIntakeModal } from "./PartnershipLotIntakeModal";
+import { VmiObtainFromLotModal } from "./VmiObtainFromLotModal";
 import { ExternalLiquidationModal } from "./ExternalLiquidationModal";
 import { RecordPartnershipExpenseModal } from "./RecordPartnershipExpenseModal";
 import { SettlementPayoutModal } from "./SettlementPayoutModal";
 import { AccountOfSalesStatement } from "./AccountOfSalesStatement";
 import { InventoryMovementAuditSheet } from "./InventoryMovementAuditSheet";
 import { PartnerSettlementStatement } from "./PartnerSettlementStatement";
+import {
+  PrintPaperSizeControl,
+  PrintPaperSizeStyle,
+  type PrintPaperSize,
+} from "@/components/print/PrintPaperSizeControl";
 
 interface PartnershipLotClientProps {
   initialData: any;
-  shopLocations: Array<{ id: string; name: string }>;
+  destinationLocations: Array<{
+    id: string;
+    name: string;
+    lots?: Array<{ id: string; lotNumber: string; quantity: number }>;
+  }>;
+  sourceLots?: Array<{ id: string; lotNumber: string; quantity: number }>;
+  linkedSourceLotId?: string | null;
 }
 
-export function PartnershipLotClient({ initialData, shopLocations }: PartnershipLotClientProps) {
+export function PartnershipLotClient({
+  initialData,
+  destinationLocations,
+  sourceLots = [],
+  linkedSourceLotId = null,
+}: PartnershipLotClientProps) {
+  const router = useRouter();
   const { lot, metrics, items, allocations, expenses, movements, payouts } = initialData;
+  const [deletingLot, setDeletingLot] = useState(false);
 
   const [activeTab, setActiveTab] = useState<"stock" | "sales" | "expenses" | "statements">("stock");
   const [statementSubTab, setStatementSubTab] = useState<"sales" | "movement" | "settlement">("sales");
+  const [statementPaperSize, setStatementPaperSize] = useState<PrintPaperSize>("A4");
 
   // Modals state
   const [showPullModal, setShowPullModal] = useState(false);
+  const [showIntakeModal, setShowIntakeModal] = useState(false);
+  const [showVmiObtainModal, setShowVmiObtainModal] = useState(false);
   const [showLiquidationModal, setShowLiquidationModal] = useState(false);
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [showPayoutModal, setShowPayoutModal] = useState(false);
@@ -92,11 +119,30 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
         <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
-            onClick={() => setShowPullModal(true)}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1 text-xs shadow-sm"
+            variant="outline"
+            onClick={() => setShowIntakeModal(true)}
+            className="gap-1 text-xs border-indigo-300 text-indigo-800"
           >
-            <Truck className="h-3.5 w-3.5" /> Pull to Shop (DO)
+            <Package className="h-3.5 w-3.5" /> Lot intake
           </Button>
+
+          {isConsignment ? (
+            <Button
+              size="sm"
+              onClick={() => setShowVmiObtainModal(true)}
+              className="bg-emerald-700 hover:bg-emerald-800 text-white gap-1 text-xs shadow-sm"
+            >
+              <ShoppingCart className="h-3.5 w-3.5" /> Purchase from partner
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              onClick={() => setShowPullModal(true)}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1 text-xs shadow-sm"
+            >
+              <Truck className="h-3.5 w-3.5" /> Transfer stock
+            </Button>
+          )}
 
           {!isConsignment && (
             <Button
@@ -120,10 +166,42 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
 
           <Button
             size="sm"
+            variant="outline"
+            disabled={deletingLot}
+            onClick={async () => {
+              if (
+                !window.confirm(
+                  `Delete lot ${lot.lotNumber}? Only allowed when stock is cleared and settlement is zero.`,
+                )
+              ) {
+                return;
+              }
+              setDeletingLot(true);
+              try {
+                const res = await deletePartnershipLotAction(lot.id);
+                if (res.success) {
+                  toast.success("Partnership lot deleted.");
+                  router.push("/partnerships");
+                  router.refresh();
+                } else {
+                  toast.error((res as { error?: string }).error || "Could not delete lot.");
+                }
+              } finally {
+                setDeletingLot(false);
+              }
+            }}
+            className="gap-1 text-xs text-rose-700 border-rose-200 hover:bg-rose-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Delete lot
+          </Button>
+
+          <Button
+            size="sm"
             onClick={() => setShowPayoutModal(true)}
             className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1 text-xs shadow-sm"
           >
-            <Banknote className="h-3.5 w-3.5" /> Disburse Payout
+            <Banknote className="h-3.5 w-3.5" />{" "}
+            {metrics.netSettlementDirection === "PARTNER_OWES_ENTITY" ? "Record receipt" : "Disburse Payout"}
           </Button>
         </div>
       </div>
@@ -193,9 +271,10 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
               </span>
             </div>
             <div className="flex justify-between">
-              <span>Units Liquidated:</span>
+              <span>Units Sold:</span>
               <span className="font-semibold text-gray-700">
-                {metrics.pulledUnitsTotal + metrics.liquidatedUnitsTotal} Units
+                {(metrics.totalUnitsSold ?? metrics.internalSoldUnits + metrics.liquidatedUnitsTotal) ?? 0}{" "}
+                Units
               </span>
             </div>
           </div>
@@ -324,17 +403,32 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
       {/* Tab 1: Stock & Transfers */}
       {activeTab === "stock" && (
         <div className="space-y-4">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-wrap justify-between items-center gap-2">
             <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wider">
-              Physical Stock Breakdown & Shop Floor Inward Pulls
+              Stock on hand, intakes &amp; movements
             </h3>
-            <Button
-              size="sm"
-              onClick={() => setShowPullModal(true)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1 text-xs"
-            >
-              <Truck className="h-3.5 w-3.5" /> Pull Stock to Shop (DO)
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => setShowIntakeModal(true)} className="gap-1 text-xs">
+                <Package className="h-3.5 w-3.5" /> Intake
+              </Button>
+              {isConsignment ? (
+                <Button
+                  size="sm"
+                  onClick={() => setShowVmiObtainModal(true)}
+                  className="bg-emerald-700 hover:bg-emerald-800 text-white gap-1 text-xs"
+                >
+                  <ShoppingCart className="h-3.5 w-3.5" /> VMI purchase
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => setShowPullModal(true)}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1 text-xs"
+                >
+                  <Truck className="h-3.5 w-3.5" /> Transfer
+                </Button>
+              )}
+            </div>
           </div>
 
           <div className="bg-white border rounded-xl overflow-hidden shadow-sm">
@@ -376,21 +470,64 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
                     <td className="px-4 py-3 text-right font-bold font-mono text-emerald-600">
                       PKR {it.remainingValuation.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </td>
-                    <td className="px-4 py-3 text-center">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={it.remainingQuantity <= 0}
-                        onClick={() => setShowPullModal(true)}
-                        className="h-7 text-[11px] gap-1 px-2 text-indigo-700 border-indigo-200"
-                      >
-                        <Truck className="h-3 w-3" /> Pull
-                      </Button>
-                    </td>
+                    <td className="px-4 py-3 text-center text-[10px] text-muted-foreground">—</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+
+          <div className="space-y-2">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-gray-700">Movement register</h4>
+            <div className="bg-white border rounded-xl overflow-hidden shadow-sm max-h-80 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 border-b sticky top-0">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-bold">Date &amp; time</th>
+                    <th className="px-3 py-2 text-left font-bold">Type</th>
+                    <th className="px-3 py-2 text-left font-bold">Product</th>
+                    <th className="px-3 py-2 text-left font-bold">Location</th>
+                    <th className="px-3 py-2 text-right font-bold">Qty</th>
+                    <th className="px-3 py-2 text-left font-bold">Notes</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {movements.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                        No stock movements recorded yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    movements.map((m: any) => (
+                      <tr key={m.id} className="hover:bg-gray-50/50">
+                        <td className="px-3 py-2 font-mono text-[11px] whitespace-nowrap">
+                          {new Date(m.date).toLocaleString()}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className="font-semibold text-gray-800">{m.type.replace(/_/g, " ")}</span>
+                          {m.referenceType === "PARTNERSHIP_LOT_INTAKE" && (
+                            <span className="ml-1 text-[10px] text-indigo-600 font-bold">INTAKE</span>
+                          )}
+                          {m.referenceType === "VMI_OBTAIN" && (
+                            <span className="ml-1 text-[10px] text-emerald-700 font-bold">VMI PI</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          {m.productName}{" "}
+                          <span className="text-muted-foreground font-mono text-[10px]">({m.productNo})</span>
+                        </td>
+                        <td className="px-3 py-2 text-gray-700">{m.locationName}</td>
+                        <td className="px-3 py-2 text-right font-bold font-mono">
+                          {m.quantity} {m.unit}
+                        </td>
+                        <td className="px-3 py-2 text-muted-foreground max-w-xs truncate">{m.notes || "—"}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -407,16 +544,14 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
                 Itemized log of POS sales and external partner liquidations with margin split calculation.
               </p>
             </div>
-            {!isConsignment && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setShowLiquidationModal(true)}
-                className="gap-1 text-xs text-purple-700 border-purple-200 hover:bg-purple-50"
-              >
-                <ShoppingCart className="h-3.5 w-3.5" /> Record Partner Liquidation
-              </Button>
-            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowLiquidationModal(true)}
+              className="gap-1 text-xs text-purple-700 border-purple-200 hover:bg-purple-50"
+            >
+              <ShoppingCart className="h-3.5 w-3.5" /> Record Partner Liquidation
+            </Button>
           </div>
 
           <div className="bg-white border rounded-xl overflow-hidden shadow-sm">
@@ -561,6 +696,10 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
       {/* Tab 4: Statements & Printable Reports */}
       {activeTab === "statements" && (
         <div className="space-y-4">
+          <PrintPaperSizeStyle paperSize={statementPaperSize} />
+          <div className="flex flex-wrap items-center justify-between gap-2 print:hidden">
+            <PrintPaperSizeControl value={statementPaperSize} onChange={setStatementPaperSize} />
+          </div>
           <div className="flex border-b gap-3 pb-2 text-xs">
             <button
               onClick={() => setStatementSubTab("sales")}
@@ -608,6 +747,7 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
               netSettlementAmount={metrics.netSettlementAmount}
               netSettlementDirection={metrics.netSettlementDirection}
               totalPayouts={metrics.totalPayouts}
+              totalReceipts={metrics.totalReceipts}
             />
           )}
 
@@ -635,16 +775,41 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
       )}
 
       {/* Modals */}
-      <PullPartnershipStockModal
-        open={showPullModal}
-        onOpenChange={setShowPullModal}
+      <PartnershipLotIntakeModal
+        open={showIntakeModal}
+        onOpenChange={setShowIntakeModal}
         lotId={lot.id}
         lotNumber={lot.lotNumber}
-        lotType={lot.type}
-        partnerName={lot.partnerName}
-        items={items}
-        shopLocations={shopLocations}
       />
+
+      {isConsignment && (
+        <VmiObtainFromLotModal
+          open={showVmiObtainModal}
+          onOpenChange={setShowVmiObtainModal}
+          lotId={lot.id}
+          lotNumber={lot.lotNumber}
+          partnerName={lot.partnerName}
+          items={items}
+          destinationLocations={destinationLocations}
+          sourceLots={sourceLots}
+          linkedSourceLotId={linkedSourceLotId}
+        />
+      )}
+
+      {!isConsignment && (
+        <PullPartnershipStockModal
+          open={showPullModal}
+          onOpenChange={setShowPullModal}
+          lotId={lot.id}
+          lotNumber={lot.lotNumber}
+          lotType={lot.type}
+          partnerName={lot.partnerName}
+          items={items}
+          destinationLocations={destinationLocations}
+          sourceLots={sourceLots}
+          linkedSourceLotId={linkedSourceLotId}
+        />
+      )}
 
       <ExternalLiquidationModal
         open={showLiquidationModal}
@@ -671,6 +836,7 @@ export function PartnershipLotClient({ initialData, shopLocations }: Partnership
         lotNumber={lot.lotNumber}
         partnerName={lot.partnerName}
         suggestedAmount={metrics.netSettlementAmount}
+        direction={metrics.netSettlementDirection === "PARTNER_OWES_ENTITY" ? "IN" : "OUT"}
       />
     </div>
   );

@@ -24,7 +24,6 @@ import {
   reverseMovementsByReferencePrefix,
   resolveOwnershipKey,
   resolvePurchaseOwnership,
-  resolveSaleOwnership,
   getProductCostState,
   partnershipArchetypeFromLot,
 } from "@/lib/inventoryCost.service";
@@ -35,6 +34,9 @@ type SaleStockLine = {
   productId: string;
   locationId?: string | null;
   warehouseLotId?: string | null;
+  lotId?: string | null;
+  ownershipKey?: string | null;
+  ownershipType?: string | null;
   stockSource?: "AUTO_SPLIT" | "REGULAR_ONLY" | "PARTNER_ONLY";
   quantity: number;
 };
@@ -172,6 +174,84 @@ async function resolveSaleStockAllocations(
       continue;
     }
 
+    const explicitLotId =
+      item.lotId ||
+      (typeof item.ownershipKey === "string" && item.ownershipKey.startsWith("LOT:")
+        ? item.ownershipKey.slice(4)
+        : null);
+    const explicitOwn =
+      item.ownershipKey === "OWN" || (item.ownershipType || "").toUpperCase() === "OWN";
+
+    if (location.type === "SHOP" && explicitLotId) {
+      const plot = await tx.partnershipLot.findUnique({
+        where: { id: explicitLotId },
+        select: { warehouseLotId: true, partnerId: true, lotNumber: true },
+      });
+      let whLotId = plot?.warehouseLotId ?? null;
+      if (whLotId) {
+        const belongs = await tx.warehouseLot.findFirst({
+          where: { id: whLotId, locationId, isActive: true, deletedAt: null },
+          select: { id: true },
+        });
+        if (!belongs) whLotId = null;
+      }
+      if (!whLotId && plot) {
+        const match = await tx.warehouseLot.findFirst({
+          where: {
+            locationId,
+            isActive: true,
+            deletedAt: null,
+            lotNumber: plot.lotNumber,
+            ...(plot.partnerId ? { partnerId: plot.partnerId } : {}),
+          },
+          select: { id: true },
+        });
+        whLotId = match?.id ?? null;
+      }
+      if (!whLotId) {
+        const candidates = await tx.warehouseLot.findMany({
+          where: {
+            locationId,
+            isActive: true,
+            deletedAt: null,
+            OR: [{ partnerId: { not: null } }, { lotNumber: { endsWith: "-SHOP" } }],
+          },
+          select: { id: true },
+        });
+        for (const candidate of candidates) {
+          const ownership = await resolvePurchaseOwnership(tx, { warehouseLotId: candidate.id });
+          if (ownership.partnershipLotId === explicitLotId) {
+            whLotId = candidate.id;
+            break;
+          }
+        }
+      }
+      if (!whLotId) {
+        throw userError(
+          `Could not find shop stock for partnership lot ${plot?.lotNumber || explicitLotId}.`,
+        );
+      }
+      const left = await allocate(item.productId, locationId, whLotId, item.quantity);
+      if (left > 0) {
+        const available = item.quantity - left;
+        throw userError(
+          `Insufficient stock in the selected partnership lot. Available: ${available}, requested: ${item.quantity}.`,
+        );
+      }
+      continue;
+    }
+
+    if (location.type === "SHOP" && explicitOwn) {
+      const left = await allocate(item.productId, locationId, null, item.quantity);
+      if (left > 0) {
+        const available = item.quantity - left;
+        throw userError(
+          `Insufficient entity-owned shop stock. Available: ${available}, requested: ${item.quantity}.`,
+        );
+      }
+      continue;
+    }
+
     const stockSource = item.stockSource || "AUTO_SPLIT";
     if (stockSource !== "AUTO_SPLIT" && stockSource !== "REGULAR_ONLY" && stockSource !== "PARTNER_ONLY") {
       throw userError("Select a valid shop stock source.");
@@ -220,6 +300,64 @@ async function resolveSaleStockAllocations(
   }
 
   return allocations;
+}
+
+type SaleCostSlice = {
+  quantity: number;
+  warehouseLotId: string | null;
+  ownership: { ownershipType: "OWN" | "LOT"; partnershipLotId?: string | null };
+  ownershipKey: string;
+  unitCost: number;
+};
+
+function takeSaleSlices(
+  remaining: SaleStockAllocation[],
+  productId: string,
+  locationId: string,
+  quantity: number,
+): SaleStockAllocation[] {
+  const taken: SaleStockAllocation[] = [];
+  let needed = quantity;
+  for (const allocation of remaining) {
+    if (allocation.productId !== productId || allocation.locationId !== locationId || allocation.quantity <= 0.0001) {
+      continue;
+    }
+    const take = Math.min(allocation.quantity, needed);
+    taken.push({ ...allocation, quantity: take });
+    allocation.quantity -= take;
+    needed -= take;
+    if (needed <= 0.0001) break;
+  }
+  return taken;
+}
+
+async function costSlicesForAllocations(
+  tx: Prisma.TransactionClient,
+  productId: string,
+  locationId: string,
+  slices: SaleStockAllocation[],
+  forcedLotId?: string | null,
+): Promise<SaleCostSlice[]> {
+  const priced: SaleCostSlice[] = [];
+  for (const slice of slices) {
+    const resolved = forcedLotId
+      ? { ownershipType: "LOT" as const, partnershipLotId: forcedLotId }
+      : await resolvePurchaseOwnership(tx, { warehouseLotId: slice.warehouseLotId });
+    const ownership = {
+      ownershipType: resolved.ownershipType === "LOT" ? ("LOT" as const) : ("OWN" as const),
+      partnershipLotId: resolved.partnershipLotId ?? null,
+    };
+    const ownershipKey = resolveOwnershipKey(ownership);
+    const preview = await getProductCostState(tx, productId, locationId, ownershipKey);
+    priced.push({
+      quantity: slice.quantity,
+      warehouseLotId: slice.warehouseLotId,
+      ownership,
+      ownershipKey,
+      unitCost: preview.avgCost,
+    });
+  }
+  return priced;
 }
 
 async function resolveSalePartnership(
@@ -356,7 +494,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
           });
         }
         targetCustomerId = walkInParty.id;
-        customerName = finalName;
+        customerName =
+          isGeneric || !rawName ? "Walk-in Customer" : `${rawName} (Walk-in Customer)`;
         customerCreditLimit = null;
         customerBalance = 0;
       } else {
@@ -439,53 +578,46 @@ export async function createSaleInvoiceAction(raw: unknown) {
       const resolvedItems = await Promise.all(
         input.items.map(async (item) => {
           const itemLocId = item.locationId || fallbackLocationId;
-          let unitCost = (item as any).unitCost != null ? Number((item as any).unitCost) : null;
-          let cogsAmount = 0;
-          let saleOwnership: Awaited<ReturnType<typeof resolveSaleOwnership>> | null = null;
-          let ownershipKey: string | null = null;
-
-          if (item.lotId) {
-            const pLot = await tx.partnershipLot.findUnique({
-              where: { id: item.lotId },
-              include: { items: true },
-            });
-            const lotItem = pLot?.items.find((li) => li.productId === item.productId);
-            unitCost = Number(unitCost ?? lotItem?.unitCostRate ?? 0);
-            cogsAmount = Number(item.quantity) * unitCost;
-            saleOwnership = { ownershipType: "LOT", partnershipLotId: item.lotId };
-            ownershipKey = resolveOwnershipKey(saleOwnership);
-
-            let needed = item.quantity;
-            for (const a of remainingAllocations) {
-              if (a.productId === item.productId && a.locationId === itemLocId && a.quantity > 0.0001) {
-                const take = Math.min(a.quantity, needed);
-                a.quantity -= take;
-                needed -= take;
-                if (needed <= 0.0001) break;
-              }
-            }
-          } else {
-            saleOwnership = await resolveSaleOwnership(tx, {
-              productId: item.productId,
-              locationId: itemLocId,
-              lotId: item.lotId,
-              warehouseLotId: item.warehouseLotId,
-              ownershipType: (item as any).ownershipType,
-              ownershipKey: (item as any).ownershipKey,
-            });
-            ownershipKey = resolveOwnershipKey(saleOwnership);
-            const preview = await getProductCostState(tx, item.productId, itemLocId, ownershipKey);
-            unitCost = preview.avgCost;
-            cogsAmount = Number(item.quantity) * preview.avgCost;
+          const slices = takeSaleSlices(remainingAllocations, item.productId, itemLocId, item.quantity);
+          if (slices.length === 0) {
+            throw userError("No stock allocation was found for this sale line.");
           }
+          const forcedLotId =
+            item.lotId ||
+            (typeof item.ownershipKey === "string" && item.ownershipKey.startsWith("LOT:")
+              ? item.ownershipKey.slice(4)
+              : null);
+          const costSlices = await costSlicesForAllocations(
+            tx,
+            item.productId,
+            itemLocId,
+            slices,
+            forcedLotId,
+          );
+          const cogsAmount = costSlices.reduce((sum, slice) => sum + slice.quantity * slice.unitCost, 0);
+          const keys = [...new Set(costSlices.map((slice) => slice.ownershipKey))];
+          const saleOwnership = costSlices[0].ownership;
+          const ownershipKey = keys.length === 1 ? keys[0] : null;
+          const partnershipIds = [
+            ...new Set(
+              costSlices
+                .map((slice) => (slice.ownership.ownershipType === "LOT" ? slice.ownership.partnershipLotId : null))
+                .filter((id): id is string => Boolean(id)),
+            ),
+          ];
+          const warehouseLotIds = [
+            ...new Set(costSlices.map((slice) => slice.warehouseLotId).filter((id): id is string => Boolean(id))),
+          ];
 
           return {
             ...item,
-            resolvedLotId: item.warehouseLotId || null,
-            resolvedUnitCost: unitCost,
+            lotId: partnershipIds.length === 1 ? partnershipIds[0] : item.lotId || null,
+            resolvedLotId: warehouseLotIds.length === 1 ? warehouseLotIds[0] : item.warehouseLotId || null,
+            resolvedUnitCost: item.quantity > 0 ? cogsAmount / Number(item.quantity) : 0,
             cogsAmount,
             saleOwnership,
             ownershipKey,
+            costSlices,
           };
         }),
       );
@@ -535,39 +667,38 @@ export async function createSaleInvoiceAction(raw: unknown) {
         include: { items: true },
       });
 
-      for (const line of invoice.items) {
-        const ownership = line.lotId
-          ? { ownershipType: "LOT", partnershipLotId: line.lotId }
-          : await resolveSaleOwnership(tx, {
-              productId: line.productId,
-              locationId: line.locationId || fallbackLocationId,
-              lotId: line.lotId,
-              warehouseLotId: line.warehouseLotId,
-              ownershipType: line.ownershipType,
-              ownershipKey: line.ownershipKey,
-            });
-        const movementType = line.lotId ? "PARTNER_SALE" : "SALE";
-        const { totalCost, unitCost } = await postOutflow(tx, {
-          productId: line.productId,
-          locationId: line.locationId || fallbackLocationId,
-          ownership,
-          quantity: Number(line.quantity),
-          movementType,
-          referenceType: "SALE_INVOICE",
-          referenceId: `${invoice.id}:${line.id}`,
-        });
+      for (let index = 0; index < invoice.items.length; index++) {
+        const line = invoice.items[index];
+        const resolved = resolvedItems[index];
+        const slices = resolved?.costSlices ?? [];
+        let totalCost = 0;
+        let unitCost = 0;
+        let ownership = slices[0]?.ownership ?? { ownershipType: "OWN" as const };
+        for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex++) {
+          const slice = slices[sliceIndex];
+          ownership = slice.ownership;
+          const posted = await postOutflow(tx, {
+            productId: line.productId,
+            locationId: line.locationId || fallbackLocationId,
+            ownership: slice.ownership,
+            quantity: slice.quantity,
+            movementType: slice.ownership.ownershipType === "LOT" ? "PARTNER_SALE" : "SALE",
+            referenceType: "SALE_INVOICE",
+            referenceId: `${invoice.id}:${line.id}:${sliceIndex}`,
+          });
+          totalCost += posted.totalCost;
+          unitCost = posted.unitCost;
+        }
+        const sliceKeys = [...new Set(slices.map((slice) => slice.ownershipKey))];
         await tx.saleInvoiceItem.update({
           where: { id: line.id },
           data: {
             cogsAmount: totalCost,
             unitCost,
-            ownershipType: ownership.ownershipType,
-            ownershipKey: resolveOwnershipKey(ownership),
+            ownershipType: sliceKeys.length === 1 ? ownership.ownershipType : line.ownershipType,
+            ownershipKey: sliceKeys.length === 1 ? sliceKeys[0] : line.ownershipKey,
           },
         });
-        const resolved = resolvedItems.find(
-          (r) => r.productId === line.productId && Number(r.quantity) === Number(line.quantity),
-        );
         if (resolved) {
           resolved.cogsAmount = totalCost;
           resolved.resolvedUnitCost = unitCost;
@@ -589,11 +720,15 @@ export async function createSaleInvoiceAction(raw: unknown) {
       // Create stock movements (SALE_OUT) at each item's specific location only if not already deducted
       if (!alreadyDeductedByDO) {
         for (const allocation of stockAllocations) {
+          const ownership = await resolvePurchaseOwnership(tx, { warehouseLotId: allocation.warehouseLotId });
           await tx.stockMovement.create({
             data: {
               productId: allocation.productId,
               locationId: allocation.locationId,
               warehouseLotId: allocation.warehouseLotId,
+              partnershipLotId: ownership.ownershipType === "LOT" ? ownership.partnershipLotId : null,
+              ownershipType: ownership.ownershipType,
+              ownershipKey: resolveOwnershipKey(ownership),
               type: StockMovementType.SALE_OUT,
               quantity: allocation.quantity,
               referenceType: "SALE_INVOICE",
@@ -767,8 +902,8 @@ export async function createSaleInvoiceAction(raw: unknown) {
         });
       }
 
-      // Record Payment record for receipt numbering and payment history (NO duplicate ledger entries)
-      if (paidAmount > 0) {
+      // Payment row + allocation for settlement status (cash journal stays on the invoice; no duplicate PAYMENT ledger).
+      if (paidAmount > 0.001) {
         const { sequenceNo: paymentSeq, formattedNumber: paymentFormatted } = await getNextAtomicSequence(
           tx,
           activeYear.id,
@@ -843,18 +978,6 @@ export async function createSaleInvoiceAction(raw: unknown) {
               soldBy: "OWNER",
             },
           });
-
-          // Decrement physical remainingQuantity from lot item
-          if (lotItem) {
-            await tx.partnershipLotItem.update({
-              where: { id: lotItem.id },
-              data: {
-                remainingQuantity: {
-                  decrement: item.quantity,
-                },
-              },
-            });
-          }
 
           // Balanced double-entry for Partner Margin Share:
           // Debit: Partner Margin Share / Profit Allocation (EXPENSE)
@@ -995,7 +1118,11 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             });
           }
           targetCustomerId = walkInParty.id;
-          customerName = walkInParty.name;
+          const named = input.walkInName?.trim();
+          customerName =
+            named && named.toLowerCase() !== "walk-in customer"
+              ? `${named} (Walk-in Customer)`
+              : "Walk-in Customer";
         } else {
           let existingParty = await tx.party.findFirst({
             where: {
@@ -1075,18 +1202,17 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         },
       });
 
-      // C. Delete old auto-created payment & its ledger entries if created at invoice time
-      const oldAutoPayments = await tx.payment.findMany({
-        where: {
-          saleInvoiceId: existing.id,
-          notes: { contains: "Settlement for" },
-        },
+      // C. Remove invoice-linked payment rows (recreated from the edit form; cash stays on the invoice journal)
+      const oldLinkedPayments = await tx.payment.findMany({
+        where: { saleInvoiceId: existing.id },
         select: { id: true },
       });
-      for (const op of oldAutoPayments) {
+      for (const op of oldLinkedPayments) {
+        await tx.invoicePaymentAllocation.deleteMany({ where: { paymentId: op.id } });
         await tx.ledgerEntry.deleteMany({
           where: { referenceType: "PAYMENT", referenceId: op.id },
         });
+        await tx.paymentSplit.deleteMany({ where: { paymentId: op.id } });
         await tx.payment.delete({ where: { id: op.id } });
       }
 
@@ -1146,54 +1272,46 @@ export async function updateSaleInvoiceAction(raw: unknown) {
       const resolvedUpdateItems = await Promise.all(
         input.items.map(async (item) => {
           const itemLocId = item.locationId || fallbackLocationId;
-          let unitCost = (item as any).unitCost != null ? Number((item as any).unitCost) : null;
-          let cogsAmount = 0;
-          let saleOwnership: Awaited<ReturnType<typeof resolveSaleOwnership>> | null = null;
-          let ownershipKey: string | null = null;
-
-          if (item.lotId) {
-            const pLot = await tx.partnershipLot.findUnique({
-              where: { id: item.lotId },
-              include: { items: true },
-            });
-            const lotItem = pLot?.items.find((li) => li.productId === item.productId);
-            unitCost = Number(unitCost ?? lotItem?.unitCostRate ?? 0);
-            cogsAmount = Number(item.quantity) * unitCost;
-            saleOwnership = { ownershipType: "LOT", partnershipLotId: item.lotId };
-            ownershipKey = resolveOwnershipKey(saleOwnership);
-
-            let needed = item.quantity;
-            for (const a of remainingAllocations) {
-              if (a.productId === item.productId && a.locationId === itemLocId && a.quantity > 0.0001) {
-                const take = Math.min(a.quantity, needed);
-                a.quantity -= take;
-                needed -= take;
-                if (needed <= 0.0001) break;
-              }
-            }
-          } else {
-            saleOwnership = await resolveSaleOwnership(tx, {
-              productId: item.productId,
-              locationId: itemLocId,
-              lotId: item.lotId,
-              warehouseLotId: item.warehouseLotId,
-              ownershipType: (item as any).ownershipType,
-              ownershipKey: (item as any).ownershipKey,
-            });
-            ownershipKey = resolveOwnershipKey(saleOwnership);
-            const preview = await getProductCostState(tx, item.productId, itemLocId, ownershipKey);
-            unitCost = preview.avgCost;
-            cogsAmount = Number(item.quantity) * preview.avgCost;
+          const slices = takeSaleSlices(remainingAllocations, item.productId, itemLocId, item.quantity);
+          if (slices.length === 0) {
+            throw userError("No stock allocation was found for this sale line.");
           }
+          const forcedLotId =
+            item.lotId ||
+            (typeof item.ownershipKey === "string" && item.ownershipKey.startsWith("LOT:")
+              ? item.ownershipKey.slice(4)
+              : null);
+          const costSlices = await costSlicesForAllocations(
+            tx,
+            item.productId,
+            itemLocId,
+            slices,
+            forcedLotId,
+          );
+          const cogsAmount = costSlices.reduce((sum, slice) => sum + slice.quantity * slice.unitCost, 0);
+          const keys = [...new Set(costSlices.map((slice) => slice.ownershipKey))];
+          const saleOwnership = costSlices[0].ownership;
+          const ownershipKey = keys.length === 1 ? keys[0] : null;
+          const partnershipIds = [
+            ...new Set(
+              costSlices
+                .map((slice) => (slice.ownership.ownershipType === "LOT" ? slice.ownership.partnershipLotId : null))
+                .filter((id): id is string => Boolean(id)),
+            ),
+          ];
+          const warehouseLotIds = [
+            ...new Set(costSlices.map((slice) => slice.warehouseLotId).filter((id): id is string => Boolean(id))),
+          ];
 
           return {
             ...item,
-            lotId: item.lotId || null,
-            resolvedLotId: item.warehouseLotId || null,
-            resolvedUnitCost: unitCost,
+            lotId: partnershipIds.length === 1 ? partnershipIds[0] : item.lotId || null,
+            resolvedLotId: warehouseLotIds.length === 1 ? warehouseLotIds[0] : item.warehouseLotId || null,
+            resolvedUnitCost: item.quantity > 0 ? cogsAmount / Number(item.quantity) : 0,
             cogsAmount,
             saleOwnership,
             ownershipKey,
+            costSlices,
           };
         }),
       );
@@ -1219,39 +1337,45 @@ export async function updateSaleInvoiceAction(raw: unknown) {
       });
 
       const updatedLines = await tx.saleInvoiceItem.findMany({ where: { invoiceId: existing.id } });
+      const unusedUpdateItems = resolvedUpdateItems.map((item) => ({ item, used: false }));
       for (const line of updatedLines) {
-        const ownership = line.lotId
-          ? { ownershipType: "LOT", partnershipLotId: line.lotId }
-          : await resolveSaleOwnership(tx, {
-              productId: line.productId,
-              locationId: line.locationId || fallbackLocationId,
-              lotId: line.lotId,
-              warehouseLotId: line.warehouseLotId,
-              ownershipType: line.ownershipType,
-              ownershipKey: line.ownershipKey,
-            });
-        const movementType = line.lotId ? "PARTNER_SALE" : "SALE";
-        const { totalCost, unitCost } = await postOutflow(tx, {
-          productId: line.productId,
-          locationId: line.locationId || fallbackLocationId,
-          ownership,
-          quantity: Number(line.quantity),
-          movementType,
-          referenceType: "SALE_INVOICE",
-          referenceId: `${existing.id}:${line.id}`,
-        });
+        const match = unusedUpdateItems.find(
+          (entry) =>
+            !entry.used &&
+            entry.item.productId === line.productId &&
+            Number(entry.item.quantity) === Number(line.quantity),
+        );
+        if (match) match.used = true;
+        const resolved = match?.item;
+        const slices = resolved?.costSlices ?? [];
+        let totalCost = 0;
+        let unitCost = 0;
+        let ownership = slices[0]?.ownership ?? { ownershipType: "OWN" as const };
+        for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex++) {
+          const slice = slices[sliceIndex];
+          ownership = slice.ownership;
+          const posted = await postOutflow(tx, {
+            productId: line.productId,
+            locationId: line.locationId || fallbackLocationId,
+            ownership: slice.ownership,
+            quantity: slice.quantity,
+            movementType: slice.ownership.ownershipType === "LOT" ? "PARTNER_SALE" : "SALE",
+            referenceType: "SALE_INVOICE",
+            referenceId: `${existing.id}:${line.id}:${sliceIndex}`,
+          });
+          totalCost += posted.totalCost;
+          unitCost = posted.unitCost;
+        }
+        const sliceKeys = [...new Set(slices.map((slice) => slice.ownershipKey))];
         await tx.saleInvoiceItem.update({
           where: { id: line.id },
           data: {
             cogsAmount: totalCost,
             unitCost,
-            ownershipType: ownership.ownershipType,
-            ownershipKey: resolveOwnershipKey(ownership),
+            ownershipType: sliceKeys.length === 1 ? ownership.ownershipType : line.ownershipType,
+            ownershipKey: sliceKeys.length === 1 ? sliceKeys[0] : line.ownershipKey,
           },
         });
-        const resolved = resolvedUpdateItems.find(
-          (r) => r.productId === line.productId && Number(r.quantity) === Number(line.quantity),
-        );
         if (resolved) {
           resolved.cogsAmount = totalCost;
           resolved.resolvedUnitCost = unitCost;
@@ -1272,11 +1396,15 @@ export async function updateSaleInvoiceAction(raw: unknown) {
 
       if (!alreadyDeductedByDO) {
         for (const allocation of stockAllocations) {
+          const ownership = await resolvePurchaseOwnership(tx, { warehouseLotId: allocation.warehouseLotId });
           await tx.stockMovement.create({
             data: {
               productId: allocation.productId,
               locationId: allocation.locationId,
               warehouseLotId: allocation.warehouseLotId,
+              partnershipLotId: ownership.ownershipType === "LOT" ? ownership.partnershipLotId : null,
+              ownershipType: ownership.ownershipType,
+              ownershipKey: resolveOwnershipKey(ownership),
               type: StockMovementType.SALE_OUT,
               quantity: allocation.quantity,
               referenceType: "SALE_INVOICE",
@@ -1439,8 +1567,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         });
       }
 
-      // Record Payment record for receipt numbering and payment history (NO duplicate ledger entries)
-      if (paidAmount > 0) {
+      if (paidAmount > 0.001) {
         const activeYear = existing.financialYearId ? { id: existing.financialYearId } : await getActiveFinancialYear(tx);
         const { sequenceNo: paymentSeq, formattedNumber: paymentFormatted } = await getNextAtomicSequence(
           tx,
@@ -1465,17 +1592,13 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             date: input.date,
             notes: `Settlement for Estimate ${existing.invoiceNo} (${input.customerType === "WALK_IN" ? "Walk-in Sale" : "Registered Customer"})`,
             createdById: session.user.id,
-            ...(splitsToRecord.length > 1 || (input.paymentSplits && input.paymentSplits.length > 0)
-              ? {
-                  splits: {
-                    create: splitsToRecord.map((s) => ({
-                      method: s.method,
-                      amount: s.amount,
-                      reference: s.reference || null,
-                    })),
-                  },
-                }
-              : {}),
+            splits: {
+              create: splitsToRecord.map((s) => ({
+                method: s.method,
+                amount: s.amount,
+                reference: s.reference || null,
+              })),
+            },
           },
         });
 
@@ -1518,17 +1641,6 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             },
           });
 
-          if (lotItem) {
-            await tx.partnershipLotItem.update({
-              where: { id: lotItem.id },
-              data: {
-                remainingQuantity: {
-                  decrement: item.quantity,
-                },
-              },
-            });
-          }
-
           if (partnerMarginShare > 0) {
             await tx.ledgerEntry.create({
               data: {
@@ -1565,22 +1677,6 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         }
       }
 
-
-      // Update the SaleInvoice row itself
-      await tx.saleInvoice.update({
-        where: { id: existing.id },
-        data: {
-          customerId: targetCustomerId,
-          locationId: fallbackLocationId,
-          date: input.date,
-          totalAmount,
-          freightCharges: freight,
-          walkInName: input.walkInName?.trim() || null,
-          notes: finalNotes || null,
-          isPartnership: isPartnershipTx,
-          partnershipId,
-        },
-      });
 
       // Recalculate settlement & payment status considering all payments & allocations
       await updateInvoiceSettlementStatus(tx, existing.id, "SALE");
@@ -2017,6 +2113,24 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
             }
             finalLotId = receivingLot.id;
           }
+        }
+
+        const receivingLocationForLot = await tx.location.findUnique({
+          where: { id: itemLoc },
+          select: {
+            name: true,
+            type: true,
+            warehouseLots: { where: { isActive: true, deletedAt: null }, select: { id: true }, take: 1 },
+          },
+        });
+        if (
+          receivingLocationForLot?.type === "WAREHOUSE" &&
+          receivingLocationForLot.warehouseLots.length > 0 &&
+          !finalLotId
+        ) {
+          throw userError(
+            `Select a lot before receiving stock at ${receivingLocationForLot.name}. Warehouses with lots cannot hold unassigned stock.`,
+          );
         }
 
         resolvedItems.push({
@@ -2479,13 +2593,12 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
       await reverseMovement(tx, "PURCHASE_INVOICE", existing.id);
 
       // 3. Revert old auto payments if any
-      const oldAutoPayments = await tx.payment.findMany({
-        where: {
-          purchaseInvoiceId: existing.id,
-          notes: { contains: "Payment for Purchase Invoice" },
-        },
+      const oldLinkedPurchasePayments = await tx.payment.findMany({
+        where: { purchaseInvoiceId: existing.id },
+        select: { id: true },
       });
-      for (const p of oldAutoPayments) {
+      for (const p of oldLinkedPurchasePayments) {
+        await tx.invoicePaymentAllocation.deleteMany({ where: { paymentId: p.id } });
         await tx.ledgerEntry.deleteMany({
           where: { referenceType: "PAYMENT", referenceId: p.id },
         });
@@ -2521,6 +2634,28 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
       await tx.purchaseInvoiceItem.deleteMany({
         where: { invoiceId: existing.id },
       });
+
+      for (const item of input.items) {
+        const itemLoc = item.locationId || fallbackLocationId;
+        const lotId = item.warehouseLotId || input.warehouseLotId || null;
+        const receivingLocationForLot = await tx.location.findUnique({
+          where: { id: itemLoc },
+          select: {
+            name: true,
+            type: true,
+            warehouseLots: { where: { isActive: true, deletedAt: null }, select: { id: true }, take: 1 },
+          },
+        });
+        if (
+          receivingLocationForLot?.type === "WAREHOUSE" &&
+          receivingLocationForLot.warehouseLots.length > 0 &&
+          !lotId
+        ) {
+          throw userError(
+            `Select a lot before receiving stock at ${receivingLocationForLot.name}. Warehouses with lots cannot hold unassigned stock.`,
+          );
+        }
+      }
       const editLayerUnitCosts = allocateInwardFreightToLines(
         input.items.map((i) => ({ quantity: i.quantity, unitCost: i.unitCost })),
         freight,

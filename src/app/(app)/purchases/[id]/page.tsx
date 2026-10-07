@@ -5,8 +5,10 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatSequenceDisplay } from "@/lib/financial-year";
+import { formatDateTime } from "@/lib/utils";
 import { format } from "date-fns";
 import { ArrowLeft, Printer, FileText, ShoppingCart } from "lucide-react";
+import { PrintWithPaperSize } from "@/components/ui/print-with-paper-size";
 import { PrintButton } from "@/components/ui/print-button";
 
 export const dynamic = "force-dynamic";
@@ -88,7 +90,7 @@ export default async function PurchaseInvoiceDetailPage({
         </div>
 
         <div className="flex items-center gap-2">
-          <PrintButton url={`/api/pdf/purchase-invoice/${invoice.id}`} />
+          <PrintWithPaperSize url={`/api/pdf/purchase-invoice/${invoice.id}`} />
         </div>
       </div>
 
@@ -126,7 +128,7 @@ export default async function PurchaseInvoiceDetailPage({
             <div className="flex justify-between">
               <span className="text-slate-500">Date:</span>
               <span className="font-semibold text-slate-800 dark:text-slate-200">
-                {format(new Date(invoice.date), "dd MMMM yyyy")}
+                {formatDateTime(invoice.date)}
               </span>
             </div>
             <div className="flex justify-between">

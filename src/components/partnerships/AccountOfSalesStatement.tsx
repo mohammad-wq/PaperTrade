@@ -39,6 +39,7 @@ interface AccountOfSalesProps {
   netSettlementAmount: number;
   netSettlementDirection: string;
   totalPayouts: number;
+  totalReceipts?: number;
 }
 
 export function AccountOfSalesStatement({
@@ -52,6 +53,7 @@ export function AccountOfSalesStatement({
   netSettlementAmount,
   netSettlementDirection,
   totalPayouts,
+  totalReceipts = 0,
 }: AccountOfSalesProps) {
   const handlePrint = () => {
     window.print();
@@ -61,8 +63,17 @@ export function AccountOfSalesStatement({
   const totalCOGS = allocations.reduce((s, a) => s + a.quantity * a.unitCostRate, 0);
   const totalGrossMargin = allocations.reduce((s, a) => s + a.grossMargin, 0);
   const totalPartnerMarginShare = allocations.reduce((s, a) => s + a.partnerMarginShare, 0);
+  const internalPartnerShare = allocations
+    .filter((a) => a.salesChannel !== "EXTERNAL_PARTNER")
+    .reduce((s, a) => s + a.partnerMarginShare, 0);
+  const externalEntityShare = allocations
+    .filter((a) => a.salesChannel === "EXTERNAL_PARTNER")
+    .reduce((s, a) => s + (a.grossMargin - a.partnerMarginShare), 0);
   const partnerPaidExpenses = expenses
     .filter((e) => e.paidBy === "PARTNER")
+    .reduce((s, e) => s + e.amount, 0);
+  const entityPaidExpenses = expenses
+    .filter((e) => e.paidBy === "ENTITY")
     .reduce((s, e) => s + e.amount, 0);
 
   return (
@@ -244,9 +255,15 @@ export function AccountOfSalesStatement({
           <div className="space-y-2 text-xs">
             <h3 className="font-bold uppercase tracking-wider text-gray-700">3. Net Settlement Calculation</h3>
             <div className="flex justify-between py-1 border-b">
-              <span className="text-muted-foreground">Partner Accrued Margin Share:</span>
+              <span className="text-muted-foreground">Partner share of shop sales:</span>
               <span className="font-bold text-gray-900">
-                PKR {totalPartnerMarginShare.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                PKR {internalPartnerShare.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="flex justify-between py-1 border-b">
+              <span className="text-muted-foreground">Less: Entity share of partner-collected sales:</span>
+              <span className="font-semibold text-rose-700">
+                - PKR {externalEntityShare.toLocaleString(undefined, { minimumFractionDigits: 2 })}
               </span>
             </div>
             <div className="flex justify-between py-1 border-b">
@@ -256,9 +273,21 @@ export function AccountOfSalesStatement({
               </span>
             </div>
             <div className="flex justify-between py-1 border-b">
-              <span className="text-muted-foreground">Less: Payouts & Drawings Made:</span>
+              <span className="text-muted-foreground">Less: Entity paid expenses:</span>
+              <span className="font-semibold text-rose-700">
+                - PKR {entityPaidExpenses.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="flex justify-between py-1 border-b">
+              <span className="text-muted-foreground">Less: Payouts to partner:</span>
               <span className="font-semibold text-emerald-600">
                 - PKR {totalPayouts.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="flex justify-between py-1 border-b">
+              <span className="text-muted-foreground">Add: Receipts from partner:</span>
+              <span className="font-semibold text-indigo-600">
+                + PKR {totalReceipts.toLocaleString(undefined, { minimumFractionDigits: 2 })}
               </span>
             </div>
           </div>

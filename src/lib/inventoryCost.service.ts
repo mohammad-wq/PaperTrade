@@ -136,6 +136,19 @@ export async function resolvePurchaseOwnership(
     if (linked) {
       return { ownershipType: "LOT", partnershipLotId: linked.id };
     }
+    const warehouseLot = await tx.warehouseLot.findUnique({
+      where: { id: params.warehouseLotId },
+      select: { partnerId: true, lotNumber: true },
+    });
+    if (warehouseLot?.partnerId) {
+      const byPartner = await tx.partnershipLot.findFirst({
+        where: { partnerId: warehouseLot.partnerId, lotNumber: warehouseLot.lotNumber },
+        select: { id: true },
+      });
+      if (byPartner) {
+        return { ownershipType: "LOT", partnershipLotId: byPartner.id };
+      }
+    }
   }
   return { ownershipType: "OWN" };
 }

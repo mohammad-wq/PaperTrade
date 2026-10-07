@@ -14,7 +14,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { getDashboardMetricsAction } from "@/actions/dashboard";
-import { format } from "date-fns";
+import { formatDateTime } from "@/lib/utils";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 
 export type DashboardData = {
@@ -273,7 +273,7 @@ export default function DashboardClient({
                   </div>
                   <div className="text-right">
                     <p className="font-bold text-xs text-slate-900">PKR {sale.totalAmount.toLocaleString()}</p>
-                    <p className="text-[10px] text-slate-400">{format(new Date(sale.date), "dd/MM/yyyy")}</p>
+                    <p className="text-[10px] text-slate-400">{formatDateTime(sale.date)}</p>
                   </div>
                 </div>
               ))
@@ -316,7 +316,7 @@ export default function DashboardClient({
                   </div>
                   <div className="text-right">
                     <p className="font-bold text-xs text-slate-900">PKR {purchase.totalAmount.toLocaleString()}</p>
-                    <p className="text-[10px] text-slate-400">{format(new Date(purchase.date), "dd/MM/yyyy")}</p>
+                    <p className="text-[10px] text-slate-400">{formatDateTime(purchase.date)}</p>
                   </div>
                 </div>
               ))

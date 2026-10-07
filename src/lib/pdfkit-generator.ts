@@ -11,7 +11,10 @@ export interface PdfDocumentItem {
   lineTotal?: number | null;
 }
 
+export type PdfPageSize = "A4" | "A5";
+
 export interface PdfDocumentData {
+  pageSize?: PdfPageSize;
   docType: string;
   docNumber: string;
   sequenceNo?: number | null;
@@ -42,6 +45,7 @@ export interface PdfDocumentData {
 }
 
 export interface PdfPaymentReceiptData {
+  pageSize?: PdfPageSize;
   receiptNo: string;
   sequenceNo?: number | null;
   direction?: string;
@@ -78,6 +82,7 @@ export interface PdfPartyStatementRow {
 }
 
 export interface PdfPartyStatementData {
+  pageSize?: PdfPageSize;
   companyName?: string;
   companyAddress?: string;
   companyPhone?: string;
@@ -104,16 +109,53 @@ const formatMoney = (val?: number | null) => {
   return val.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
+function resolvePdfPageSize(pageSize?: PdfPageSize): PdfPageSize {
+  return pageSize === "A5" ? "A5" : "A4";
+}
+
+/** Content width and right edge for portrait document PDFs (points). */
+export function getPdfPortraitLayout(pageSize?: PdfPageSize): {
+  leftMargin: number;
+  rightMargin: number;
+  contentWidth: number;
+  pageSize: PdfPageSize;
+} {
+  const size = resolvePdfPageSize(pageSize);
+  const leftMargin = size === "A5" ? 22 : 28;
+  const pageWidth = size === "A5" ? 419.53 : 595.28;
+  const rightMargin = pageWidth - (size === "A5" ? 22 : 28);
+  return { leftMargin, rightMargin, contentWidth: rightMargin - leftMargin, pageSize: size };
+}
+
+function pdfPageHeight(pageSize: PdfPageSize, landscape = false): number {
+  const portrait = pageSize === "A5" ? 595.28 : 841.89;
+  const landscapeHeight = pageSize === "A5" ? 419.53 : 595.28;
+  return landscape ? landscapeHeight : portrait;
+}
+
+function scaleColumnWidths<T extends { width: number }>(cols: T[], contentWidth: number): T[] {
+  const sum = cols.reduce((s, c) => s + c.width, 0) || 1;
+  let used = 0;
+  return cols.map((c, i) => {
+    const width =
+      i === cols.length - 1
+        ? Math.round((contentWidth - used) * 100) / 100
+        : Math.round((c.width / sum) * contentWidth * 100) / 100;
+    used += width;
+    return { ...c, width };
+  });
+}
+
 export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
-      const leftMargin = 28;
-      const rightMargin = 567.28; // 595.28 - 28
-      const contentWidth = rightMargin - leftMargin; // 539.28
+      const { leftMargin, rightMargin, contentWidth, pageSize } = getPdfPortraitLayout(data.pageSize);
+      const pageBreakY = pdfPageHeight(pageSize) - 70;
+      const rightInset = pageSize === "A5" ? 22 : 28;
 
       const doc = new PDFDocument({
-        size: "A4",
-        margins: { top: 20, bottom: 20, left: leftMargin, right: 28 },
+        size: pageSize,
+        margins: { top: 20, bottom: 20, left: leftMargin, right: rightInset },
         bufferPages: true,
         autoFirstPage: true,
       });
@@ -146,28 +188,46 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
 
       // 1. Header Section (Ultra-compact)
       let curY = 20;
-      doc.font("Helvetica-Bold").fontSize(13).fillColor("#111827").text(companyName, leftMargin, curY, { lineBreak: false });
-
-      // Heading on right
-      doc.font("Helvetica-Bold").fontSize(12).fillColor("#000000").text(printedHeading, leftMargin, curY, {
+      doc.font("Helvetica-Bold").fontSize(13);
+      const nameWidth = doc.widthOfString(companyName);
+      doc.font("Helvetica-Bold").fontSize(12);
+      const headingWidth = doc.widthOfString(printedHeading);
+      const stackHeading = nameWidth + headingWidth + 12 > contentWidth;
+      doc.font("Helvetica-Bold").fontSize(13).fillColor("#111827").text(companyName, leftMargin, curY, {
+        width: stackHeading ? contentWidth : contentWidth - headingWidth - 8,
+        height: 14,
+        ellipsis: true,
+      });
+      doc.font("Helvetica-Bold").fontSize(stackHeading ? 11 : 12).fillColor("#000000").text(printedHeading, leftMargin, stackHeading ? curY + 14 : curY, {
         align: "right",
         width: contentWidth,
-        lineBreak: false,
+        height: 14,
+        ellipsis: true,
       });
 
-      curY += 15;
+      curY += stackHeading ? 30 : 15;
       const subtitleText = `${companyAddress} | Ph: ${companyPhone}`;
-      doc.font("Helvetica").fontSize(7).fillColor("#4b5563").text(subtitleText, leftMargin, curY, { lineBreak: false });
-
       let metaHeaderRight = `No: ${displayDocNumber} | Date: ${data.date}`;
       if (data.financialYearLabel) {
         metaHeaderRight += ` | FY: ${data.financialYearLabel}`;
       }
-      doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#111827").text(metaHeaderRight, leftMargin, curY, {
+      doc.font("Helvetica").fontSize(7);
+      const subtitleWidth = doc.widthOfString(subtitleText);
+      doc.font("Helvetica-Bold").fontSize(7.5);
+      const metaWidth = doc.widthOfString(metaHeaderRight);
+      const stackMeta = subtitleWidth + metaWidth + 10 > contentWidth;
+      doc.font("Helvetica").fontSize(7).fillColor("#4b5563").text(subtitleText, leftMargin, curY, {
+        width: stackMeta ? contentWidth : contentWidth - metaWidth - 8,
+        height: 9,
+        ellipsis: true,
+      });
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#111827").text(metaHeaderRight, leftMargin, stackMeta ? curY + 9 : curY, {
         align: "right",
         width: contentWidth,
-        lineBreak: false,
+        height: 9,
+        ellipsis: true,
       });
+      if (stackMeta) curY += 9;
 
       curY += 12;
       doc.strokeColor("#111827").lineWidth(0.8).moveTo(leftMargin, curY).lineTo(rightMargin, curY).stroke();
@@ -226,15 +286,26 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
 
       let cols: Array<{ key: string; label: string; width: number; align: "left" | "right" | "center" }> = [];
       if (hasRates) {
-        cols = [
-          { key: "num", label: "#", width: 22, align: "left" },
-          { key: "desc", label: "Description", width: 180, align: "left" },
-          { key: "specs", label: "Specifications", width: 105, align: "left" },
-          { key: "qty", label: "Qty", width: 50, align: "right" },
-          { key: "unit", label: "Unit", width: 42, align: "center" },
-          { key: "rate", label: "Rate (PKR)", width: 65, align: "right" },
-          { key: "total", label: "Amount (PKR)", width: 75.28, align: "right" },
-        ];
+        cols = pageSize === "A5"
+          ? [
+              { key: "num", label: "#", width: 16, align: "left" },
+              { key: "desc", label: "Item", width: 100, align: "left" },
+              { key: "specs", label: "Spec", width: 62, align: "left" },
+              { key: "qty", label: "Qty", width: 36, align: "right" },
+              { key: "unit", label: "Unit", width: 30, align: "center" },
+              { key: "rate", label: "Rate", width: 52, align: "right" },
+              { key: "total", label: "Amount", width: 62, align: "right" },
+            ]
+          : [
+              { key: "num", label: "#", width: 22, align: "left" },
+              { key: "desc", label: "Description", width: 180, align: "left" },
+              { key: "specs", label: "Specifications", width: 105, align: "left" },
+              { key: "qty", label: "Qty", width: 50, align: "right" },
+              { key: "unit", label: "Unit", width: 42, align: "center" },
+              { key: "rate", label: "Rate (PKR)", width: 65, align: "right" },
+              { key: "total", label: "Amount (PKR)", width: 75.28, align: "right" },
+            ];
+        cols = scaleColumnWidths(cols, contentWidth);
       } else if (hasLots) {
         cols = [
           { key: "num", label: "#", width: 22, align: "left" },
@@ -243,6 +314,7 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
           { key: "specs", label: "Specifications", width: 120, align: "left" },
           { key: "qty", label: "Quantity", width: 97.28, align: "right" },
         ];
+        cols = scaleColumnWidths(cols, contentWidth);
       } else {
         cols = [
           { key: "num", label: "#", width: 25, align: "left" },
@@ -250,6 +322,7 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
           { key: "specs", label: "Specifications", width: 154, align: "left" },
           { key: "qty", label: "Quantity", width: 120.28, align: "right" },
         ];
+        cols = scaleColumnWidths(cols, contentWidth);
       }
 
       // Table Header Row
@@ -259,9 +332,14 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
       doc.moveTo(leftMargin, tableY + rowHeight + 2).lineTo(rightMargin, tableY + rowHeight + 2).stroke();
 
       let xPos = leftMargin;
-      doc.font("Helvetica-Bold").fontSize(7).fillColor("#111827");
+      doc.font("Helvetica-Bold").fontSize(pageSize === "A5" ? 6.5 : 7).fillColor("#111827");
       for (const col of cols) {
-        doc.text(col.label, xPos + 2, tableY + 3, { width: col.width - 4, align: col.align, lineBreak: false });
+        doc.text(col.label, xPos + 2, tableY + 3, {
+          width: Math.max(4, col.width - 4),
+          height: rowHeight,
+          align: col.align,
+          ellipsis: true,
+        });
         xPos += col.width;
       }
 
@@ -296,7 +374,7 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
             lastLoc = currentItemLoc;
             lastLot = null; // Reset lot tracking when location changes
 
-            if (tableY > 730) {
+            if (tableY > pageBreakY) {
               doc.addPage();
               tableY = 24;
             }
@@ -308,7 +386,7 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
 
           if (currentItemLot !== lastLot) {
             lastLot = currentItemLot;
-            if (tableY > 735) {
+            if (tableY > pageBreakY) {
               doc.addPage();
               tableY = 24;
             }
@@ -320,7 +398,7 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
         }
 
         // Page overflow check (only if really overflowing page boundary)
-        if (tableY > 740) {
+        if (tableY > pageBreakY) {
           doc.addPage();
           tableY = 24;
         }
@@ -360,10 +438,10 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
             .fontSize(6.8)
             .fillColor("#111827")
             .text(val, xPos + 2, tableY + 2.5, {
-              width: col.width - 4,
+              width: Math.max(4, col.width - 4),
+              height: rowHeight - 1,
               align: col.align,
               ellipsis: true,
-              lineBreak: false,
             });
           xPos += col.width;
         }
@@ -379,7 +457,7 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
       let notesBottomY = summaryY;
       let sumBottomY = summaryY;
 
-      const summaryWidth = 200;
+      const summaryWidth = Math.min(200, Math.max(150, contentWidth * 0.48));
       const notesWidth = contentWidth - summaryWidth - 15;
 
       // Left: Notes
@@ -398,43 +476,45 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
       if (typeof data.totalAmount === "number" && !isNaN(data.totalAmount)) {
         const sumX = rightMargin - summaryWidth;
         let sY = summaryY;
+        const labelW = Math.round(summaryWidth * 0.48);
+        const amountX = sumX + labelW;
+        const amountW = summaryWidth - labelW;
+        const drawSummaryRow = (label: string, value: string, bold = false) => {
+          doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(bold ? 7.5 : 7).fillColor(bold ? "#000000" : "#4b5563");
+          doc.text(label, sumX, sY, { width: labelW, height: 10, ellipsis: true });
+          doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(bold ? 8 : 7).fillColor("#111827");
+          doc.text(value, amountX, sY, { width: amountW, height: 10, align: "right", ellipsis: true });
+        };
 
         const freight = typeof data.freightCharges === "number" ? Math.max(0, data.freightCharges) : 0;
         if (freight > 0) {
-          doc.font("Helvetica").fontSize(7).fillColor("#4b5563").text("Subtotal:", sumX, sY, { lineBreak: false });
-          doc.font("Helvetica").fontSize(7).fillColor("#111827").text(`PKR ${formatMoney(data.totalAmount - freight)}`, sumX, sY, { align: "right", width: summaryWidth, lineBreak: false });
+          drawSummaryRow("Subtotal", `PKR ${formatMoney(data.totalAmount - freight)}`);
           sY += 10;
-
-          doc.font("Helvetica").fontSize(7).fillColor("#4b5563").text("Freight / Packing:", sumX, sY, { lineBreak: false });
-          doc.font("Helvetica").fontSize(7).fillColor("#111827").text(`PKR ${formatMoney(freight)}`, sumX, sY, { align: "right", width: summaryWidth, lineBreak: false });
+          drawSummaryRow("Freight", `PKR ${formatMoney(freight)}`);
           sY += 10;
         }
 
-        // Total Row
         doc.rect(sumX - 2, sY - 1, summaryWidth + 4, 14).fill("#f3f4f6");
-        doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#000000").text("Total Amount:", sumX + 2, sY + 2, { lineBreak: false });
-        doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#000000").text(`PKR ${formatMoney(data.totalAmount)}`, sumX, sY + 1.5, { align: "right", width: summaryWidth, lineBreak: false });
+        drawSummaryRow("Total", `PKR ${formatMoney(data.totalAmount)}`, true);
         sY += 16;
 
         const paid = typeof data.amountPaid === "number" ? data.amountPaid : 0;
-        doc.font("Helvetica").fontSize(7).fillColor("#4b5563").text("Amount Paid:", sumX, sY, { lineBreak: false });
-        doc.font("Helvetica").fontSize(7).fillColor("#111827").text(`PKR ${formatMoney(paid)}`, sumX, sY, { align: "right", width: summaryWidth, lineBreak: false });
+        drawSummaryRow("Paid", `PKR ${formatMoney(paid)}`);
         sY += 10;
 
         if (data.paymentSplits && data.paymentSplits.length > 0 && paid > 0) {
           const splitSummary = data.paymentSplits.map((sp) => `${sp.method}: ${formatMoney(sp.amount)}`).join(" | ");
-          doc.font("Helvetica").fontSize(5.8).fillColor("#6b7280").text(`(${splitSummary})`, sumX, sY, { align: "right", width: summaryWidth, lineBreak: false });
+          doc.font("Helvetica").fontSize(5.8).fillColor("#6b7280").text(`(${splitSummary})`, sumX, sY, { align: "right", width: summaryWidth, height: 8, ellipsis: true });
           sY += 8;
         } else if (data.paymentMethod && paid > 0 && data.paymentMethod !== "CASH") {
-          doc.font("Helvetica").fontSize(5.8).fillColor("#6b7280").text(`(Mode: ${data.paymentMethod})`, sumX, sY, { align: "right", width: summaryWidth, lineBreak: false });
+          doc.font("Helvetica").fontSize(5.8).fillColor("#6b7280").text(`(Mode: ${data.paymentMethod})`, sumX, sY, { align: "right", width: summaryWidth, height: 8, ellipsis: true });
           sY += 8;
         }
 
         const balance = Math.max(0, data.totalAmount - paid);
         doc.strokeColor("#9ca3af").lineWidth(0.5).moveTo(sumX, sY).lineTo(rightMargin, sY).stroke();
         sY += 2;
-        doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#000000").text("Balance Due:", sumX, sY, { lineBreak: false });
-        doc.font("Helvetica-Bold").fontSize(8).fillColor("#000000").text(`PKR ${formatMoney(balance)}`, sumX, sY, { align: "right", width: summaryWidth, lineBreak: false });
+        drawSummaryRow("Balance", `PKR ${formatMoney(balance)}`, true);
         sY += 12;
 
         sumBottomY = sY;
@@ -445,12 +525,12 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
       let sigY = Math.max(notesBottomY, sumBottomY) + 24;
 
       // Only add page if content would physically run off A4 sheet
-      if (sigY > 780) {
+      if (sigY > pageBreakY) {
         doc.addPage();
         sigY = 30;
       }
 
-      const sigWidth = 140;
+      const sigWidth = Math.min(140, contentWidth * 0.38);
 
       // Left signature
       doc.strokeColor("#4b5563").lineWidth(0.7).moveTo(leftMargin + 10, sigY).lineTo(leftMargin + 10 + sigWidth, sigY).stroke();
@@ -482,13 +562,12 @@ export function renderDocumentPdfKit(data: PdfDocumentData): Promise<Buffer> {
 export function renderPaymentReceiptPdfKit(data: PdfPaymentReceiptData): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
-      const leftMargin = 28;
-      const rightMargin = 567.28;
-      const contentWidth = rightMargin - leftMargin;
+      const { leftMargin, rightMargin, contentWidth, pageSize } = getPdfPortraitLayout(data.pageSize);
+      const rightInset = pageSize === "A5" ? 22 : 28;
 
       const doc = new PDFDocument({
-        size: "A4",
-        margins: { top: 20, bottom: 20, left: leftMargin, right: 28 },
+        size: pageSize,
+        margins: { top: 20, bottom: 20, left: leftMargin, right: rightInset },
         bufferPages: true,
         autoFirstPage: true,
       });
@@ -585,13 +664,16 @@ export function renderPaymentReceiptPdfKit(data: PdfPaymentReceiptData): Promise
       doc.strokeColor("#111827").lineWidth(0.8).moveTo(leftMargin, tableY).lineTo(rightMargin, tableY).stroke();
       doc.moveTo(leftMargin, tableY + rowHeight + 2).lineTo(rightMargin, tableY + rowHeight + 2).stroke();
 
-      const splitCols = [
-        { label: "#", width: 25, align: "left" as const },
-        { label: "Description / Particulars", width: 235, align: "left" as const },
-        { label: "Method", width: 75, align: "center" as const },
-        { label: "Reference", width: 95, align: "left" as const },
-        { label: "Amount (PKR)", width: 109.28, align: "right" as const },
-      ];
+      const splitCols = scaleColumnWidths(
+        [
+          { label: "#", width: 25, align: "left" as const },
+          { label: "Description / Particulars", width: 235, align: "left" as const },
+          { label: "Method", width: 75, align: "center" as const },
+          { label: "Reference", width: 95, align: "left" as const },
+          { label: "Amount (PKR)", width: 109.28, align: "right" as const },
+        ],
+        contentWidth,
+      );
 
       let xPos = leftMargin;
       doc.font("Helvetica-Bold").fontSize(7).fillColor("#111827");
@@ -613,19 +695,21 @@ export function renderPaymentReceiptPdfKit(data: PdfPaymentReceiptData): Promise
           : `${isMoneyIn ? "Receipt on account" : "Payment on account"} - ${data.partyName}`;
 
         xPos = leftMargin;
-        doc.font("Helvetica").fontSize(6.8).fillColor("#111827").text(String(sIdx), xPos + 2, tableY + 2.5, { width: 21, align: "left", lineBreak: false });
-        xPos += 25;
-
-        doc.font("Helvetica-Bold").text(desc, xPos + 2, tableY + 2.5, { width: 231, align: "left", ellipsis: true, lineBreak: false });
-        xPos += 235;
-
-        doc.font("Helvetica").text(s.method, xPos + 2, tableY + 2.5, { width: 71, align: "center", lineBreak: false });
-        xPos += 75;
-
-        doc.text(s.reference || "—", xPos + 2, tableY + 2.5, { width: 91, align: "left", ellipsis: true, lineBreak: false });
-        xPos += 95;
-
-        doc.font("Helvetica-Bold").text(formatMoney(s.amount), xPos + 2, tableY + 2.5, { width: 105.28, align: "right", lineBreak: false });
+        const cells = [String(sIdx), desc, s.method, s.reference || "—", formatMoney(s.amount)];
+        cells.forEach((val, i) => {
+          const col = splitCols[i];
+          doc
+            .font(i === 1 || i === 4 ? "Helvetica-Bold" : "Helvetica")
+            .fontSize(6.8)
+            .fillColor("#111827")
+            .text(val, xPos + 2, tableY + 2.5, {
+              width: col.width - 4,
+              align: col.align,
+              ellipsis: true,
+              lineBreak: false,
+            });
+          xPos += col.width;
+        });
         tableY += rowHeight;
         sIdx++;
       }
@@ -635,7 +719,7 @@ export function renderPaymentReceiptPdfKit(data: PdfPaymentReceiptData): Promise
       // 5. Remarks & Balances
       let sumY = tableY + 5;
       let notesBottomY = sumY;
-      const sumW = 200;
+      const sumW = Math.min(200, Math.max(140, contentWidth * 0.48));
       const notesWidth = contentWidth - sumW - 15;
 
       if (data.notes && data.notes.trim()) {
@@ -671,7 +755,7 @@ export function renderPaymentReceiptPdfKit(data: PdfPaymentReceiptData): Promise
 
       // 6. Signatures & Stamp (Directly beneath details)
       let sigY = Math.max(notesBottomY, sumY) + 24;
-      const sigWidth = 140;
+      const sigWidth = Math.min(140, contentWidth * 0.38);
 
       // Left: Authorized Cashier signature
       doc.strokeColor("#4b5563").lineWidth(0.7).moveTo(leftMargin + 10, sigY).lineTo(leftMargin + 10 + sigWidth, sigY).stroke();
@@ -703,13 +787,15 @@ export function renderPaymentReceiptPdfKit(data: PdfPaymentReceiptData): Promise
 export function renderPartyStatementPdfKit(data: PdfPartyStatementData): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
-      const leftMargin = 28;
-      const rightMargin = 567.28;
-      const contentWidth = rightMargin - leftMargin; // 539.28
+      const { leftMargin, rightMargin, contentWidth, pageSize } = getPdfPortraitLayout(data.pageSize);
+      const pageHeight = pdfPageHeight(pageSize);
+      const breakY = pageHeight - 62;
+      const footerLineY = pageHeight - 30;
+      const rightInset = pageSize === "A5" ? 22 : 28;
 
       const doc = new PDFDocument({
-        size: "A4",
-        margins: { top: 24, bottom: 36, left: leftMargin, right: 28 },
+        size: pageSize,
+        margins: { top: 24, bottom: 36, left: leftMargin, right: rightInset },
         bufferPages: true,
         autoFirstPage: true,
       });
@@ -730,7 +816,26 @@ export function renderPartyStatementPdfKit(data: PdfPartyStatementData): Promise
       const totalDebits = rows.reduce((sum, r) => sum + (Number(r.debit) || 0), 0);
       const totalCredits = rows.reduce((sum, r) => sum + (Number(r.credit) || 0), 0);
 
-      const colW = { date: 54, ref: 70, desc: 196, debit: 68, credit: 68, bal: 83.28 };
+      const rawCol = { date: 54, ref: 70, desc: 196, debit: 68, credit: 68, bal: 83.28 };
+      const scaled = scaleColumnWidths(
+        [
+          { key: "date", width: rawCol.date },
+          { key: "ref", width: rawCol.ref },
+          { key: "desc", width: rawCol.desc },
+          { key: "debit", width: rawCol.debit },
+          { key: "credit", width: rawCol.credit },
+          { key: "bal", width: rawCol.bal },
+        ],
+        contentWidth,
+      );
+      const colW = {
+        date: scaled[0].width,
+        ref: scaled[1].width,
+        desc: scaled[2].width,
+        debit: scaled[3].width,
+        credit: scaled[4].width,
+        bal: scaled[5].width,
+      };
       const colX = {
         date: leftMargin,
         ref: leftMargin + colW.date,
@@ -855,7 +960,7 @@ export function renderPartyStatementPdfKit(data: PdfPartyStatementData): Promise
           const rowHeight = 16 + detailHeight;
 
           // Page boundary check
-          if (y + rowHeight > 780) {
+          if (y + rowHeight > breakY) {
             doc.addPage();
             y = 28;
             y = drawTableHeader(y);
@@ -918,7 +1023,7 @@ export function renderPartyStatementPdfKit(data: PdfPartyStatementData): Promise
       }
 
       // 4. Totals Footer Row
-      if (y + 22 > 780) {
+      if (y + 22 > breakY) {
         doc.addPage();
         y = 28;
       }
@@ -938,10 +1043,10 @@ export function renderPartyStatementPdfKit(data: PdfPartyStatementData): Promise
       const range = doc.bufferedPageRange();
       for (let i = range.start; i < range.start + range.count; i++) {
         doc.switchToPage(i);
-        doc.strokeColor("#cbd5e1").lineWidth(0.5).moveTo(leftMargin, 812).lineTo(rightMargin, 812).stroke();
+        doc.strokeColor("#cbd5e1").lineWidth(0.5).moveTo(leftMargin, footerLineY).lineTo(rightMargin, footerLineY).stroke();
         doc.font("Helvetica").fontSize(6).fillColor("#64748b");
-        doc.text(`${companyName}  •  Certified Party Statement Ledger  •  Generated: ${new Date().toLocaleString()}`, leftMargin, 816, { lineBreak: false });
-        doc.text(`Page ${i + 1} of ${range.count}`, leftMargin, 816, { align: "right", width: contentWidth, lineBreak: false });
+        doc.text(`${companyName}  •  Certified Party Statement Ledger  •  Generated: ${new Date().toLocaleString()}`, leftMargin, footerLineY + 4, { lineBreak: false });
+        doc.text(`Page ${i + 1} of ${range.count}`, leftMargin, footerLineY + 4, { align: "right", width: contentWidth, lineBreak: false });
       }
 
       doc.end();
@@ -964,6 +1069,7 @@ export interface PdfGeneralLedgerEntry {
 }
 
 export interface PdfGeneralLedgerData {
+  pageSize?: PdfPageSize;
   companyName?: string;
   companyAddress?: string;
   companyPhone?: string;
@@ -980,14 +1086,22 @@ export interface PdfGeneralLedgerData {
 export function renderGeneralLedgerPdfKit(data: PdfGeneralLedgerData): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
-      const leftMargin = 28;
-      const rightMargin = 813.89; // 841.89 - 28
-      const contentWidth = 785.89;
+      const pageSize = resolvePdfPageSize(data.pageSize);
+      const isA5 = pageSize === "A5";
+      const leftMargin = isA5 ? 22 : 28;
+      const pageWidth = isA5 ? 595.28 : 841.89;
+      const rightMargin = pageWidth - leftMargin;
+      const contentWidth = rightMargin - leftMargin;
+
+      const pageHeight = pdfPageHeight(pageSize, true);
+      const breakY = pageHeight - 55;
+      const footerLineY = pageHeight - 28;
+      const rightInset = isA5 ? 22 : 28;
 
       const doc = new PDFDocument({
-        size: "A4",
+        size: pageSize,
         layout: "landscape",
-        margins: { top: 24, bottom: 36, left: leftMargin, right: 28 },
+        margins: { top: 24, bottom: 36, left: leftMargin, right: rightInset },
         bufferPages: true,
         autoFirstPage: true,
       });
@@ -1007,7 +1121,28 @@ export function renderGeneralLedgerPdfKit(data: PdfGeneralLedgerData): Promise<B
       const safeClosingBalance = Number(data.closingBalance) || (safeOpeningBalance + safeTotalDebit - safeTotalCredit);
       const rows = Array.isArray(data.entries) ? data.entries : [];
 
-      const colW = { date: 65, acct: 130, desc: 230, voucher: 110, debit: 80, credit: 80, bal: 90.89 };
+      const rawGl = { date: 65, acct: 130, desc: 230, voucher: 110, debit: 80, credit: 80, bal: 90.89 };
+      const scaledGl = scaleColumnWidths(
+        [
+          { key: "date", width: rawGl.date },
+          { key: "acct", width: rawGl.acct },
+          { key: "desc", width: rawGl.desc },
+          { key: "voucher", width: rawGl.voucher },
+          { key: "debit", width: rawGl.debit },
+          { key: "credit", width: rawGl.credit },
+          { key: "bal", width: rawGl.bal },
+        ],
+        contentWidth,
+      );
+      const colW = {
+        date: scaledGl[0].width,
+        acct: scaledGl[1].width,
+        desc: scaledGl[2].width,
+        voucher: scaledGl[3].width,
+        debit: scaledGl[4].width,
+        credit: scaledGl[5].width,
+        bal: scaledGl[6].width,
+      };
       const colX = {
         date: leftMargin,
         acct: leftMargin + colW.date,
@@ -1077,7 +1212,7 @@ export function renderGeneralLedgerPdfKit(data: PdfGeneralLedgerData): Promise<B
         y += 24;
       } else {
         rows.forEach((row, idx) => {
-          if (y > 520) {
+          if (y > breakY) {
             doc.addPage();
             y = drawTableHeader(24);
           }
@@ -1117,7 +1252,7 @@ export function renderGeneralLedgerPdfKit(data: PdfGeneralLedgerData): Promise<B
       }
 
       // 5. Totals Row
-      if (y > 520) {
+      if (y > breakY) {
         doc.addPage();
         y = drawTableHeader(24);
       }
@@ -1143,10 +1278,10 @@ export function renderGeneralLedgerPdfKit(data: PdfGeneralLedgerData): Promise<B
       const range = doc.bufferedPageRange();
       for (let i = range.start; i < range.start + range.count; i++) {
         doc.switchToPage(i);
-        doc.strokeColor("#cbd5e1").lineWidth(0.5).moveTo(leftMargin, 565).lineTo(rightMargin, 565).stroke();
+        doc.strokeColor("#cbd5e1").lineWidth(0.5).moveTo(leftMargin, footerLineY).lineTo(rightMargin, footerLineY).stroke();
         doc.font("Helvetica").fontSize(6.5).fillColor("#64748b");
-        doc.text(`${companyName}  •  General Ledger Audit Report  •  Generated: ${new Date().toLocaleString()}`, leftMargin, 570, { lineBreak: false });
-        doc.text(`Page ${i + 1} of ${range.count}`, leftMargin, 570, { align: "right", width: contentWidth, lineBreak: false });
+        doc.text(`${companyName}  •  General Ledger Audit Report  •  Generated: ${new Date().toLocaleString()}`, leftMargin, footerLineY + 4, { lineBreak: false });
+        doc.text(`Page ${i + 1} of ${range.count}`, leftMargin, footerLineY + 4, { align: "right", width: contentWidth, lineBreak: false });
       }
 
       doc.end();

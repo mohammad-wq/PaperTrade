@@ -9,15 +9,17 @@ interface PrintButtonProps {
   url: string;
   label?: string;
   className?: string;
+  paperSize?: "A4" | "A5";
 }
 
-export function PrintButton({ url, label = "Print / PDF", className }: PrintButtonProps) {
+export function PrintButton({ url, label = "Print / PDF", className, paperSize = "A4" }: PrintButtonProps) {
   const [printing, setPrinting] = useState(false);
 
   async function handlePrint() {
     setPrinting(true);
     try {
-      await printDocumentPdf(url);
+      const sep = url.includes("?") ? "&" : "?";
+      await printDocumentPdf(`${url}${sep}paperSize=${paperSize}`);
     } catch (err: any) {
       alert(err?.message || "Failed to print document.");
     } finally {

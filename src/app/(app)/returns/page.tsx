@@ -11,7 +11,6 @@ import {
   X,
   ArrowDownLeft,
   ArrowUpRight,
-  Eye,
   Printer,
   Download,
 } from "lucide-react";
@@ -26,9 +25,12 @@ import {
 } from "@/actions/returns";
 import { listSaleInvoicesAction, listPurchaseInvoicesAction } from "@/actions/invoices";
 import { format } from "date-fns";
+import { formatDateTime } from "@/lib/utils";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
-import { printDocumentPdf } from "@/lib/print-pdf";
+import { printDocumentPdf, printDraftPdf } from "@/lib/print-pdf";
+import { PrintPaperSizeControl, type PrintPaperSize } from "@/components/print/PrintPaperSizeControl";
+import { withPaperSizeQuery } from "@/components/ui/print-with-paper-size";
 import { handleFormKeyDown } from "@/lib/keyboard-nav";
 import { useSession } from "next-auth/react";
 import { canPerformAction } from "@/lib/auth/permissions";
@@ -108,6 +110,7 @@ export default function ReturnsPage() {
   const [purchaseInvoices, setPurchaseInvoices] = useState<InvoiceOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [docPaperSize, setDocPaperSize] = useState<PrintPaperSize>("A4");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -168,8 +171,6 @@ export default function ReturnsPage() {
   >([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
-  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
   const searchParams = useSearchParams();
@@ -207,6 +208,7 @@ export default function ReturnsPage() {
 
       const payload = {
         type: tab === "SALES" ? "sale-return" : "purchase-return",
+        paperSize: docPaperSize,
         docNumber: activeDocNo,
         date: returnDate,
         partyName: originalInv?.customer?.name || originalInv?.supplier?.name || "Party",
@@ -226,26 +228,9 @@ export default function ReturnsPage() {
         })),
       };
 
-      const res = await fetch("/api/pdf/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || "Failed to generate preview PDF");
-      }
-
-      if (pdfPreviewUrl) {
-        try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      setPdfPreviewUrl(url);
-      setShowPdfPreviewModal(true);
+      await printDraftPdf(payload as Record<string, unknown>);
     } catch (err: any) {
-      await confirm.alert(err.message || "Failed to preview return PDF", { variant: "destructive" });
+      await confirm.alert(err.message || "Failed to print return", { variant: "destructive" });
     } finally {
       setPreviewLoading(false);
     }
@@ -479,6 +464,7 @@ export default function ReturnsPage() {
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto">
+          <PrintPaperSizeControl value={docPaperSize} onChange={setDocPaperSize} />
           <div className="relative flex-1 sm:w-72">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
             <Input
@@ -561,7 +547,7 @@ export default function ReturnsPage() {
                         </div>
                       </td>
                       <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400 text-[11px]">
-                        {format(new Date(ret.date), "dd/MM/yyyy")}
+                        {formatDateTime(ret.date)}
                       </td>
                       <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-800 dark:text-slate-200">
                         {ret.customer.name}
@@ -579,7 +565,7 @@ export default function ReturnsPage() {
                           className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40"
                           title="Print Return"
                           onClick={() => {
-                            printDocumentPdf(`/api/pdf/sale-return/${ret.id}`).catch((e) =>
+                            printDocumentPdf(withPaperSizeQuery(`/api/pdf/sale-return/${ret.id}`, docPaperSize)).catch((e) =>
                               confirm.alert(e.message, { variant: "destructive" })
                             );
                           }}
@@ -625,7 +611,7 @@ export default function ReturnsPage() {
                       </div>
                     </td>
                     <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-600 dark:text-slate-400 text-[11px]">
-                      {format(new Date(ret.date), "dd/MM/yyyy")}
+                      {formatDateTime(ret.date)}
                     </td>
                     <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-800 dark:text-slate-200">
                       {ret.supplier.name}
@@ -643,7 +629,7 @@ export default function ReturnsPage() {
                         className="h-6 px-1.5 text-xs text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40"
                         title="Print Return"
                         onClick={() => {
-                          printDocumentPdf(`/api/pdf/purchase-return/${ret.id}`).catch((e) =>
+                          printDocumentPdf(withPaperSizeQuery(`/api/pdf/purchase-return/${ret.id}`, docPaperSize)).catch((e) =>
                             confirm.alert(e.message, { variant: "destructive" })
                           );
                         }}
@@ -817,7 +803,7 @@ export default function ReturnsPage() {
 
               <div className="flex items-center justify-between border-t border-slate-100 pt-4">
                 <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
-                  Preview debit/credit note PDF before finalizing
+                  Print the debit or credit note
                 </span>
                 <div className="flex items-center gap-2">
                   <Button
@@ -827,10 +813,10 @@ export default function ReturnsPage() {
                     onClick={handlePreviewPdf}
                     disabled={previewLoading || !selectedInvoiceId || returnItems.filter((i) => i.quantity > 0).length === 0}
                     className="text-xs border-rose-300 text-rose-800 hover:bg-rose-50 dark:hover:bg-rose-950/40 gap-1.5"
-                    title="Preview Credit/Debit Note in PDF"
+                    title="Print credit or debit note"
                   >
-                    <Eye className="h-3.5 w-3.5 text-rose-700" />
-                    {previewLoading ? "Rendering..." : "Preview PDF"}
+                    <Printer className="h-3.5 w-3.5 text-rose-700" />
+                    {previewLoading ? "Printing..." : "Print"}
                   </Button>
                   <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
                     Cancel
@@ -845,67 +831,6 @@ export default function ReturnsPage() {
         </div>
       )}
 
-      {/* Pre-Posting Live PDF Document Preview Modal */}
-      {showPdfPreviewModal && pdfPreviewUrl && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border-2 border-slate-300 dark:border-slate-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
-            <div className="bg-slate-900 text-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-800 select-none">
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-rose-400" />
-                <span className="font-bold text-xs">
-                  {tab === "SALES" ? "Credit Note" : "Debit Note"} Document Preview (Pre-Posting)
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    if (pdfPreviewUrl) {
-                      const win = window.open(pdfPreviewUrl, "_blank");
-                      win?.focus();
-                    }
-                  }}
-                  className="h-7 text-xs border-slate-700 text-slate-200 hover:bg-slate-800 gap-1"
-                  title="Open in dedicated tab for safe printing"
-                >
-                  <Printer className="h-3.5 w-3.5" />
-                  Print / Open Tab
-                </Button>
-                <a
-                  href={pdfPreviewUrl}
-                  download={`${tab === "SALES" ? "Credit-Note" : "Debit-Note"}-Preview-${new Date().toISOString().slice(0, 10)}.pdf`}
-                  className="inline-flex items-center gap-1 h-7 px-2.5 text-xs bg-rose-700 hover:bg-rose-800 text-white rounded font-medium"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Download
-                </a>
-                <button
-                  onClick={() => {
-                    setShowPdfPreviewModal(false);
-                    if (pdfPreviewUrl) {
-                      try { URL.revokeObjectURL(pdfPreviewUrl); } catch {}
-                      setPdfPreviewUrl(null);
-                    }
-                  }}
-                  className="rounded text-slate-400 hover:text-white hover:bg-slate-800 p-1"
-                  title="Close Preview"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 bg-slate-100 dark:bg-slate-950 p-2">
-              <iframe
-                id="returnPdfPreviewIframe"
-                src={pdfPreviewUrl}
-                className="w-full h-full rounded border border-slate-200 dark:border-slate-800 bg-white"
-                title="Return Document PDF Preview"
-              />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

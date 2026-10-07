@@ -237,7 +237,9 @@ export function ProfitLossPdfView({
   expenseItems,
   salesBreakdown,
   purchasesBreakdown,
+  paperSize = "A4",
 }: {
+  paperSize?: "A4" | "A5";
   companyName?: string;
   companyAddress?: string;
   companyPhone?: string;
@@ -284,7 +286,7 @@ export function ProfitLossPdfView({
 }) {
   return (
     <Document>
-      <Page size="A4" style={styles.page}>
+      <Page size={paperSize} style={styles.page}>
         {/* Header Block */}
         <View style={styles.headerRow}>
           <View style={styles.brandBox}>
@@ -506,7 +508,9 @@ export function BalanceSheetPdfView({
   equity,
   receivablesSchedule = [],
   payablesSchedule = [],
+  paperSize = "A4",
 }: {
+  paperSize?: "A4" | "A5";
   companyName?: string;
   companyAddress?: string;
   companyPhone?: string;
@@ -541,7 +545,7 @@ export function BalanceSheetPdfView({
 }) {
   return (
     <Document>
-      <Page size="A4" style={styles.page}>
+      <Page size={paperSize} style={styles.page}>
         {/* Header Block */}
         <View style={styles.headerRow}>
           <View style={styles.brandBox}>
@@ -699,7 +703,9 @@ export function CashFlowPdfView({
   startingBalance = 0,
   endingBalance,
   flowDetails,
+  paperSize = "A4",
 }: {
+  paperSize?: "A4" | "A5";
   companyName?: string;
   companyAddress?: string;
   companyPhone?: string;
@@ -723,7 +729,7 @@ export function CashFlowPdfView({
 }) {
   return (
     <Document>
-      <Page size="A4" style={styles.page}>
+      <Page size={paperSize} style={styles.page}>
         {/* Header Block */}
         <View style={styles.headerRow}>
           <View style={styles.brandBox}>

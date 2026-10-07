@@ -49,7 +49,9 @@ export async function POST(request: NextRequest) {
       freightCharges = 0,
       notes = null,
       items = [],
+      paperSize: bodyPaperSize,
     } = body;
+    const pageSize = bodyPaperSize === "A5" ? "A5" : "A4";
 
     const moduleKey = DOC_TYPE_TO_MODULE[type] || "sales";
     const role = (session.user as any).role;
@@ -75,6 +77,7 @@ export async function POST(request: NextRequest) {
     if (type === "purchase-return") docTitle = "Debit Note";
 
     const pdfBuffer = await renderDocumentPdfKit({
+      pageSize,
       docType: docTitle,
       docNumber,
       financialYearLabel,

@@ -97,6 +97,7 @@ async function createDeliveryOrderStockMovements(
     doNo: string;
     locationId?: string | null;
     destinationLocationId?: string | null;
+    destinationWarehouseLotId?: string | null;
     deliveredTo?: string | null;
     saleInvoiceId?: string | null;
     items: Array<{
@@ -136,6 +137,15 @@ async function createDeliveryOrderStockMovements(
   // If no destination location is set, treat as a pure printed slip with no inventory bindings
   if (!destinationLocationId) {
     return;
+  }
+
+  const destinationLots = await tx.warehouseLot.findMany({
+    where: { locationId: destinationLocationId, isActive: true, deletedAt: null },
+    select: { id: true, lotNumber: true },
+  });
+  const destinationWarehouseLotId = order.destinationWarehouseLotId || null;
+  if (destinationLots.length > 0 && !destinationLots.some((lot: { id: string }) => lot.id === destinationWarehouseLotId)) {
+    throw userError("Select a destination lot. This warehouse already has lots, so stock cannot arrive unassigned.");
   }
 
   await assertStockDeductionsAvailable(
@@ -180,7 +190,7 @@ async function createDeliveryOrderStockMovements(
       data: {
         productId: item.productId,
         locationId: destinationLocationId,
-        warehouseLotId: item.warehouseLotId || null,
+        warehouseLotId: destinationWarehouseLotId,
         type: StockMovementType.TRANSFER_IN,
         quantity: item.quantity,
         referenceType: "DELIVERY_ORDER",
@@ -734,6 +744,7 @@ export async function createDeliveryOrderAction(raw: unknown) {
           customerId: input.customerId || null,
           locationId: headerLocationId,
           destinationLocationId: input.destinationLocationId || null,
+          destinationWarehouseLotId: input.destinationWarehouseLotId || null,
           saleInvoiceId: input.saleInvoiceId || null,
           date: input.date,
           status: input.status,
@@ -790,6 +801,7 @@ const updateDeliveryOrderSchema = z.object({
   customerId: z.string().optional().nullable().or(z.literal("")),
   locationId: z.string().optional().nullable().or(z.literal("")),
   destinationLocationId: z.string().optional().nullable().or(z.literal("")),
+  destinationWarehouseLotId: z.string().optional().nullable().or(z.literal("")),
   saleInvoiceId: z.string().optional().nullable(),
   date: z.coerce.date(),
   status: z.nativeEnum(DeliveryOrderStatus).default(DeliveryOrderStatus.DISPATCHED),
@@ -858,6 +870,7 @@ export async function updateDeliveryOrderAction(raw: unknown) {
           customerId: input.customerId || null,
           locationId: headerLocationId,
           destinationLocationId: input.destinationLocationId || null,
+          destinationWarehouseLotId: input.destinationWarehouseLotId || null,
           saleInvoiceId: input.saleInvoiceId || null,
           date: input.date,
           status: input.status,

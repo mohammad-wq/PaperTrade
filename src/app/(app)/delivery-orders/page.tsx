@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useMemo, useRef, createRef } from "react";
+import React, { useCallback, useEffect, useState, useMemo, useRef, createRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
   Truck,
@@ -40,9 +40,14 @@ import { formatSequenceDisplay } from "@/lib/financial-year";
 import { SearchCombobox } from "@/components/ui/search-combobox";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
-import { printDocumentPdf } from "@/lib/print-pdf";
+import { printDocumentPdf, printDraftPdf } from "@/lib/print-pdf";
+import { PrintPaperSizeControl, type PrintPaperSize } from "@/components/print/PrintPaperSizeControl";
+import { withPaperSizeQuery } from "@/components/ui/print-with-paper-size";
 import { useSession } from "next-auth/react";
 import { canPerformAction } from "@/lib/auth/permissions";
+import { DocumentWorkspace } from "@/components/documents/DocumentWorkspace";
+import { useDockedDraft } from "@/components/documents/DocumentWorkspaceDock";
+import { useDocumentWorkspaceStore } from "@/lib/document-workspace-store";
 
 type DORow = {
   id: string;
@@ -127,6 +132,7 @@ export default function DeliveryOrdersPage() {
   const [warehouseLots, setWarehouseLots] = useState<WarehouseLotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [docPaperSize, setDocPaperSize] = useState<PrintPaperSize>("A4");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -153,6 +159,43 @@ export default function DeliveryOrdersPage() {
   // Ref to hold handleSubmit for key listener
   const handleSubmitRef = useRef<(e: React.FormEvent) => Promise<void>>(() => Promise.resolve());
 
+  function closeDoDialog() {
+    setIsDialogOpen(false);
+    setEditingOrderId(null);
+    setFormError(null);
+    useDocumentWorkspaceStore.getState().clearDock();
+  }
+
+  function detachDoDialog() {
+    const order = editingOrderId ? orders.find((o) => o.id === editingOrderId) : null;
+    const title = order
+      ? `Edit DO ${formatSequenceDisplay(order.sequenceNo, order.doNo)}`
+      : "New delivery order draft";
+    useDocumentWorkspaceStore.getState().setDock({
+      kind: "DO",
+      title,
+      restorePath: "/delivery-orders",
+      snapshot: {
+        editingOrderId,
+        orderType,
+        customerId,
+        locationId,
+        destinationLocationId,
+        destinationWarehouseLotId,
+        orderDate,
+        vehicleNo,
+        driverName,
+        deliveredTo,
+        recipientName,
+        notes,
+        items,
+        saleInvoiceId,
+      },
+    });
+    setIsDialogOpen(false);
+    setFormError(null);
+  }
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if ((e.key === "F2" || e.key === "Insert") && canCreate) {
@@ -163,7 +206,7 @@ export default function DeliveryOrdersPage() {
         searchInputRef.current?.focus();
       } else if (e.key === "Escape" && isDialogOpen) {
         e.preventDefault();
-        setIsDialogOpen(false);
+        closeDoDialog();
       } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && isDialogOpen) {
         e.preventDefault();
         const fakeEv = { preventDefault: () => {} } as React.FormEvent;
@@ -186,6 +229,7 @@ export default function DeliveryOrdersPage() {
   const [customerId, setCustomerId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [destinationLocationId, setDestinationLocationId] = useState("");
+  const [destinationWarehouseLotId, setDestinationWarehouseLotId] = useState("");
   const [orderDate, setOrderDate] = useState(() => {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
@@ -204,11 +248,45 @@ export default function DeliveryOrdersPage() {
   const [saleInvoiceId, setSaleInvoiceId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  useDockedDraft("DO", (snap: {
+    editingOrderId: string | null;
+    orderType: "CUSTOMER" | "INTERNAL_TRANSFER";
+    customerId: string;
+    locationId: string;
+    destinationLocationId: string;
+    destinationWarehouseLotId?: string;
+    orderDate: string;
+    vehicleNo: string;
+    driverName: string;
+    deliveredTo: string;
+    recipientName: string;
+    notes: string;
+    items: LineItem[];
+    saleInvoiceId: string | null;
+  }) => {
+    setEditingOrderId(snap.editingOrderId);
+    setOrderType(snap.orderType);
+    setCustomerId(snap.customerId);
+    setLocationId(snap.locationId);
+    setDestinationLocationId(snap.destinationLocationId);
+    setDestinationWarehouseLotId(snap.destinationWarehouseLotId || "");
+    setOrderDate(snap.orderDate);
+    setVehicleNo(snap.vehicleNo);
+    setDriverName(snap.driverName);
+    setDeliveredTo(snap.deliveredTo);
+    setRecipientName(snap.recipientName);
+    setNotes(snap.notes);
+    setItems(snap.items);
+    setSaleInvoiceId(snap.saleInvoiceId);
+    setIsDialogOpen(true);
+  });
+
   function resetDeliveryOrderForm() {
     setOrderType("CUSTOMER");
     setCustomerId("");
     setLocationId("");
     setDestinationLocationId("");
+    setDestinationWarehouseLotId("");
     setSaleInvoiceId(null);
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
@@ -228,6 +306,7 @@ export default function DeliveryOrdersPage() {
     setCustomerId(order.customer?.id || "");
     setLocationId(order.location.id);
     setDestinationLocationId(order.destinationLocation?.id || "");
+    setDestinationWarehouseLotId((order as { destinationWarehouseLotId?: string | null }).destinationWarehouseLotId || "");
     setSaleInvoiceId(order.linkedSaleInvoice?.id || null);
     setOrderDate(new Date(order.date).toISOString().slice(0, 16));
     setVehicleNo(order.vehicleNo || "");
@@ -343,6 +422,7 @@ export default function DeliveryOrdersPage() {
 
       const payload = {
         type: "delivery-order",
+        paperSize: docPaperSize,
         docNumber: activeDocNo,
         date: orderDate,
         partyName: orderType === "CUSTOMER" ? selectedCustomer?.name || "Customer" : "Internal Stock Transfer",
@@ -366,24 +446,7 @@ export default function DeliveryOrdersPage() {
         }),
       };
 
-      const res = await fetch("/api/pdf/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || "Failed to generate preview PDF");
-      }
-
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const iframe = document.createElement("iframe");
-      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;";
-      iframe.src = objectUrl;
-      document.body.appendChild(iframe);
-      iframe.onload = () => { setTimeout(() => { iframe.contentWindow?.focus(); iframe.contentWindow?.print(); setTimeout(() => { URL.revokeObjectURL(objectUrl); document.body.removeChild(iframe); }, 2000); }, 300); };
+      await printDraftPdf(payload);
     } catch (err: any) {
       await confirm.alert(err.message || "Failed to print DO preview", { variant: "destructive" });
     } finally {
@@ -608,6 +671,11 @@ export default function DeliveryOrdersPage() {
         setFormError("Destination location must be different from source location.");
         return;
       }
+      const destLots = warehouseLots.filter((lot) => lot.locationId === destinationLocationId);
+      if (destLots.length > 0 && !destinationWarehouseLotId) {
+        setFormError("Select a destination lot. This warehouse already has lots.");
+        return;
+      }
     }
     if (items.some((i) => !i.productId || i.quantity <= 0)) {
       setFormError("Please select a valid product and quantity > 0 for all items.");
@@ -640,6 +708,7 @@ export default function DeliveryOrdersPage() {
         customerId: orderType === "CUSTOMER" ? (customerId || null) : null,
         locationId: locationId || undefined,
         destinationLocationId: orderType === "INTERNAL_TRANSFER" ? destinationLocationId : null,
+        destinationWarehouseLotId: orderType === "INTERNAL_TRANSFER" ? destinationWarehouseLotId || null : null,
         saleInvoiceId: saleInvoiceId || undefined,
         date: new Date(orderDate),
         status: isEditing ? (orders.find((o) => o.id === editingOrderId)?.status ?? DeliveryOrderStatus.DRAFT) : DeliveryOrderStatus.DISPATCHED,
@@ -769,6 +838,7 @@ export default function DeliveryOrdersPage() {
 
       {/* Filter and Search Bar */}
       <div className="flex flex-col sm:flex-row gap-2 items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs">
+        <PrintPaperSizeControl value={docPaperSize} onChange={setDocPaperSize} />
         <div className="relative flex-1 w-full">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <Input
@@ -919,7 +989,7 @@ export default function DeliveryOrdersPage() {
                           className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100"
                           title="Print Delivery Order"
                           onClick={() => {
-                            printDocumentPdf(`/api/pdf/delivery-order/${order.id}`).catch((e) =>
+                            printDocumentPdf(withPaperSizeQuery(`/api/pdf/delivery-order/${order.id}`, docPaperSize)).catch((e) =>
                               confirm.alert(e.message, { variant: "destructive" })
                             );
                           }}
@@ -947,57 +1017,58 @@ export default function DeliveryOrdersPage() {
         </div>
       )}
 
-      {/* New DO Modal */}
-      {isDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs overflow-y-auto">
-          <div className="w-[96vw] max-w-6xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
-            {/* Quick Navigation Strip */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 text-xs">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold text-slate-500">Quick Jump:</span>
-                <a
-                  href="/sales"
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
-                >
-                  + Sales Invoice
-                </a>
-                <a
-                  href="/purchases"
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
-                >
-                  + Purchase Invoice
-                </a>
-                <a
-                  href="/purchase-orders"
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
-                >
-                  + Purchase Order
-                </a>
-              </div>
-              <span className="text-[11px] text-slate-400 font-mono">Press [Esc] to close</span>
-            </div>
-
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">{editingOrderId ? "Edit Delivery Order" : "New Delivery Order"}</h2>
-                <p className="text-xs text-slate-500">Dispatch paper consignment with vehicle and driver details</p>
-              </div>
-              <button
-                onClick={() => setIsDialogOpen(false)}
-                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {formError && (
-              <div className="mt-4 rounded-lg bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+      <DocumentWorkspace
+        open={isDialogOpen}
+        icon={<Truck className="h-4 w-4 text-amber-400" />}
+        title={editingOrderId ? "Edit delivery order" : "New delivery order"}
+        onClose={closeDoDialog}
+        onDetach={detachDoDialog}
+        error={formError}
+        toolbar={
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-[11px] font-semibold text-slate-500">Quick jump:</span>
+            <a href="/sales" className="rounded bg-white dark:bg-slate-900 border border-slate-300 px-2 py-0.5 text-[11px] font-medium hover:border-amber-500">
+              + Sales
+            </a>
+            <a href="/purchases" className="rounded bg-white dark:bg-slate-900 border border-slate-300 px-2 py-0.5 text-[11px] font-medium hover:border-amber-500">
+              + PI
+            </a>
+            <a href="/purchase-orders" className="rounded bg-white dark:bg-slate-900 border border-slate-300 px-2 py-0.5 text-[11px] font-medium hover:border-amber-500">
+              + PO
+            </a>
+          </div>
+        }
+        header={
+          <p className="text-[11px] text-slate-500">Dispatch consignment with vehicle and driver details</p>
+        }
+        footer={
+          <div className="px-4 py-2.5 flex flex-wrap items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handlePreviewPdf}
+              disabled={previewLoading || items.length === 0}
+              className="text-xs border-amber-400 h-8 gap-1.5"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              {previewLoading ? "Printing..." : "Print"}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={closeDoDialog} className="text-xs h-8">
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="delivery-order-form"
+              disabled={submitting}
+              className="bg-amber-800 text-white hover:bg-amber-700 text-xs font-semibold h-8"
+            >
+              {submitting ? "Saving..." : editingOrderId ? "Update DO" : "Create DO"}
+            </Button>
+          </div>
+        }
+      >
+            <form id="delivery-order-form" onSubmit={handleSubmit} className="space-y-4 px-1">
               {/* Transfer Type Selection */}
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
                 <Label className="text-xs font-semibold text-slate-700 block mb-2">Delivery / Transfer Type</Label>
@@ -1144,7 +1215,10 @@ export default function DeliveryOrdersPage() {
                             label: loc.name,
                           }))}
                         value={destinationLocationId}
-                        onChange={(val) => setDestinationLocationId(val)}
+                        onChange={(val) => {
+                          setDestinationLocationId(val);
+                          setDestinationWarehouseLotId("");
+                        }}
                         inputRef={destLocationRef}
                         onEnterPress={() => {
                           recipientRef.current?.focus();
@@ -1153,6 +1227,22 @@ export default function DeliveryOrdersPage() {
                         placeholder="Select destination..."
                         className="text-xs h-8"
                       />
+                      {warehouseLots.some((lot) => lot.locationId === destinationLocationId) && (
+                        <select
+                          value={destinationWarehouseLotId}
+                          onChange={(e) => setDestinationWarehouseLotId(e.target.value)}
+                          className="mt-1 h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs"
+                        >
+                          <option value="">Select destination lot</option>
+                          {warehouseLots
+                            .filter((lot) => lot.locationId === destinationLocationId)
+                            .map((lot) => (
+                              <option key={lot.id} value={lot.id}>
+                                Lot {lot.lotNumber}
+                              </option>
+                            ))}
+                        </select>
+                      )}
                     </div>
 
                     <div className="space-y-1">
@@ -1493,35 +1583,8 @@ export default function DeliveryOrdersPage() {
                 />
               </div>
 
-              <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-4">
-                <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
-                  Preview official document layout before dispatch
-                </span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handlePreviewPdf}
-                    disabled={previewLoading || items.length === 0}
-                    className="text-xs border-amber-400 text-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 gap-1.5"
-                    title="Preview DO in PDF format"
-                  >
-                    <Eye className="h-3.5 w-3.5 text-amber-700" />
-                    {previewLoading ? "Rendering..." : "Preview PDF"}
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs font-semibold">
-                    {submitting ? "Saving..." : editingOrderId ? "Update Delivery Order" : "Create Delivery Order"}
-                  </Button>
-                </div>
-              </div>
             </form>
-          </div>
-        </div>
-      )}
+      </DocumentWorkspace>
 
       {/* Quick Create Lot Modal */}
       {quickLotModalOpen && (

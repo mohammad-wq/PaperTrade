@@ -18,6 +18,7 @@ interface SettlementPayoutModalProps {
   lotNumber: string;
   partnerName: string;
   suggestedAmount: number;
+  direction?: "OUT" | "IN";
 }
 
 export function SettlementPayoutModal({
@@ -27,6 +28,7 @@ export function SettlementPayoutModal({
   lotNumber,
   partnerName,
   suggestedAmount,
+  direction = "OUT",
 }: SettlementPayoutModalProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -48,6 +50,7 @@ export function SettlementPayoutModal({
         lotId,
         amount,
         method,
+        direction,
         date: new Date(date),
         notes: notes.trim() || null,
       });
@@ -72,11 +75,12 @@ export function SettlementPayoutModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-lg font-bold">
             <Banknote className="h-5 w-5 text-emerald-600" />
-            Record Partner Settlement Payout
+            {direction === "IN" ? "Record receipt from partner" : "Record Partner Settlement Payout"}
           </DialogTitle>
           <p className="text-xs text-muted-foreground">
-            Disburse profit margin share or consignment payable to <strong className="text-gray-900">{partnerName}</strong> for Lot{" "}
-            <strong className="text-gray-900">{lotNumber}</strong>.
+            {direction === "IN"
+              ? <>Record cash received from <strong className="text-gray-900">{partnerName}</strong> for Lot <strong className="text-gray-900">{lotNumber}</strong>.</>
+              : <>Disburse profit margin share or consignment payable to <strong className="text-gray-900">{partnerName}</strong> for Lot <strong className="text-gray-900">{lotNumber}</strong>.</>}
           </p>
         </DialogHeader>
 
@@ -89,12 +93,14 @@ export function SettlementPayoutModal({
               </span>
             </div>
             <p className="text-[10px] text-muted-foreground">
-              Debit: Accounts Payable (Reduces liability) | Credit: Cash / Bank Account.
+              {direction === "IN"
+                ? "Debit: Cash / Bank | Credit: Receivable from partner."
+                : "Debit: Accounts Payable (Reduces liability) | Credit: Cash / Bank Account."}
             </p>
           </div>
 
           <div>
-            <Label className="text-xs font-semibold">Payout Amount (PKR)</Label>
+            <Label className="text-xs font-semibold">{direction === "IN" ? "Receipt amount (PKR)" : "Payout Amount (PKR)"}</Label>
             <Input
               type="number"
               min="1"

@@ -235,6 +235,7 @@ model WarehouseLot {
   purchaseInvoiceItems PurchaseInvoiceItem[]
   purchaseOrderItems   PurchaseOrderItem[]
   deliveryOrderItems   DeliveryOrderItem[]
+  destinationDeliveryOrders DeliveryOrder[] @relation("DoDestinationLot")
   saleInvoiceItems     SaleInvoiceItem[]
   costLayers           InventoryCostLayer[]
 
@@ -522,6 +523,7 @@ model DeliveryOrder {
   customerId            String?
   locationId            String
   destinationLocationId String?
+  destinationWarehouseLotId String?
   saleInvoiceId         String?              @unique
   date                  DateTime
   status                DeliveryOrderStatus  @default(DRAFT)
@@ -538,6 +540,7 @@ model DeliveryOrder {
   customer            Party?              @relation(fields: [customerId], references: [id])
   location            Location            @relation("SourceLocation", fields: [locationId], references: [id])
   destinationLocation Location?           @relation("DestinationLocation", fields: [destinationLocationId], references: [id])
+  destinationWarehouseLot WarehouseLot?    @relation("DoDestinationLot", fields: [destinationWarehouseLotId], references: [id])
   linkedSaleInvoice   SaleInvoice?        @relation("DeliveryOrderToSaleInvoice", fields: [saleInvoiceId], references: [id])
   saleInvoiceFromDo   SaleInvoice?        @relation("SaleInvoiceToDeliveryOrder")
   createdBy           User                @relation(fields: [createdById], references: [id])

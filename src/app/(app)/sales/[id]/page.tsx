@@ -5,8 +5,9 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatSequenceDisplay } from "@/lib/financial-year";
-import { format } from "date-fns";
+import { formatDateTime } from "@/lib/utils";
 import { ArrowLeft, Printer, FileText, Edit, Truck, CheckCircle2, Clock, AlertCircle } from "lucide-react";
+import { PrintWithPaperSize } from "@/components/ui/print-with-paper-size";
 import { PrintButton } from "@/components/ui/print-button";
 
 export const dynamic = "force-dynamic";
@@ -99,7 +100,7 @@ export default async function SaleInvoiceDetailPage({
             </Button>
           )}
 
-          <PrintButton url={`/api/pdf/sale-invoice/${invoice.id}`} />
+          <PrintWithPaperSize url={`/api/pdf/sale-invoice/${invoice.id}`} />
         </div>
       </div>
 
@@ -139,7 +140,7 @@ export default async function SaleInvoiceDetailPage({
             <div className="flex justify-between">
               <span className="text-slate-500">Date:</span>
               <span className="font-semibold text-slate-800 dark:text-slate-200">
-                {format(new Date(invoice.date), "dd MMMM yyyy")}
+                {formatDateTime(invoice.date)}
               </span>
             </div>
             <div className="flex justify-between">
@@ -312,7 +313,7 @@ export default async function SaleInvoiceDetailPage({
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-400 mt-0.5">
-                    {format(new Date(p.date), "dd/MM/yyyy HH:mm")} {p.notes ? `— ${p.notes}` : ""}
+                    {formatDateTime(p.date)} {p.notes ? `— ${p.notes}` : ""}
                   </p>
                 </div>
                 <div className="flex items-center gap-3">

@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { listLedgerEntriesAction } from "@/actions/ledger";
+import { WALK_IN_LEDGER_FILTER_ALL, WALK_IN_LEDGER_LABEL } from "@/lib/ledger-commercial";
 import { listPartiesAction } from "@/actions/parties";
 import { getBusinessInfoAction } from "@/actions/settings";
 import { AccountType } from "@prisma/client";
@@ -47,6 +48,43 @@ type LedgerRow = {
   createdBy: { name: string };
   allocations?: Array<{ amount: number; docNo: string; date?: Date | string }>;
 };
+
+function isInternalCommercialLine(entry: LedgerRow): boolean {
+  if (
+    entry.accountType === AccountType.COGS ||
+    (entry.accountType as string) === "INVENTORY"
+  ) {
+    return true;
+  }
+  if (
+    entry.referenceType === "SALE_INVOICE" &&
+    entry.accountType === AccountType.EXPENSE &&
+    (entry.description || "").includes("Partner Profit")
+  ) {
+    return true;
+  }
+  if (
+    entry.referenceType === "SALE_INVOICE" &&
+    entry.accountType === AccountType.PAYABLE &&
+    ((entry.description || "").includes("Profit Share") || (entry.description || "").includes("Accrued Profit"))
+  ) {
+    return true;
+  }
+  if (
+    entry.referenceType === "PAYMENT" &&
+    (entry.accountType === AccountType.RECEIVABLE || entry.accountType === AccountType.PAYABLE)
+  ) {
+    return true;
+  }
+  if (
+    entry.referenceType === "PURCHASE_INVOICE" &&
+    (entry.accountType as string) === "INVENTORY" &&
+    !(entry.description || "").toLowerCase().includes("payable")
+  ) {
+    return false;
+  }
+  return false;
+}
 
 type SummaryVoucherRow = {
   id: string;
@@ -80,25 +118,10 @@ function ParticularsCell({
   lineItems?: Array<{ productNo: string; name: string; quantity: number; unit: string }>;
   allocations?: Array<{ amount: number; docNo: string; date?: Date | string }>;
 }) {
-  let items = lineItems || [];
-  if (items.length === 0 && description && description.includes("[")) {
-    const rawMatches = description.match(/\[[^\]]+\][^•,\n]+(?:\([^)]+\))?/g);
-    if (rawMatches && rawMatches.length > 0) {
-      items = rawMatches.map((m) => {
-        const pMatch = m.match(/\[(.*?)\]\s*(.*?)(?:\s*\((.*?)\))?$/);
-        return {
-          productNo: pMatch ? pMatch[1] : "",
-          name: pMatch ? pMatch[2].trim() : m,
-          quantity: 0,
-          unit: pMatch && pMatch[3] ? pMatch[3] : "",
-        };
-      });
-    }
-  }
-
   const primaryLabel = docLabel || description || "Transaction";
-  const hasItems = items.length > 0;
   const secondaryText = cleanDescription?.trim();
+  const items = secondaryText ? [] : lineItems || [];
+  const hasItems = items.length > 0;
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -215,6 +238,25 @@ function LedgerContent() {
   const [parties, setParties] = useState<Array<{ id: string; name: string; type: string; phone?: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [businessName, setBusinessName] = useState("Sughra Trader");
+  const [documentTotals, setDocumentTotals] = useState<{
+    sales: Record<string, { total: number; paid: number }>;
+    purchases: Record<string, { total: number; paid: number }>;
+  }>({ sales: {}, purchases: {} });
+  type CommercialDocMeta = {
+    date: Date | string;
+    docNo: string;
+    party: { id: string; name: string; type: string } | null;
+    freight: number;
+    total: number;
+    paid: number;
+    productLines: Array<{ name: string; productNo: string; quantity: number; unit: string; lineTotal: number }>;
+    paymentLines?: Array<{ method: string; label: string; amount: number }>;
+  };
+  const [commercialDocuments, setCommercialDocuments] = useState<{
+    sales: Record<string, CommercialDocMeta>;
+    purchases: Record<string, CommercialDocMeta>;
+  }>({ sales: {}, purchases: {} });
+  const [paperSize, setPaperSize] = useState<"A4" | "A5">("A4");
 
   // View mode: detailed (Internal Audit) vs summary (Shareable Statement)
   const initialView = searchParams.get("view") === "summary" ? "summary" : "detailed";
@@ -222,10 +264,14 @@ function LedgerContent() {
 
   // Filters
   const initialParty = searchParams.get("partyId") || "ALL";
+  const initialWalkInRaw = searchParams.get("walkIn") || "";
+  const initialWalkIn =
+    initialWalkInRaw === "all" ? WALK_IN_LEDGER_FILTER_ALL : initialWalkInRaw;
   const initialStartDate = searchParams.get("startDate") || "";
   const initialEndDate = searchParams.get("endDate") || "";
 
-  const [partyId, setPartyId] = useState(initialParty);
+  const [partyId, setPartyId] = useState(initialWalkIn ? "ALL" : initialParty);
+  const [walkInCustomer, setWalkInCustomer] = useState(initialWalkIn);
   const [accountType, setAccountType] = useState<string>("ALL");
   const [referenceType, setReferenceType] = useState<string>("ALL");
   const [datePreset, setDatePreset] = useState<"ALL" | "TODAY" | "THIS_WEEK" | "THIS_MONTH" | "THIS_QUARTER" | "THIS_YEAR" | "CUSTOM">(
@@ -274,7 +320,8 @@ function LedgerContent() {
     if (!isBackground) setLoading(true);
     try {
       const res = await listLedgerEntriesAction({
-        partyId: partyId === "ALL" ? undefined : partyId,
+        partyId: walkInCustomer ? undefined : partyId === "ALL" ? undefined : partyId,
+        walkInCustomer: walkInCustomer.trim() || undefined,
         accountType: accountType === "ALL" ? undefined : (accountType as AccountType),
         referenceType: referenceType === "ALL" ? undefined : referenceType,
         startDate: startDate || undefined,
@@ -288,6 +335,15 @@ function LedgerContent() {
         setTotalCredit(res.data.totalCredit);
         setOpeningBalance(res.data.openingBalance);
         setClosingBalance(res.data.closingBalance);
+        setDocumentTotals(
+          (res.data as { documentTotals?: typeof documentTotals }).documentTotals ?? { sales: {}, purchases: {} },
+        );
+        setCommercialDocuments(
+          (res.data as { commercialDocuments?: typeof commercialDocuments }).commercialDocuments ?? {
+            sales: {},
+            purchases: {},
+          },
+        );
       }
     } finally {
       if (!isBackground) setLoading(false);
@@ -311,7 +367,7 @@ function LedgerContent() {
   useEffect(() => {
     void loadLedger();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [partyId, accountType, referenceType, startDate, endDate, sortOrder]);
+  }, [partyId, walkInCustomer, accountType, referenceType, startDate, endDate, sortOrder]);
 
   function applyDatePreset(preset: "ALL" | "TODAY" | "THIS_WEEK" | "THIS_MONTH" | "THIS_QUARTER" | "THIS_YEAR") {
     setDatePreset(preset);
@@ -370,6 +426,236 @@ function LedgerContent() {
     [parties, partyId]
   );
 
+  const commercialBookMode =
+    (partyId === "ALL" || !!walkInCustomer.trim()) &&
+    accountType === "ALL" &&
+    referenceType === "ALL";
+
+  const commercialEntries = useMemo(() => {
+    if (!commercialBookMode) return filteredEntries;
+    return filteredEntries.filter((e) => !isInternalCommercialLine(e));
+  }, [filteredEntries, commercialBookMode]);
+
+  const detailedLedgerRows = useMemo(() => {
+    if (!commercialBookMode) return commercialEntries;
+
+    const saleIds = new Set(Object.keys(commercialDocuments.sales));
+    const purchaseIds = new Set(Object.keys(commercialDocuments.purchases));
+    const presentSaleIds = new Set(
+      commercialEntries.filter((e) => e.referenceType === "SALE_INVOICE").map((e) => e.referenceId),
+    );
+    const presentPurchaseIds = new Set(
+      commercialEntries.filter((e) => e.referenceType === "PURCHASE_INVOICE").map((e) => e.referenceId),
+    );
+
+    const passthrough = commercialEntries.filter((e) => {
+      if (e.referenceType === "SALE_INVOICE" && saleIds.has(e.referenceId) && presentSaleIds.has(e.referenceId)) {
+        return false;
+      }
+      if (
+        e.referenceType === "PURCHASE_INVOICE" &&
+        purchaseIds.has(e.referenceId) &&
+        presentPurchaseIds.has(e.referenceId)
+      ) {
+        return false;
+      }
+      return true;
+    });
+
+    const expanded: LedgerRow[] = [];
+
+    const pushDocBlock = (
+      kind: "SALE_INVOICE" | "PURCHASE_INVOICE",
+      id: string,
+      doc: CommercialDocMeta,
+      voucherPrefix: string,
+    ) => {
+      const date = new Date(doc.date);
+      const docLabel =
+        kind === "SALE_INVOICE" ? `Sale Invoice ${doc.docNo}` : `Purchase Invoice ${doc.docNo}`;
+
+      for (const line of doc.productLines) {
+        const isSale = kind === "SALE_INVOICE";
+        expanded.push({
+          id: `commercial-${kind}-${id}-${line.productNo}`,
+          date,
+          accountType: isSale ? AccountType.SALES : AccountType.PURCHASES,
+          referenceType: kind,
+          referenceId: id,
+          description: `${voucherPrefix} ${line.name} ${line.quantity} ${line.unit} ${line.lineTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          cleanDescription: `${line.name}  ${line.quantity} ${line.unit}  ${line.lineTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          docLabel,
+          docNo: doc.docNo,
+          voucherType: isSale ? "Estimate" : "Purchase",
+          lineItems: [],
+          debit: isSale ? 0 : line.lineTotal,
+          credit: isSale ? line.lineTotal : 0,
+          party: doc.party,
+          createdBy: { name: "System" },
+          runningBalance: 0,
+        } as LedgerRow);
+      }
+
+      if (doc.freight > 0.001) {
+        const isSale = kind === "SALE_INVOICE";
+        expanded.push({
+          id: `commercial-${kind}-${id}-freight`,
+          date,
+          accountType: AccountType.SALES,
+          referenceType: kind,
+          referenceId: id,
+          description: `${voucherPrefix} freight ${doc.freight.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          cleanDescription: `Freight  ${doc.freight.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          docLabel,
+          docNo: doc.docNo,
+          voucherType: isSale ? "Estimate" : "Purchase",
+          lineItems: [],
+          debit: isSale ? 0 : doc.freight,
+          credit: isSale ? doc.freight : 0,
+          party: doc.party,
+          createdBy: { name: "System" },
+          runningBalance: 0,
+        } as LedgerRow);
+      }
+
+      expanded.push({
+        id: `commercial-${kind}-${id}-total`,
+        date,
+        accountType: AccountType.RECEIVABLE,
+        referenceType: kind,
+        referenceId: id,
+        description: `${voucherPrefix} total ${doc.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+        cleanDescription: "Document total",
+        docLabel,
+        docNo: doc.docNo,
+        voucherType: kind === "SALE_INVOICE" ? "Estimate" : "Purchase",
+        lineItems: [],
+        debit: doc.total,
+        credit: doc.total,
+        party: doc.party,
+        createdBy: { name: "System" },
+        runningBalance: 0,
+      } as LedgerRow);
+
+      const balanceDue = Math.max(0, doc.total - doc.paid);
+      const paymentLines =
+        doc.paymentLines && doc.paymentLines.length > 0
+          ? doc.paymentLines
+          : doc.paid > 0.001
+            ? [{ method: "CASH", label: "cash", amount: doc.paid }]
+            : [];
+      paymentLines.forEach((pl, payIdx) => {
+        const isSale = kind === "SALE_INVOICE";
+        const amtFormatted = pl.amount.toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+        expanded.push({
+          id: `commercial-${kind}-${id}-pay-${payIdx}`,
+          date,
+          accountType: AccountType.CASH,
+          referenceType: kind,
+          referenceId: id,
+          description: `${voucherPrefix} payment ${amtFormatted} ${pl.label}`,
+          cleanDescription: `${pl.label}  ${amtFormatted}`,
+          docLabel,
+          docNo: doc.docNo,
+          voucherType: isSale ? "Estimate" : "Purchase",
+          lineItems: [],
+          debit: isSale ? 0 : pl.amount,
+          credit: isSale ? pl.amount : 0,
+          party: doc.party,
+          createdBy: { name: "System" },
+          runningBalance: 0,
+        } as LedgerRow);
+      });
+      if (balanceDue > 0.001) {
+        expanded.push({
+          id: `commercial-${kind}-${id}-due`,
+          date,
+          accountType: AccountType.RECEIVABLE,
+          referenceType: kind,
+          referenceId: id,
+          description: `${voucherPrefix} balance due ${balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          cleanDescription: `Balance due  ${balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          docLabel,
+          docNo: doc.docNo,
+          voucherType: kind === "SALE_INVOICE" ? "Estimate" : "Purchase",
+          lineItems: [],
+          debit: balanceDue,
+          credit: 0,
+          party: doc.party,
+          createdBy: { name: "System" },
+          runningBalance: 0,
+        } as LedgerRow);
+      }
+    };
+
+    for (const id of presentSaleIds) {
+      const doc = commercialDocuments.sales[id];
+      if (!doc) continue;
+      const rawNum = doc.docNo.replace(/^#/, "");
+      pushDocBlock("SALE_INVOICE", id, doc, rawNum.startsWith("SI") ? rawNum : `SI ${rawNum}`);
+    }
+    for (const id of presentPurchaseIds) {
+      const doc = commercialDocuments.purchases[id];
+      if (!doc) continue;
+      const rawNum = doc.docNo.replace(/^#/, "");
+      pushDocBlock("PURCHASE_INVOICE", id, doc, rawNum.startsWith("PI") ? rawNum : `PI ${rawNum}`);
+    }
+
+    const merged = [...passthrough, ...expanded].sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+    );
+    let running = openingBalance;
+    const withBalance = merged.map((row) => {
+      running += Number(row.debit) - Number(row.credit);
+      return { ...row, runningBalance: running };
+    });
+    return sortOrder === "desc" ? [...withBalance].reverse() : withBalance;
+  }, [commercialBookMode, commercialDocuments, commercialEntries, openingBalance, sortOrder]);
+
+  const commercialPeriodTotals = useMemo(() => {
+    if (!commercialBookMode) {
+      return { debit: totalDebit, credit: totalCredit, closing: closingBalance };
+    }
+    const saleIds = new Set(
+      commercialEntries.filter((e) => e.referenceType === "SALE_INVOICE").map((e) => e.referenceId),
+    );
+    const purchaseIds = new Set(
+      commercialEntries.filter((e) => e.referenceType === "PURCHASE_INVOICE").map((e) => e.referenceId),
+    );
+    let debit = 0;
+    let credit = 0;
+    for (const id of saleIds) {
+      const doc = commercialDocuments.sales[id];
+      if (!doc) continue;
+      debit += doc.total;
+      credit += doc.paid > 0 ? doc.paid : doc.total;
+    }
+    for (const id of purchaseIds) {
+      const doc = commercialDocuments.purchases[id];
+      if (!doc) continue;
+      debit += doc.total;
+      credit += doc.paid > 0 ? doc.paid : doc.total;
+    }
+    for (const e of commercialEntries) {
+      if (e.referenceType === "SALE_INVOICE" && saleIds.has(e.referenceId)) continue;
+      if (e.referenceType === "PURCHASE_INVOICE" && purchaseIds.has(e.referenceId)) continue;
+      debit += Number(e.debit) || 0;
+      credit += Number(e.credit) || 0;
+    }
+    return { debit, credit, closing: openingBalance + debit - credit };
+  }, [
+    commercialBookMode,
+    commercialDocuments,
+    commercialEntries,
+    closingBalance,
+    openingBalance,
+    totalCredit,
+    totalDebit,
+  ]);
+
   // Summary Ledger Aggregation: Collapse multi-line vouchers into single row per transaction
   const summaryVouchers = useMemo(() => {
     // 1. Group entries by transaction voucher
@@ -389,9 +675,63 @@ function LedgerContent() {
       }
     >();
 
-    for (const e of entries) {
+    const source = commercialBookMode ? commercialEntries : filteredEntries;
+
+    for (const e of source) {
       const key = e.referenceId ? `${e.referenceType}:${e.referenceId}` : e.id;
       const parsedDate = new Date(e.date);
+
+      if (
+        commercialBookMode &&
+        e.referenceType === "SALE_INVOICE" &&
+        e.referenceId &&
+        documentTotals.sales[e.referenceId]
+      ) {
+        if (!voucherMap.has(key)) {
+          const meta = documentTotals.sales[e.referenceId];
+          const rawNum = (e.docNo || "").replace(/^#/, "");
+          const tranNo = rawNum.startsWith("SV") ? rawNum : `SV ${rawNum}`;
+          voucherMap.set(key, {
+            id: e.id,
+            date: parsedDate,
+            referenceType: e.referenceType,
+            referenceId: e.referenceId,
+            docNo: tranNo,
+            description: "Sales invoice total",
+            debit: meta.total,
+            credit: meta.paid > 0 ? meta.paid : meta.total,
+            party: e.party,
+            allocations: e.allocations || [],
+          });
+        }
+        continue;
+      }
+
+      if (
+        commercialBookMode &&
+        e.referenceType === "PURCHASE_INVOICE" &&
+        e.referenceId &&
+        documentTotals.purchases[e.referenceId]
+      ) {
+        if (!voucherMap.has(key)) {
+          const meta = documentTotals.purchases[e.referenceId];
+          const rawNum = (e.docNo || "").replace(/^#/, "");
+          const tranNo = rawNum.startsWith("PI") || rawNum.startsWith("PV") ? rawNum : `PI ${rawNum}`;
+          voucherMap.set(key, {
+            id: e.id,
+            date: parsedDate,
+            referenceType: e.referenceType,
+            referenceId: e.referenceId,
+            docNo: tranNo,
+            description: "Purchase invoice total",
+            debit: meta.total,
+            credit: meta.paid > 0 ? meta.paid : meta.total,
+            party: e.party,
+            allocations: e.allocations || [],
+          });
+        }
+        continue;
+      }
 
       if (!voucherMap.has(key)) {
         // Clean Tran No format (e.g. SV 6328, PI 001)
@@ -490,14 +830,23 @@ function LedgerContent() {
 
     // 4. Return order matching user's sort selection
     return sortOrder === "desc" ? [...filtered].reverse() : filtered;
-  }, [entries, openingBalance, query, sortOrder]);
+  }, [commercialEntries, commercialBookMode, documentTotals, filteredEntries, openingBalance, query, sortOrder]);
 
   // Total sums for summary mode
   const summaryTotalDebit = useMemo(() => summaryVouchers.reduce((s, v) => s + v.debit, 0), [summaryVouchers]);
   const summaryTotalCredit = useMemo(() => summaryVouchers.reduce((s, v) => s + v.credit, 0), [summaryVouchers]);
 
+  const displayPeriodDebit = commercialBookMode ? commercialPeriodTotals.debit : totalDebit;
+  const displayPeriodCredit = commercialBookMode ? commercialPeriodTotals.credit : totalCredit;
+  const displayClosingBalance = commercialBookMode ? commercialPeriodTotals.closing : closingBalance;
+
   return (
     <div className="flex flex-col gap-3 p-4">
+      <style>{`
+        @media print {
+          @page { size: ${paperSize}; margin: 10mm; }
+        }
+      `}</style>
       {/* ========================================================================= */}
       {/* DEDICATED PRINT STATIONERY: Matches standard professional accounting print */}
       {/* ========================================================================= */}
@@ -510,7 +859,17 @@ function LedgerContent() {
               <p className="text-xs font-semibold uppercase text-slate-700">Statement of Account / Ledger</p>
             </div>
             <div className="text-right">
-              {selectedPartyObj ? (
+              {walkInCustomer === WALK_IN_LEDGER_FILTER_ALL ? (
+                <div>
+                  <p className="text-base font-bold uppercase">Walk-in customers</p>
+                  <p className="text-xs text-slate-600">All counter / walk-in sales</p>
+                </div>
+              ) : walkInCustomer.trim() ? (
+                <div>
+                  <p className="text-base font-bold uppercase">{walkInCustomer}</p>
+                  <p className="text-xs text-slate-600">Walk-in customer sales</p>
+                </div>
+              ) : selectedPartyObj ? (
                 <div>
                   <p className="text-base font-bold uppercase">
                     {selectedPartyObj.phone || selectedPartyObj.id.slice(-8).toUpperCase()}{" "}
@@ -580,10 +939,10 @@ function LedgerContent() {
               </span>
             )}
             <span className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded">
-              Debits: <strong>PKR {totalDebit.toLocaleString()}</strong>
+              Debits: <strong>PKR {displayPeriodDebit.toLocaleString()}</strong>
             </span>
             <span className="bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2 py-1 rounded">
-              Credits: <strong>PKR {totalCredit.toLocaleString()}</strong>
+              Credits: <strong>PKR {displayPeriodCredit.toLocaleString()}</strong>
             </span>
             <span
               className={`px-2 py-1 rounded border font-mono ${
@@ -592,7 +951,7 @@ function LedgerContent() {
                   : "bg-amber-50 text-amber-900 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800"
               }`}
             >
-              Closing: <strong>PKR {Math.abs(closingBalance).toLocaleString()} {closingBalance >= 0 ? "Dr" : "Cr"}</strong>
+              Closing: <strong>PKR {Math.abs(displayClosingBalance).toLocaleString()} {displayClosingBalance >= 0 ? "Dr" : "Cr"}</strong>
             </span>
           </div>
 
@@ -625,6 +984,16 @@ function LedgerContent() {
               Summary
             </button>
           </div>
+
+          <select
+            value={paperSize}
+            onChange={(e) => setPaperSize(e.target.value as "A4" | "A5")}
+            className="h-8 text-xs border border-slate-300 rounded-md px-2 bg-white dark:bg-slate-900 no-print"
+            title="Paper size for print"
+          >
+            <option value="A4">Print A4</option>
+            <option value="A5">Print A5</option>
+          </select>
 
           <Button
             variant="outline"
@@ -702,22 +1071,49 @@ function LedgerContent() {
             <div className="space-y-1">
               <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">Party Account</label>
               <select
-                value={partyId}
+                value={
+                  walkInCustomer === WALK_IN_LEDGER_FILTER_ALL
+                    ? "WALKIN_ALL"
+                    : walkInCustomer
+                      ? `WALKIN|${walkInCustomer}`
+                      : partyId
+                }
                 onChange={(e) => {
-                  setPartyId(e.target.value);
+                  const v = e.target.value;
                   const p = new URLSearchParams(window.location.search);
-                  if (e.target.value === "ALL") p.delete("partyId");
-                  else p.set("partyId", e.target.value);
+                  if (v === "WALKIN_ALL") {
+                    setWalkInCustomer(WALK_IN_LEDGER_FILTER_ALL);
+                    setPartyId("ALL");
+                    p.delete("partyId");
+                    p.set("walkIn", "all");
+                  } else if (v.startsWith("WALKIN|")) {
+                    const label = v.slice("WALKIN|".length);
+                    setWalkInCustomer(label);
+                    setPartyId("ALL");
+                    p.delete("partyId");
+                    p.set("walkIn", label);
+                  } else {
+                    setWalkInCustomer("");
+                    p.delete("walkIn");
+                    setPartyId(v);
+                    if (v === "ALL") p.delete("partyId");
+                    else p.set("partyId", v);
+                  }
                   router.replace(`${pathname}?${p.toString()}`);
                 }}
                 className="w-full h-8 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs font-medium"
               >
                 <option value="ALL">All Parties / General Accounts</option>
-                {parties.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
+                <option value="WALKIN_ALL">Walk-in customers</option>
+                <optgroup label="Registered parties">
+                  {parties
+                    .filter((p) => p.name.trim().toLowerCase() !== WALK_IN_LEDGER_LABEL.toLowerCase())
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                </optgroup>
               </select>
             </div>
 
@@ -1056,7 +1452,7 @@ function LedgerContent() {
                         <td className="py-2 px-2.5 whitespace-nowrap text-right text-[10px] text-slate-400 font-sans">—</td>
                       </tr>
                     )}
-                    {filteredEntries.map((entry, idx) => (
+                    {detailedLedgerRows.map((entry, idx) => (
                       <tr
                         key={entry.id}
                         className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors"
@@ -1117,14 +1513,14 @@ function LedgerContent() {
                       Period Total Activity & Closing Balance:
                     </td>
                     <td className="py-2.5 px-2.5 text-right text-emerald-800 dark:text-emerald-400">
-                      PKR {totalDebit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      PKR {displayPeriodDebit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className="py-2.5 px-2.5 text-right text-amber-800 dark:text-amber-400">
-                      PKR {totalCredit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      PKR {displayPeriodCredit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className="py-2.5 px-2.5 text-right text-slate-900 dark:text-slate-100">
-                      PKR {Math.abs(closingBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
-                      {closingBalance >= 0 ? "Dr" : "Cr"}
+                      PKR {Math.abs(displayClosingBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
+                      {displayClosingBalance >= 0 ? "Dr" : "Cr"}
                     </td>
                     <td></td>
                   </tr>

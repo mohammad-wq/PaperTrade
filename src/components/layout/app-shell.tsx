@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
@@ -29,12 +29,15 @@ import {
   Calendar,
   MapPin,
   TrendingUp,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { Role } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { RealtimeStatusBadge } from "@/components/providers/realtime-provider";
+import { DocumentWorkspaceDock } from "@/components/documents/DocumentWorkspaceDock";
 
 type NavItem = {
   href: string;
@@ -48,6 +51,8 @@ type NavItem = {
 type NavGroup = {
   title: string;
   items: NavItem[];
+  /** Secondary groups start collapsed to reduce nav noise */
+  defaultCollapsed?: boolean;
 };
 
 const NAV_GROUPS: NavGroup[] = [
@@ -55,7 +60,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: "Overview",
     items: [
       { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "dashboard" },
-      { href: "/analytics", label: "Executive Analytics", icon: TrendingUp, roles: [Role.OWNER, Role.MANAGER], moduleKey: "reports" },
+      { href: "/analytics", label: "Analytics", icon: TrendingUp, roles: [Role.OWNER, Role.MANAGER], moduleKey: "reports" },
       { href: "/calculator", label: "Paper Calculator", icon: Calculator, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "calculator" },
     ],
   },
@@ -69,35 +74,37 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "Operations",
     items: [
-      { href: "/sales", label: "Sales Invoices", icon: Receipt, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "sales" },
-      { href: "/delivery-orders", label: "Delivery Orders", icon: Truck, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "delivery-orders" },
-      { href: "/purchases", label: "Purchase Invoices", icon: ShoppingCart, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "purchases" },
-      { href: "/purchase-orders", label: "Purchase Orders", icon: Layers, roles: [Role.OWNER, Role.MANAGER], moduleKey: "purchase-orders" },
-      { href: "/returns", label: "Returns & Notes", icon: RotateCcw, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "returns" },
+      { href: "/sales", label: "Sales", icon: Receipt, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "sales" },
+      { href: "/delivery-orders", label: "Deliveries", icon: Truck, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "delivery-orders" },
+      { href: "/purchases", label: "Purchases", icon: ShoppingCart, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "purchases" },
+      { href: "/purchase-orders", label: "Purchase orders", icon: Layers, roles: [Role.OWNER, Role.MANAGER], moduleKey: "purchase-orders" },
+      { href: "/returns", label: "Returns", icon: RotateCcw, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "returns" },
     ],
   },
   {
     title: "Inventory & Warehousing",
     items: [
-      { href: "/inventory", label: "Inventory Stock", icon: PackageSearch, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "inventory" },
-      { href: "/partnerships", label: "Partnership Hub", icon: Warehouse, roles: [Role.OWNER, Role.MANAGER], moduleKey: "inventory" },
+      { href: "/inventory", label: "Inventory", icon: PackageSearch, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "inventory" },
+      { href: "/partnerships", label: "Partnerships", icon: Warehouse, roles: [Role.OWNER, Role.MANAGER], moduleKey: "inventory" },
       { href: "/stock-movements", label: "Stock Movements", icon: ArrowRightLeft, roles: [Role.OWNER, Role.MANAGER], moduleKey: "stock-movements" },
       { href: "/settings/locations", label: "Locations & Lots", icon: MapPin, roles: [Role.OWNER], moduleKey: "inventory" },
       { href: "/storage-charges", label: "Storage Charges", icon: Warehouse, roles: [Role.OWNER, Role.MANAGER], moduleKey: "storage-charges" },
     ],
   },
   {
-    title: "Finance & Accounts",
+    title: "Finance",
+    defaultCollapsed: true,
     items: [
       { href: "/payments", label: "Payments", icon: CreditCard, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "payments" },
       { href: "/expenses", label: "Expenses", icon: Banknote, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "expenses" },
-      { href: "/receivables-payables", label: "Receivables & Payables", icon: Wallet, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "ledger" },
-      { href: "/ledger", label: "General Ledger", icon: BookOpen, roles: [Role.OWNER, Role.MANAGER], moduleKey: "ledger" },
-      { href: "/reports", label: "Financial Reports", icon: BarChart3, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "reports" },
+      { href: "/receivables-payables", label: "Receivables / Payables", icon: Wallet, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "ledger" },
+      { href: "/ledger", label: "Ledger", icon: BookOpen, roles: [Role.OWNER, Role.MANAGER], moduleKey: "ledger" },
+      { href: "/reports", label: "Reports", icon: BarChart3, roles: [Role.OWNER, Role.MANAGER, Role.STAFF], moduleKey: "reports" },
     ],
   },
   {
-    title: "System Admin",
+    title: "System",
+    defaultCollapsed: true,
     items: [
       { href: "/users", label: "Staff & Users", icon: ShieldAlert, roles: [Role.OWNER], moduleKey: "users" },
       { href: "/settings/financial-years", label: "Financial Years", icon: Calendar, roles: [Role.OWNER], moduleKey: "settings" },
@@ -108,6 +115,9 @@ const NAV_GROUPS: NavGroup[] = [
 
 function NavLinks({ role, onNavigate, permissions }: { role: Role; onNavigate?: () => void; permissions?: Record<string, { view: boolean; create: boolean; update: boolean; delete: boolean }> }) {
   const pathname = usePathname();
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(NAV_GROUPS.filter((g) => g.defaultCollapsed).map((g) => [g.title, true])),
+  );
 
   return (
     <nav className="flex flex-col gap-5">
@@ -120,11 +130,37 @@ function NavLinks({ role, onNavigate, permissions }: { role: Role; onNavigate?: 
         });
         if (visibleItems.length === 0) return null;
 
+        const groupActive = visibleItems.some(
+          (item) => pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`)),
+        );
+        const userCollapsed = collapsed[group.title] ?? false;
+        const isCollapsed = group.defaultCollapsed ? userCollapsed && !groupActive : false;
+
         return (
           <div key={group.title} className="space-y-1">
-            <p className="px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              {group.title}
-            </p>
+            <button
+              type="button"
+              onClick={() =>
+                group.defaultCollapsed
+                  ? setCollapsed((prev) => ({ ...prev, [group.title]: !userCollapsed }))
+                  : undefined
+              }
+              className={cn(
+                "flex w-full items-center justify-between px-3 text-[11px] font-semibold uppercase tracking-wider",
+                group.defaultCollapsed ? "text-slate-500 hover:text-slate-800" : "text-slate-500 cursor-default",
+                groupActive && group.defaultCollapsed && "text-emerald-800",
+              )}
+            >
+              <span>{group.title}</span>
+              {group.defaultCollapsed ? (
+                isCollapsed ? (
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                )
+              ) : null}
+            </button>
+            {!isCollapsed && (
             <div className="space-y-0.5">
               {visibleItems.map((item) => {
                 const Icon = item.icon;
@@ -157,6 +193,7 @@ function NavLinks({ role, onNavigate, permissions }: { role: Role; onNavigate?: 
                 );
               })}
             </div>
+            )}
           </div>
         );
       })}
@@ -291,6 +328,7 @@ export function AppShell({
 
         <main className="min-w-0 p-4 md:p-8 print:p-0 print:m-0 print:w-full">{children}</main>
       </div>
+      <DocumentWorkspaceDock />
     </div>
   );
 }

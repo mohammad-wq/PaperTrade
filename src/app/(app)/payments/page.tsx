@@ -38,6 +38,8 @@ import { format } from "date-fns";
 import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { printDocumentPdf } from "@/lib/print-pdf";
+import { PrintPaperSizeControl, type PrintPaperSize } from "@/components/print/PrintPaperSizeControl";
+import { withPaperSizeQuery } from "@/components/ui/print-with-paper-size";
 import { handleFormEnterKeyDown } from "@/lib/keyboard-nav";
 import { simulateFifoAllocation, InvoiceAllocationItem } from "@/lib/payment-allocation-calc";
 import { useRouter } from "next/navigation";
@@ -129,6 +131,7 @@ export default function PaymentsPage() {
   const [purchaseInvoices, setPurchaseInvoices] = useState<InvoiceOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [docPaperSize, setDocPaperSize] = useState<PrintPaperSize>("A4");
   const [directionFilter, setDirectionFilter] = useState<"ALL" | "IN" | "OUT">("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [datePreset, setDatePreset] = useState<DateFilterPreset>("ALL");
@@ -563,7 +566,7 @@ export default function PaymentsPage() {
         setSplits([{ method: PaymentMethod.CASH, amount: "", reference: "" }]);
         await loadData();
         if (createdId && !editingPaymentId) {
-          printDocumentPdf(`/api/pdf/payment-receipt/${createdId}`).catch(() => {});
+          printDocumentPdf(withPaperSizeQuery(`/api/pdf/payment-receipt/${createdId}`, docPaperSize)).catch(() => {});
         }
       }
     } finally {
@@ -690,6 +693,7 @@ export default function PaymentsPage() {
 
       {/* Filter and Search Bar */}
       <div className="flex flex-col sm:flex-row gap-2 items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs">
+        <PrintPaperSizeControl value={docPaperSize} onChange={setDocPaperSize} />
         <div className="relative flex-1 w-full">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <Input
@@ -971,7 +975,7 @@ export default function PaymentsPage() {
                           variant="outline"
                           size="sm"
                           onClick={() => {
-                            printDocumentPdf(`/api/pdf/payment-receipt/${p.id}`).catch((e) =>
+                            printDocumentPdf(withPaperSizeQuery(`/api/pdf/payment-receipt/${p.id}`, docPaperSize)).catch((e) =>
                               confirm.alert(e.message, { variant: "destructive" })
                             );
                           }}

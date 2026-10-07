@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useMemo, useRef, createRef } from "react";
+import React, { useCallback, useEffect, useState, useMemo, useRef, createRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
   ShoppingCart,
@@ -39,7 +39,12 @@ import { useRealtimeListener } from "@/hooks/use-realtime";
 import { useConfirm } from "@/components/providers/confirm-provider";
 import { useSession } from "next-auth/react";
 import { canPerformAction } from "@/lib/auth/permissions";
-import { printDocumentPdf } from "@/lib/print-pdf";
+import { printDocumentPdf, printDraftPdf } from "@/lib/print-pdf";
+import { PrintPaperSizeControl, type PrintPaperSize } from "@/components/print/PrintPaperSizeControl";
+import { withPaperSizeQuery } from "@/components/ui/print-with-paper-size";
+import { DocumentWorkspace } from "@/components/documents/DocumentWorkspace";
+import { useDockedDraft } from "@/components/documents/DocumentWorkspaceDock";
+import { useDocumentWorkspaceStore } from "@/lib/document-workspace-store";
 
 type PurchaseInvoiceRow = {
   id: string;
@@ -138,6 +143,7 @@ export default function PurchasesPage() {
   const [warehouseLots, setWarehouseLots] = useState<WarehouseLotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [docPaperSize, setDocPaperSize] = useState<PrintPaperSize>("A4");
   const [statusFilter, setStatusFilter] = useState<"OPEN" | "ALL">("ALL");
   const [yearFilter, setYearFilter] = useState<"CURRENT" | "ALL">("CURRENT");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -188,6 +194,85 @@ export default function PurchasesPage() {
   const [submitting, setSubmitting] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  function closePurchaseDialog() {
+    setIsDialogOpen(false);
+    setEditingInvoiceId(null);
+    setFormError(null);
+    useDocumentWorkspaceStore.getState().clearDock();
+  }
+
+  function detachPurchaseDialog() {
+    const inv = editingInvoiceId ? invoices.find((i) => i.id === editingInvoiceId) : null;
+    const title = inv
+      ? `Edit PI ${formatSequenceDisplay(inv.sequenceNo, inv.invoiceNo)}`
+      : "New purchase invoice draft";
+    useDocumentWorkspaceStore.getState().setDock({
+      kind: "PURCHASE",
+      title,
+      restorePath: "/purchases",
+      snapshot: {
+        editingInvoiceId,
+        supplierType,
+        oneTimeSupplierName,
+        oneTimeSupplierPhone,
+        supplierId,
+        locationId,
+        purchaseOrderId,
+        isPartnership,
+        partnershipId,
+        invoiceDate,
+        notes,
+        amountPaid,
+        freightCharges,
+        paymentMethod,
+        isSplitPayment,
+        paymentSplits,
+        items,
+      },
+    });
+    setIsDialogOpen(false);
+    setFormError(null);
+  }
+
+  useDockedDraft("PURCHASE", (snap: {
+    editingInvoiceId: string | null;
+    supplierType: "REGISTERED" | "ONE_TIME";
+    oneTimeSupplierName: string;
+    oneTimeSupplierPhone: string;
+    supplierId: string;
+    locationId: string;
+    purchaseOrderId: string;
+    isPartnership: boolean;
+    partnershipId: string;
+    invoiceDate: string;
+    notes: string;
+    amountPaid: string;
+    freightCharges: string;
+    paymentMethod: "CASH" | "BANK" | "CHEQUE" | "OTHER";
+    isSplitPayment: boolean;
+    paymentSplits: Array<{ method: "CASH" | "BANK" | "CHEQUE" | "OTHER"; amount: string; reference: string }>;
+    items: LineItem[];
+  }) => {
+    setEditingInvoiceId(snap.editingInvoiceId);
+    setSupplierType(snap.supplierType);
+    setOneTimeSupplierName(snap.oneTimeSupplierName);
+    setOneTimeSupplierPhone(snap.oneTimeSupplierPhone);
+    setSupplierId(snap.supplierId);
+    setLocationId(snap.locationId);
+    setPurchaseOrderId(snap.purchaseOrderId);
+    setIsPartnership(snap.isPartnership);
+    setPartnershipId(snap.partnershipId);
+    setInvoiceDate(snap.invoiceDate);
+    setNotes(snap.notes);
+    setAmountPaid(snap.amountPaid);
+    setFreightCharges(snap.freightCharges);
+    setPaymentMethod(snap.paymentMethod);
+    setIsSplitPayment(snap.isSplitPayment);
+    setPaymentSplits(snap.paymentSplits);
+    setItems(snap.items);
+    setIsDialogOpen(true);
+  });
+
   // Global keydown with Ctrl+Enter save support
   const handleSubmitRef = useRef<(e: React.FormEvent) => Promise<void>>(async () => {});
   useEffect(() => {
@@ -200,7 +285,7 @@ export default function PurchasesPage() {
         searchInputRef.current?.focus();
       } else if (e.key === "Escape" && isDialogOpen) {
         e.preventDefault();
-        setIsDialogOpen(false);
+        closePurchaseDialog();
       } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && isDialogOpen) {
         e.preventDefault();
         const fakeEv = { preventDefault: () => {} } as React.FormEvent;
@@ -318,6 +403,7 @@ export default function PurchasesPage() {
 
       const payload = {
         type: "purchase-invoice",
+        paperSize: docPaperSize,
         docNumber: activeDocNo,
         date: invoiceDate,
         partyName,
@@ -340,30 +426,7 @@ export default function PurchasesPage() {
         }),
       };
 
-      const res = await fetch("/api/pdf/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || "Failed to generate preview PDF");
-      }
-
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const iframe = document.createElement("iframe");
-      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;";
-      iframe.src = objectUrl;
-      document.body.appendChild(iframe);
-      iframe.onload = () => {
-        setTimeout(() => {
-          iframe.contentWindow?.focus();
-          iframe.contentWindow?.print();
-          setTimeout(() => { URL.revokeObjectURL(objectUrl); document.body.removeChild(iframe); }, 2000);
-        }, 300);
-      };
+      await printDraftPdf(payload);
     } catch (err: any) {
       await confirm.alert(err.message || "Failed to print Purchase Invoice preview", { variant: "destructive" });
     } finally {
@@ -872,6 +935,7 @@ export default function PurchasesPage() {
 
       {/* Search Filter & Archive Toggles */}
       <div className="flex flex-col md:flex-row gap-2 items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2.5 rounded-md shadow-xs">
+        <PrintPaperSizeControl value={docPaperSize} onChange={setDocPaperSize} />
         <div className="relative flex-1 w-full">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <Input
@@ -1034,7 +1098,7 @@ export default function PurchasesPage() {
                       <div className="flex items-center justify-center gap-1">
                         <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100" title="Print Invoice"
                           onClick={() => {
-                            printDocumentPdf(`/api/pdf/purchase-invoice/${inv.id}`).catch((e) =>
+                            printDocumentPdf(withPaperSizeQuery(`/api/pdf/purchase-invoice/${inv.id}`, docPaperSize)).catch((e) =>
                               confirm.alert(e.message, { variant: "destructive" })
                             );
                           }}
@@ -1068,57 +1132,61 @@ export default function PurchasesPage() {
         </div>
       )}
 
-      {/* New Purchase Invoice Modal */}
-      {isDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs overflow-y-auto">
-          <div className="w-[96vw] max-w-6xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
-            {/* Quick Navigation Strip */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 text-xs">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold text-slate-500">Quick Jump:</span>
-                <a
-                  href="/sales"
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
-                >
-                  + Sales Invoice
-                </a>
-                <a
-                  href="/purchase-orders"
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
-                >
-                  + Purchase Order
-                </a>
-                <a
-                  href="/delivery-orders"
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
-                >
-                  + Delivery Order
-                </a>
-              </div>
-              <span className="text-[11px] text-slate-400 font-mono">Press [Esc] to close</span>
-            </div>
-
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">{editingInvoiceId ? "Edit Purchase Invoice" : "Record Purchase Invoice"}</h2>
-                <p className="text-xs text-slate-500">Receive stock from paper mill/supplier and post to payables</p>
-              </div>
-              <button
-                onClick={() => setIsDialogOpen(false)}
-                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+      <DocumentWorkspace
+        open={isDialogOpen}
+        icon={<ShoppingCart className="h-4 w-4 text-amber-400" />}
+        title={editingInvoiceId ? "Edit purchase invoice" : "Record purchase invoice"}
+        onClose={closePurchaseDialog}
+        onDetach={detachPurchaseDialog}
+        error={formError}
+        toolbar={
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-[11px] font-semibold text-slate-500">Quick jump:</span>
+            <a href="/sales" className="rounded bg-white dark:bg-slate-900 border border-slate-300 px-2 py-0.5 text-[11px] font-medium hover:border-amber-500">
+              + Sales
+            </a>
+            <a href="/purchase-orders" className="rounded bg-white dark:bg-slate-900 border border-slate-300 px-2 py-0.5 text-[11px] font-medium hover:border-amber-500">
+              + PO
+            </a>
+            <a href="/delivery-orders" className="rounded bg-white dark:bg-slate-900 border border-slate-300 px-2 py-0.5 text-[11px] font-medium hover:border-amber-500">
+              + DO
+            </a>
+          </div>
+        }
+        header={
+          <p className="text-[11px] text-slate-500">Receive stock from supplier and post to payables</p>
+        }
+        footer={
+          <div className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] text-slate-500 font-mono">[Ctrl+Enter] Save • [Esc] Close</span>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handlePreviewPdf}
+                disabled={previewLoading || items.length === 0}
+                className="text-xs border-amber-400 text-amber-800 hover:bg-amber-50 gap-1.5 h-8"
               >
-                <X className="h-5 w-5" />
-              </button>
+                <Eye className="h-3.5 w-3.5" />
+                {previewLoading ? "Printing..." : "Print"}
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={closePurchaseDialog} className="text-xs h-8">
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                form="purchase-invoice-form"
+                disabled={submitting}
+                className="bg-amber-800 text-white hover:bg-amber-700 text-xs font-semibold h-8"
+              >
+                {submitting ? "Processing..." : editingInvoiceId ? "Update purchase invoice" : "Save & receive stock"}
+              </Button>
             </div>
-
-            {formError && (
-              <div className="mt-4 rounded-lg bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+          </div>
+        }
+      >
+            <form id="purchase-invoice-form" onSubmit={handleSubmit} className="space-y-4 px-1">
               {/* Supplier Type Toggle */}
               <div className="flex items-center gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-md w-fit">
                 <button
@@ -1775,35 +1843,8 @@ export default function PurchasesPage() {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-4">
-                <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
-                  Preview official purchase invoice before posting
-                </span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handlePreviewPdf}
-                    disabled={previewLoading || items.length === 0}
-                    className="text-xs border-amber-400 text-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 gap-1.5"
-                    title="Preview Purchase Invoice in PDF format"
-                  >
-                    <Eye className="h-3.5 w-3.5 text-amber-700" />
-                    {previewLoading ? "Rendering..." : "Preview PDF"}
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="text-xs">
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={submitting} className="bg-amber-800 text-white hover:bg-amber-700 text-xs font-semibold">
-                    {submitting ? "Processing..." : editingInvoiceId ? "Update Purchase Invoice" : "Save & Receive Stock"}
-                  </Button>
-                </div>
-              </div>
             </form>
-          </div>
-        </div>
-      )}
+      </DocumentWorkspace>
 
       {/* Quick Create Lot Modal */}
       {quickLotModalOpen && (

@@ -543,10 +543,84 @@ export async function listSaleOwnershipBucketsAction(raw: unknown) {
       suggestedOwnershipKey = buckets.find((b) => b.ownershipKey !== "OWN")?.ownershipKey ?? null;
     } else if (buckets.length === 1) {
       suggestedOwnershipKey = buckets[0].ownershipKey;
+    } else if (input.stockSource === "AUTO_SPLIT") {
+      suggestedOwnershipKey = null;
     } else if (buckets.some((b) => b.ownershipKey === "OWN")) {
       suggestedOwnershipKey = "OWN";
     }
 
     return { buckets, suggestedOwnershipKey };
+  });
+}
+
+const assignUnassignedSchema = z.object({
+  productId: z.string().min(1),
+  locationId: z.string().min(1),
+  warehouseLotId: z.string().min(1),
+  quantity: z.number().positive(),
+});
+
+export async function assignUnassignedStockToLotAction(raw: unknown) {
+  return runAction("inventory.assignUnassignedLot", async () => {
+    const session = await requireSession();
+    if (!canPerformAction(session.user.role, "inventory", "update", (session.user as any).permissions)) {
+      throw userError("You do not have permission to assign warehouse stock to a lot.");
+    }
+    const input = parseInput(assignUnassignedSchema, raw);
+    const location = await prisma.location.findUnique({
+      where: { id: input.locationId },
+      include: {
+        warehouseLots: {
+          where: { isActive: true, deletedAt: null },
+          select: { id: true, lotNumber: true },
+        },
+      },
+    });
+    if (!location || location.type !== "WAREHOUSE") {
+      throw userError("Lots are only required on warehouse locations.");
+    }
+    const lot = location.warehouseLots.find((l) => l.id === input.warehouseLotId);
+    if (!lot) throw userError("Select a lot that belongs to this warehouse.");
+    if (location.warehouseLots.length === 0) {
+      throw userError("This warehouse has no lots.");
+    }
+
+    const unassigned = await getStockOnHand(input.productId, input.locationId, prisma, null);
+    if (unassigned + 0.0001 < input.quantity) {
+      throw userError(`Only ${unassigned} unassigned units are available to assign.`);
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.stockMovement.create({
+        data: {
+          productId: input.productId,
+          locationId: input.locationId,
+          warehouseLotId: null,
+          type: StockMovementType.TRANSFER_OUT,
+          quantity: input.quantity,
+          referenceType: "LOT_ASSIGNMENT",
+          referenceId: input.warehouseLotId,
+          createdById: session.user.id,
+          notes: `Move unassigned stock onto lot ${lot.lotNumber}`,
+        },
+      });
+      await tx.stockMovement.create({
+        data: {
+          productId: input.productId,
+          locationId: input.locationId,
+          warehouseLotId: input.warehouseLotId,
+          type: StockMovementType.TRANSFER_IN,
+          quantity: input.quantity,
+          referenceType: "LOT_ASSIGNMENT",
+          referenceId: input.warehouseLotId,
+          createdById: session.user.id,
+          notes: `Assigned to lot ${lot.lotNumber}`,
+        },
+      });
+    });
+
+    revalidatePath("/inventory");
+    revalidatePath("/sales");
+    return { lotNumber: lot.lotNumber, quantity: input.quantity };
   });
 }
