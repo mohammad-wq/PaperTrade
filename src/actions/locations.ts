@@ -9,6 +9,7 @@ import { LocationType, Role } from "@prisma/client";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { revalidatePath } from "next/cache";
 import { revalidateLocations, revalidateWarehouseLots } from "@/lib/cached-lookups";
+import { isPartnershipTagLot, loadPartnershipTagIndex } from "@/lib/location-lots";
 
 const locationSchema = z.object({
   id: z.string().optional(),
@@ -35,6 +36,17 @@ export async function listLocationsAction(includeInactive: boolean = false) {
       },
     });
 
+    const tags = await loadPartnershipTagIndex();
+    const taggedLots = await prisma.warehouseLot.findMany({
+      where: { isActive: true, deletedAt: null },
+      select: { id: true, locationId: true, lotNumber: true, description: true },
+    });
+    const taggedCountByLocation = new Map<string, number>();
+    for (const lot of taggedLots) {
+      if (!isPartnershipTagLot(lot, tags)) continue;
+      taggedCountByLocation.set(lot.locationId, (taggedCountByLocation.get(lot.locationId) ?? 0) + 1);
+    }
+
     return locations.map((loc) => ({
       id: loc.id,
       name: loc.name,
@@ -44,7 +56,7 @@ export async function listLocationsAction(includeInactive: boolean = false) {
       deletedAt: loc.deletedAt ? loc.deletedAt.toISOString() : null,
       createdAt: loc.createdAt.toISOString(),
       updatedAt: loc.updatedAt.toISOString(),
-      activeLotsCount: loc._count.warehouseLots,
+      activeLotsCount: Math.max(0, loc._count.warehouseLots - (taggedCountByLocation.get(loc.id) ?? 0)),
       movementsCount: loc._count.stockMovements,
     }));
   });

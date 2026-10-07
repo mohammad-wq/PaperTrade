@@ -1095,7 +1095,7 @@ export default function PurchasesPage() {
                       }`}>{inv.status}</span>
                     </td>
                     <td className="sticky right-0 z-10 py-1 px-2 text-center whitespace-nowrap bg-white dark:bg-slate-900 border-l border-slate-200/60 dark:border-slate-800 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.06)]">
-                      <div className="flex items-center justify-center gap-1">
+                      <div className="grid grid-cols-4 items-center justify-items-center gap-1 min-w-[280px]">
                         <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100" title="Print Invoice"
                           onClick={() => {
                             printDocumentPdf(withPaperSizeQuery(`/api/pdf/purchase-invoice/${inv.id}`, docPaperSize)).catch((e) =>
@@ -1106,21 +1106,27 @@ export default function PurchasesPage() {
                           <Printer className="h-3 w-3 mr-1" />
                           Print
                         </Button>
-                        {canUpdate && inv.status === "OPEN" && (
+                        {canUpdate && inv.status === "OPEN" ? (
                           <Button size="sm" variant="ghost" onClick={() => handleStatusChange(inv.id, "SETTLED")} className="h-6 px-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40">
                             <CheckCircle2 className="h-3 w-3 mr-1" />
                             Settle
                           </Button>
+                        ) : (
+                          <span className="inline-block w-[4.5rem]" aria-hidden="true" />
                         )}
-                        {canUpdate && (
+                        {canUpdate ? (
                           <Button size="sm" variant="ghost" onClick={() => openEditPurchaseInvoice(inv)} className="h-6 px-1.5 text-xs text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/40">
                             Edit
                           </Button>
+                        ) : (
+                          <span className="inline-block w-10" aria-hidden="true" />
                         )}
-                        {canDelete && (
+                        {canDelete ? (
                           <Button size="sm" variant="ghost" onClick={() => handleDeletePurchaseInvoice(inv)} className="h-6 px-1.5 text-xs text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40">
                             Delete
                           </Button>
+                        ) : (
+                          <span className="inline-block w-12" aria-hidden="true" />
                         )}
                       </div>
                     </td>

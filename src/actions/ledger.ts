@@ -68,18 +68,23 @@ export async function listLedgerEntriesAction(filters?: {
       where.referenceId = { in: walkInIds };
     } else if (filters?.partyId && filters.partyId !== "ALL") {
       const pid = filters.partyId;
-      const [saleRefs, purchaseRefs] = await Promise.all([
+      const [saleRefs, purchaseRefs, paymentRefs] = await Promise.all([
         prisma.saleInvoice.findMany({ where: { customerId: pid }, select: { id: true } }),
         prisma.purchaseInvoice.findMany({ where: { supplierId: pid }, select: { id: true } }),
+        prisma.payment.findMany({ where: { partyId: pid }, select: { id: true } }),
       ]);
       const saleIds = saleRefs.map((s) => s.id);
       const purchaseIds = purchaseRefs.map((p) => p.id);
+      const partyPaymentIds = paymentRefs.map((p) => p.id);
       const orClause: Record<string, unknown>[] = [{ partyId: pid }];
       if (saleIds.length > 0) {
         orClause.push({ referenceType: "SALE_INVOICE", referenceId: { in: saleIds } });
       }
       if (purchaseIds.length > 0) {
         orClause.push({ referenceType: "PURCHASE_INVOICE", referenceId: { in: purchaseIds } });
+      }
+      if (partyPaymentIds.length > 0) {
+        orClause.push({ referenceType: "PAYMENT", referenceId: { in: partyPaymentIds } });
       }
       where.OR = orClause;
     }
@@ -169,6 +174,7 @@ export async function listLedgerEntriesAction(filters?: {
               customer: { select: { id: true, name: true, type: true } },
               payments: {
                 select: {
+                  id: true,
                   amount: true,
                   method: true,
                   splits: { select: { method: true, amount: true } },
@@ -200,6 +206,7 @@ export async function listLedgerEntriesAction(filters?: {
               supplier: { select: { id: true, name: true, type: true } },
               payments: {
                 select: {
+                  id: true,
                   amount: true,
                   method: true,
                   splits: { select: { method: true, amount: true } },
@@ -225,6 +232,7 @@ export async function listLedgerEntriesAction(filters?: {
               sequenceNo: true,
               direction: true,
               amount: true,
+              party: { select: { id: true, name: true, type: true } },
               saleInvoice: {
                 select: { id: true, invoiceNo: true, sequenceNo: true, date: true, totalAmount: true },
               },
@@ -313,7 +321,10 @@ export async function listLedgerEntriesAction(filters?: {
           unit: i.product.unit || "pkts",
           lineTotal: Number(i.lineTotal ?? Number(i.quantity) * Number(i.unitPrice ?? 0)),
         })),
-        paymentLines: extractCommercialPaymentLines(s.payments, Number(s.amountPaid ?? 0)),
+        paymentLines: extractCommercialPaymentLines(
+          (s.payments || []).filter((pay) => !entries.some((e) => e.referenceType === "PAYMENT" && e.referenceId === pay.id)),
+          (s.payments || []).length === 0 ? Number(s.amountPaid ?? 0) : 0,
+        ),
       };
     }
     for (const p of purchaseInvoices) {
@@ -341,7 +352,10 @@ export async function listLedgerEntriesAction(filters?: {
           unit: i.product.unit || "pkts",
           lineTotal: Number(i.lineTotal ?? Number(i.quantity) * Number(i.unitCost ?? 0)),
         })),
-        paymentLines: extractCommercialPaymentLines(p.payments, Number(p.amountPaid ?? 0)),
+        paymentLines: extractCommercialPaymentLines(
+          (p.payments || []).filter((pay) => !entries.some((e) => e.referenceType === "PAYMENT" && e.referenceId === pay.id)),
+          (p.payments || []).length === 0 ? Number(p.amountPaid ?? 0) : 0,
+        ),
       };
     }
     for (const pay of payments) {
@@ -451,7 +465,14 @@ export async function listLedgerEntriesAction(filters?: {
         ...e,
         party: e.party
           ? { ...e.party, name: cleanPartyDisplayName(e.party.name) }
-          : null,
+          : e.referenceType === "PAYMENT"
+            ? (() => {
+                const pay = payments.find((p) => p.id === e.referenceId);
+                return pay?.party
+                  ? { ...pay.party, name: cleanPartyDisplayName(pay.party.name) }
+                  : null;
+              })()
+            : null,
         description,
         cleanDescription: cleanDesc,
         docLabel,

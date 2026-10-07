@@ -2,6 +2,7 @@ import { assertPageAccess } from "@/lib/auth/session";
 import { getPartnershipLotDetailsAction } from "@/actions/partnerships";
 import { PartnershipLotClient } from "@/components/partnerships/PartnershipLotClient";
 import { prisma } from "@/lib/db";
+import { isPartnershipTagLot, loadPartnershipTagIndex } from "@/lib/location-lots";
 import { notFound, redirect } from "next/navigation";
 
 export default async function PartnershipLotPage({
@@ -35,13 +36,18 @@ export default async function PartnershipLotPage({
         type: true,
         warehouseLots: {
           where: { isActive: true, deletedAt: null },
-          select: { id: true, lotNumber: true },
+          select: { id: true, lotNumber: true, description: true },
           orderBy: { lotNumber: "asc" },
         },
       },
       orderBy: { name: "asc" },
     });
-    const lotIds = allLocations.flatMap((location) => location.warehouseLots.map((lot) => lot.id));
+    const tags = await loadPartnershipTagIndex();
+    const locationLots = allLocations.map((location) => ({
+      ...location,
+      warehouseLots: location.warehouseLots.filter((lot) => !isPartnershipTagLot(lot, tags)),
+    }));
+    const lotIds = locationLots.flatMap((location) => location.warehouseLots.map((lot) => lot.id));
     const stockSums =
       lotIds.length > 0
         ? await prisma.stockMovement.groupBy({
@@ -59,7 +65,7 @@ export default async function PartnershipLotPage({
       const delta = inbound.has(row.type) ? qty : outbound.has(row.type) ? -qty : 0;
       qtyByLot.set(row.warehouseLotId, (qtyByLot.get(row.warehouseLotId) ?? 0) + delta);
     }
-    const withLotQty = allLocations.map((location) => ({
+    const withLotQty = locationLots.map((location) => ({
       id: location.id,
       name: location.name,
       type: location.type,
@@ -69,14 +75,10 @@ export default async function PartnershipLotPage({
         quantity: qtyByLot.get(lot.id) ?? 0,
       })),
     }));
-    const sourceLocation = withLotQty.find((location) => location.id === lotDetailsRes.data.lot.warehouseId);
-
     return (
       <PartnershipLotClient
         initialData={lotDetailsRes.data}
         destinationLocations={withLotQty.filter((l) => l.id !== lotDetailsRes.data.lot.warehouseId)}
-        sourceLots={sourceLocation?.lots ?? []}
-        linkedSourceLotId={lotDetailsRes.data.lot.warehouseLotId ?? null}
       />
     );
   }

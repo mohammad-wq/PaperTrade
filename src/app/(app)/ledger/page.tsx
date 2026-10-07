@@ -34,7 +34,7 @@ type LedgerRow = {
   accountType: AccountType;
   debit: number;
   credit: number;
-  runningBalance: number;
+  runningBalance: number | null;
   voucherType: string;
   docNo: string;
   docLabel?: string;
@@ -97,7 +97,7 @@ type SummaryVoucherRow = {
   description: string;
   debit: number;
   credit: number;
-  runningBalance: number;
+  runningBalance: number | null;
   balanceFormatted: string;
   referenceType: string;
   referenceId: string;
@@ -426,10 +426,8 @@ function LedgerContent() {
     [parties, partyId]
   );
 
-  const commercialBookMode =
-    (partyId === "ALL" || !!walkInCustomer.trim()) &&
-    accountType === "ALL" &&
-    referenceType === "ALL";
+  const partyScoped = partyId !== "ALL" && !walkInCustomer.trim();
+  const commercialBookMode = accountType === "ALL" && referenceType === "ALL";
 
   const commercialEntries = useMemo(() => {
     if (!commercialBookMode) return filteredEntries;
@@ -518,32 +516,7 @@ function LedgerContent() {
         } as LedgerRow);
       }
 
-      expanded.push({
-        id: `commercial-${kind}-${id}-total`,
-        date,
-        accountType: AccountType.RECEIVABLE,
-        referenceType: kind,
-        referenceId: id,
-        description: `${voucherPrefix} total ${doc.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-        cleanDescription: "Document total",
-        docLabel,
-        docNo: doc.docNo,
-        voucherType: kind === "SALE_INVOICE" ? "Estimate" : "Purchase",
-        lineItems: [],
-        debit: doc.total,
-        credit: doc.total,
-        party: doc.party,
-        createdBy: { name: "System" },
-        runningBalance: 0,
-      } as LedgerRow);
-
-      const balanceDue = Math.max(0, doc.total - doc.paid);
-      const paymentLines =
-        doc.paymentLines && doc.paymentLines.length > 0
-          ? doc.paymentLines
-          : doc.paid > 0.001
-            ? [{ method: "CASH", label: "cash", amount: doc.paid }]
-            : [];
+      const paymentLines = doc.paymentLines ?? [];
       paymentLines.forEach((pl, payIdx) => {
         const isSale = kind === "SALE_INVOICE";
         const amtFormatted = pl.amount.toLocaleString(undefined, {
@@ -562,33 +535,13 @@ function LedgerContent() {
           docNo: doc.docNo,
           voucherType: isSale ? "Estimate" : "Purchase",
           lineItems: [],
-          debit: isSale ? 0 : pl.amount,
-          credit: isSale ? pl.amount : 0,
+          debit: isSale ? pl.amount : 0,
+          credit: isSale ? 0 : pl.amount,
           party: doc.party,
           createdBy: { name: "System" },
           runningBalance: 0,
         } as LedgerRow);
       });
-      if (balanceDue > 0.001) {
-        expanded.push({
-          id: `commercial-${kind}-${id}-due`,
-          date,
-          accountType: AccountType.RECEIVABLE,
-          referenceType: kind,
-          referenceId: id,
-          description: `${voucherPrefix} balance due ${balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-          cleanDescription: `Balance due  ${balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-          docLabel,
-          docNo: doc.docNo,
-          voucherType: kind === "SALE_INVOICE" ? "Estimate" : "Purchase",
-          lineItems: [],
-          debit: balanceDue,
-          credit: 0,
-          party: doc.party,
-          createdBy: { name: "System" },
-          runningBalance: 0,
-        } as LedgerRow);
-      }
     };
 
     for (const id of presentSaleIds) {
@@ -607,13 +560,14 @@ function LedgerContent() {
     const merged = [...passthrough, ...expanded].sort(
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
     );
-    let running = openingBalance;
+    let running = 0;
     const withBalance = merged.map((row) => {
-      running += Number(row.debit) - Number(row.credit);
+      if (!partyScoped) return { ...row, runningBalance: null };
+      running += Number(row.credit) - Number(row.debit);
       return { ...row, runningBalance: running };
     });
     return sortOrder === "desc" ? [...withBalance].reverse() : withBalance;
-  }, [commercialBookMode, commercialDocuments, commercialEntries, openingBalance, sortOrder]);
+  }, [commercialBookMode, commercialDocuments, commercialEntries, partyScoped, sortOrder]);
 
   const commercialPeriodTotals = useMemo(() => {
     if (!commercialBookMode) {
@@ -630,14 +584,14 @@ function LedgerContent() {
     for (const id of saleIds) {
       const doc = commercialDocuments.sales[id];
       if (!doc) continue;
-      debit += doc.total;
-      credit += doc.paid > 0 ? doc.paid : doc.total;
+      credit += doc.total;
+      debit += (doc.paymentLines || []).reduce((sum, line) => sum + line.amount, 0);
     }
     for (const id of purchaseIds) {
       const doc = commercialDocuments.purchases[id];
       if (!doc) continue;
       debit += doc.total;
-      credit += doc.paid > 0 ? doc.paid : doc.total;
+      credit += (doc.paymentLines || []).reduce((sum, line) => sum + line.amount, 0);
     }
     for (const e of commercialEntries) {
       if (e.referenceType === "SALE_INVOICE" && saleIds.has(e.referenceId)) continue;
@@ -645,13 +599,15 @@ function LedgerContent() {
       debit += Number(e.debit) || 0;
       credit += Number(e.credit) || 0;
     }
-    return { debit, credit, closing: openingBalance + debit - credit };
+    const outstanding = credit - debit;
+    return { debit, credit, closing: partyScoped ? outstanding : 0 };
   }, [
     commercialBookMode,
     commercialDocuments,
     commercialEntries,
     closingBalance,
     openingBalance,
+    partyScoped,
     totalCredit,
     totalDebit,
   ]);
@@ -876,6 +832,10 @@ function LedgerContent() {
                     {selectedPartyObj.name}
                   </p>
                   <p className="text-xs text-slate-600">Account Type: {selectedPartyObj.type}</p>
+                  <p className="text-xs font-semibold text-slate-800">
+                    Outstanding: PKR {Math.abs(displayClosingBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}{" "}
+                    {displayClosingBalance > 0 ? "Cr" : displayClosingBalance < 0 ? "Dr" : ""}
+                  </p>
                 </div>
               ) : (
                 <div>
@@ -951,7 +911,11 @@ function LedgerContent() {
                   : "bg-amber-50 text-amber-900 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800"
               }`}
             >
-              Closing: <strong>PKR {Math.abs(displayClosingBalance).toLocaleString()} {displayClosingBalance >= 0 ? "Dr" : "Cr"}</strong>
+              {partyScoped ? (
+                <>Outstanding: <strong>PKR {Math.abs(displayClosingBalance).toLocaleString()} {displayClosingBalance > 0 ? "Cr" : displayClosingBalance < 0 ? "Dr" : ""}</strong></>
+              ) : (
+                <>Dr {displayPeriodDebit.toLocaleString()} / Cr {displayPeriodCredit.toLocaleString()}</>
+              )}
             </span>
           </div>
 
@@ -1491,11 +1455,11 @@ function LedgerContent() {
                             : "—"}
                         </td>
                         <td className="py-1.5 px-2.5 border-r border-slate-200/60 dark:border-slate-800 text-right whitespace-nowrap font-bold text-slate-900 dark:text-slate-100">
-                          {typeof entry.runningBalance === "number"
+                          {partyScoped && typeof entry.runningBalance === "number"
                             ? `${Math.abs(entry.runningBalance).toLocaleString(undefined, {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
-                              })} ${entry.runningBalance >= 0 ? "Dr" : "Cr"}`
+                              })}${entry.runningBalance > 0 ? " Cr" : entry.runningBalance < 0 ? " Dr" : ""}`
                             : "—"}
                         </td>
                         <td className="py-1.5 px-2.5 whitespace-nowrap text-right text-[10px] text-slate-400 font-sans truncate">
@@ -1519,8 +1483,9 @@ function LedgerContent() {
                       PKR {displayPeriodCredit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className="py-2.5 px-2.5 text-right text-slate-900 dark:text-slate-100">
-                      PKR {Math.abs(displayClosingBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
-                      {displayClosingBalance >= 0 ? "Dr" : "Cr"}
+                      {partyScoped
+                        ? `PKR ${Math.abs(displayClosingBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${displayClosingBalance > 0 ? "Cr" : displayClosingBalance < 0 ? "Dr" : ""}`
+                        : "—"}
                     </td>
                     <td></td>
                   </tr>

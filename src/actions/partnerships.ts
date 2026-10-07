@@ -12,6 +12,7 @@ import { generateDocumentNumber, withResourceQueue } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { canPerformAction } from "@/lib/auth/permissions";
 import { cleanPartyDisplayName } from "@/lib/party-display";
+import { isPartnershipTagLot, loadPartnershipTagIndex } from "@/lib/location-lots";
 import { createPaymentAction } from "@/actions/payments";
 import {
   partnershipArchetypeFromLot,
@@ -373,31 +374,12 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
         });
       }
 
-      if (!lot) {
-        lot = await tx.warehouseLot.create({
-          data: {
-            locationId: destinationLocation.id,
-            partnerId: partner.id,
-            lotNumber: input.lotNumber.trim(),
-            description: `Partnership lot for ${partner.name} (${partnerSharePct}% Partner / ${clientSharePct}% Client)${input.notes ? ` — ${input.notes}` : ""}`,
-            unitCost: averageUnitCost,
-            partnerSharePct,
-            clientSharePct,
-            initialCapital: totalAmount,
-          },
-        });
-      } else {
-        lot = await tx.warehouseLot.update({
-          where: { id: lot.id },
-          data: {
-            partnerId: partner.id,
-            unitCost: averageUnitCost,
-            partnerSharePct,
-            clientSharePct,
-            initialCapital: totalAmount,
-          },
-        });
+      const intakeTags = await loadPartnershipTagIndex();
+      if (lot && isPartnershipTagLot(lot, intakeTags)) {
+        lot = null;
       }
+      const intakeLotNumber = input.lotNumber.trim();
+      const intakeWarehouseLotId = lot?.id ?? null;
 
       // 2. Generate invoice number
       const invoiceNo = generateDocumentNumber("PINV-SH");
@@ -426,13 +408,13 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
           amountPaid: totalAmount,
           paidAmount: totalAmount,
           balanceAmount: 0,
-          notes: `[Partnership Intake] [Payment Mode: PARTNER_CAPITAL] directly to ${destinationLocation.name} [Partner: ${partner.name}]${originalSupplierNote} (Equity: ${partnerSharePct}% Partner / ${clientSharePct}% Client). Lot: ${lot.lotNumber}${input.notes ? ` — ${input.notes}` : ""}`,
+          notes: `[Partnership Intake] [Payment Mode: PARTNER_CAPITAL] directly to ${destinationLocation.name} [Partner: ${partner.name}]${originalSupplierNote} (Equity: ${partnerSharePct}% Partner / ${clientSharePct}% Client). Lot: ${intakeLotNumber}${input.notes ? ` — ${input.notes}` : ""}`,
           createdById: session.user.id,
           items: {
             create: input.items.map((it) => ({
               productId: it.productId,
               locationId: destinationLocation.id,
-              warehouseLotId: lot.id,
+              warehouseLotId: intakeWarehouseLotId,
               quantity: it.quantity,
               unitCost: it.unitCost,
               lineTotal: it.quantity * it.unitCost,
@@ -447,14 +429,14 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
           data: {
             productId: it.productId,
             locationId: destinationLocation.id,
-            warehouseLotId: lot.id,
+            warehouseLotId: intakeWarehouseLotId,
             type: StockMovementType.PURCHASE_IN,
             quantity: it.quantity,
             referenceType: "PURCHASE_INVOICE",
             referenceId: invoice.id,
             createdById: session.user.id,
             createdAt: intakeDate,
-            notes: `Partnership Intake Lot ${lot.lotNumber} (${partnerSharePct}% Partner / ${clientSharePct}% Client)`,
+            notes: `Partnership Intake Lot ${intakeLotNumber} (${partnerSharePct}% Partner / ${clientSharePct}% Client)`,
           },
         });
       }
@@ -472,7 +454,7 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
           referenceType: "PURCHASE_INVOICE",
           referenceId: invoice.id,
           date: intakeDate,
-          description: `Partnership Intake ${invoice.invoiceNo}: Lot ${lot.lotNumber} (${partnerSharePct}% Partner / ${clientSharePct}% Client)`,
+          description: `Partnership Intake ${invoice.invoiceNo}: Lot ${intakeLotNumber} (${partnerSharePct}% Partner / ${clientSharePct}% Client)`,
           createdById: session.user.id,
         },
       });
@@ -491,7 +473,7 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
             referenceType: "PURCHASE_INVOICE",
             referenceId: invoice.id,
             date: intakeDate,
-            description: `Partner Capital Contribution (${partner.name}): Lot ${lot.lotNumber} (${invoice.invoiceNo}) - ${partnerSharePct}% Partner Equity`,
+            description: `Partner Capital Contribution (${partner.name}): Lot ${intakeLotNumber} (${invoice.invoiceNo}) - ${partnerSharePct}% Partner Equity`,
             createdById: session.user.id,
           },
         });
@@ -510,7 +492,7 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
             referenceType: "PURCHASE_INVOICE",
             referenceId: invoice.id,
             date: intakeDate,
-            description: `Client Capital Contribution: Lot ${lot.lotNumber} (${invoice.invoiceNo}) - ${clientSharePct}% Client Equity`,
+            description: `Client Capital Contribution: Lot ${intakeLotNumber} (${invoice.invoiceNo}) - ${clientSharePct}% Client Equity`,
             createdById: session.user.id,
           },
         });
@@ -523,8 +505,8 @@ export async function partnershipPurchaseIntakeAction(raw: unknown) {
         success: true,
         invoiceId: invoice.id,
         invoiceNo: invoice.invoiceNo,
-        lotId: lot.id,
-        lotNumber: lot.lotNumber,
+        lotId: intakeWarehouseLotId,
+        lotNumber: intakeLotNumber,
         totalAmount,
         partnerCapital,
         clientCapital,
@@ -736,52 +718,17 @@ export async function pullPartnershipStockToShopAction(raw: unknown) {
       const invoiceItemsData: Array<{
         productId: string;
         locationId: string;
-        warehouseLotId: string;
+        warehouseLotId: string | null;
         quantity: number;
         unitCost: number;
         lineTotal: number;
       }> = [];
 
       for (const row of validatedRows) {
-        let shopLot = await tx.warehouseLot.findFirst({
-          where: {
-            locationId: destinationLocation.id,
-            lotNumber: row.sourceLot.lotNumber,
-          },
-        });
-
-        if (!shopLot) {
-          shopLot = await tx.warehouseLot.create({
-            data: {
-              locationId: destinationLocation.id,
-              partnerId: partner.id,
-              lotNumber: row.sourceLot.lotNumber,
-              description: `Pulled from ${row.sourceLocationName} [Lot ${row.sourceLot.lotNumber}] (${row.partnerSharePct}% Partner / ${row.clientSharePct}% Client)`,
-              unitCost: row.baseCost,
-              partnerSharePct: row.partnerSharePct,
-              clientSharePct: row.clientSharePct,
-            },
-          });
-        } else if (shopLot.partnerId && shopLot.partnerId !== partner.id) {
-          throw userError(
-            `Shop lot ${shopLot.lotNumber} is already assigned to a different partner.`
-          );
-        } else if (!shopLot.partnerId) {
-          shopLot = await tx.warehouseLot.update({
-            where: { id: shopLot.id },
-            data: {
-              partnerId: partner.id,
-              unitCost: row.baseCost,
-              partnerSharePct: row.partnerSharePct,
-              clientSharePct: row.clientSharePct,
-            },
-          });
-        }
-
         invoiceItemsData.push({
           productId: row.product.id,
           locationId: destinationLocation.id,
-          warehouseLotId: shopLot.id,
+          warehouseLotId: null,
           quantity: row.quantity,
           unitCost: row.baseCost,
           lineTotal: row.totalValuation,
@@ -808,14 +755,14 @@ export async function pullPartnershipStockToShopAction(raw: unknown) {
           data: {
             productId: row.product.id,
             locationId: destinationLocation.id,
-            warehouseLotId: shopLot.id,
+            warehouseLotId: null,
             type: StockMovementType.PURCHASE_IN,
             quantity: row.quantity,
             referenceType: "PURCHASE_INVOICE",
             referenceId: invoiceNo,
             createdById: session.user.id,
             createdAt: pullDate,
-            notes: `Stock pull received at ${destinationLocation.name} [Lot: ${shopLot.lotNumber}] at full cost PKR ${row.baseCost}`,
+            notes: `Stock pull received at ${destinationLocation.name} at full cost PKR ${row.baseCost}`,
           },
         });
       }
@@ -2416,24 +2363,21 @@ export async function pullPartnershipLotStockAction(raw: unknown) {
       throw userError("Destination must be different from the lot warehouse.");
     }
 
-    const destinationLots = await prisma.warehouseLot.findMany({
-      where: { locationId: destinationLocation.id, isActive: true, deletedAt: null },
-      select: { id: true },
-    });
+    const tags = await loadPartnershipTagIndex();
+    const destinationLots = (
+      await prisma.warehouseLot.findMany({
+        where: { locationId: destinationLocation.id, isActive: true, deletedAt: null },
+        select: { id: true, lotNumber: true, description: true },
+      })
+    ).filter((row) => !isPartnershipTagLot(row, tags));
     if (destinationLots.length > 0) {
       const chosen = input.destinationWarehouseLotId || "";
       if (!destinationLots.some((row) => row.id === chosen)) {
         throw userError(`Select a lot at ${destinationLocation.name} before transferring stock.`);
       }
     }
-    const sourceLots = await prisma.warehouseLot.findMany({
-      where: { locationId: lot.warehouseId, isActive: true, deletedAt: null },
-      select: { id: true },
-    });
-    const sourceWarehouseLotId = lot.warehouseLotId || input.sourceWarehouseLotId || null;
-    if (sourceLots.length > 0 && !sourceLots.some((row) => row.id === sourceWarehouseLotId)) {
-      throw userError(`Select the source lot at ${lot.warehouse.name}. Unassigned stock cannot leave a warehouse that has lots.`);
-    }
+    const destinationWarehouseLotId =
+      destinationLots.length > 0 ? input.destinationWarehouseLotId || null : null;
     if (lot.type === "CONSIGNMENT_VMI") {
       throw userError(
         "Consignment (VMI) lots use Purchase from Partner to obtain stock. Transfers apply to co-invested lots only.",
@@ -2462,52 +2406,6 @@ export async function pullPartnershipLotStockAction(raw: unknown) {
       const doNo = generateDocumentNumber("DO-PULL");
       let totalPullValuation = 0;
 
-      let shopLot = destinationLots.length > 0
-        ? await tx.warehouseLot.findFirst({
-            where: { id: input.destinationWarehouseLotId || "", locationId: destinationLocation.id },
-          })
-        : await tx.warehouseLot.findFirst({
-            where: { locationId: destinationLocation.id, lotNumber: lot.lotNumber },
-          });
-      if (destinationLots.length > 0 && !shopLot) {
-        throw userError(`Select a lot at ${destinationLocation.name} before transferring stock.`);
-      }
-      if (!shopLot) {
-        const partnerPct = Math.round(Number(lot.partnerMarginRatio) * 10000) / 100;
-        shopLot = await tx.warehouseLot.create({
-          data: {
-            locationId: destinationLocation.id,
-            partnerId: lot.partnerId,
-            lotNumber: lot.lotNumber,
-            description: `Partner stock ${lot.lotNumber} (${lot.partner.name})`,
-            unitCost: lot.items[0] ? Number(lot.items[0].unitCostRate) : null,
-            partnerSharePct: partnerPct,
-            clientSharePct: Math.max(0, 100 - partnerPct),
-          },
-        });
-      } else if (destinationLots.length === 0 && shopLot.partnerId && shopLot.partnerId !== lot.partnerId) {
-        throw userError(`Shop lot ${shopLot.lotNumber} belongs to a different partner.`);
-      } else if (destinationLots.length === 0) {
-        const partnerPct = Math.round(Number(lot.partnerMarginRatio) * 10000) / 100;
-        const needsEquity =
-          lot.type === "CO_INVESTED_POOL" &&
-          (shopLot.partnerSharePct == null || Number(shopLot.partnerSharePct) >= 99.999);
-        if (!shopLot.partnerId || needsEquity) {
-          shopLot = await tx.warehouseLot.update({
-            where: { id: shopLot.id },
-            data: {
-              partnerId: lot.partnerId,
-              ...(needsEquity || !shopLot.partnerId
-                ? {
-                    partnerSharePct: partnerPct,
-                    clientSharePct: Math.max(0, 100 - partnerPct),
-                  }
-                : {}),
-            },
-          });
-        }
-      }
-
       const ownership = { ownershipType: "LOT" as const, partnershipLotId: lot.id };
       const ownershipKey = resolveOwnershipKey(ownership);
 
@@ -2526,12 +2424,12 @@ export async function pullPartnershipLotStockAction(raw: unknown) {
           },
         });
 
-        // Decrement warehouse lot stock
+        // Partnership lot is the source tag. Do not pick a warehouse lot.
         await tx.stockMovement.create({
           data: {
             productId: reqItem.productId,
             locationId: lot.warehouseId,
-            warehouseLotId: sourceWarehouseLotId,
+            warehouseLotId: null,
             partnershipLotId: lot.id,
             ownershipType: "LOT",
             ownershipKey,
@@ -2549,7 +2447,7 @@ export async function pullPartnershipLotStockAction(raw: unknown) {
           data: {
             productId: reqItem.productId,
             locationId: destinationLocation.id,
-            warehouseLotId: shopLot.id,
+            warehouseLotId: destinationWarehouseLotId,
             partnershipLotId: lot.id,
             ownershipType: "LOT",
             ownershipKey,
@@ -2666,23 +2564,20 @@ export async function obtainVmiStockFromLotAction(raw: unknown) {
     if (destinationLocation.id === lot.warehouseId) {
       throw userError("Choose a destination other than the lot warehouse.");
     }
-    const destinationLots = await prisma.warehouseLot.findMany({
-      where: { locationId: destinationLocation.id, isActive: true, deletedAt: null },
-      select: { id: true },
-    });
+    const tags = await loadPartnershipTagIndex();
+    const destinationLots = (
+      await prisma.warehouseLot.findMany({
+        where: { locationId: destinationLocation.id, isActive: true, deletedAt: null },
+        select: { id: true, lotNumber: true, description: true },
+      })
+    ).filter((row) => !isPartnershipTagLot(row, tags));
+    const destinationWarehouseLotId =
+      destinationLots.length > 0 ? input.destinationWarehouseLotId || null : null;
     if (
       destinationLots.length > 0 &&
-      !destinationLots.some((row) => row.id === (input.destinationWarehouseLotId || ""))
+      !destinationLots.some((row) => row.id === destinationWarehouseLotId)
     ) {
       throw userError(`Select a lot at ${destinationLocation.name} before receiving stock.`);
-    }
-    const sourceLots = await prisma.warehouseLot.findMany({
-      where: { locationId: lot.warehouseId, isActive: true, deletedAt: null },
-      select: { id: true },
-    });
-    const sourceWarehouseLotId = lot.warehouseLotId || input.sourceWarehouseLotId || null;
-    if (sourceLots.length > 0 && !sourceLots.some((row) => row.id === sourceWarehouseLotId)) {
-      throw userError(`Select the source lot at the partnership warehouse.`);
     }
 
     for (const req of input.items) {
@@ -2746,7 +2641,7 @@ export async function obtainVmiStockFromLotAction(raw: unknown) {
           data: {
             productId: req.productId,
             locationId: lot.warehouseId,
-            warehouseLotId: sourceWarehouseLotId,
+            warehouseLotId: null,
             partnershipLotId: lot.id,
             type: StockMovementType.TRANSFER_OUT,
             quantity: req.quantity,
@@ -2761,7 +2656,7 @@ export async function obtainVmiStockFromLotAction(raw: unknown) {
           data: {
             productId: req.productId,
             locationId: destinationLocation.id,
-            warehouseLotId: input.destinationWarehouseLotId || null,
+            warehouseLotId: destinationWarehouseLotId,
             type: StockMovementType.PURCHASE_IN,
             quantity: req.quantity,
             referenceType: "VMI_OBTAIN",
@@ -2775,7 +2670,7 @@ export async function obtainVmiStockFromLotAction(raw: unknown) {
         lineCreates.push({
           productId: req.productId,
           locationId: destinationLocation.id,
-          warehouseLotId: input.destinationWarehouseLotId || null,
+          warehouseLotId: destinationWarehouseLotId,
           quantity: req.quantity,
           unitCost,
           lineTotal,

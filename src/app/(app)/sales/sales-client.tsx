@@ -3367,50 +3367,62 @@ export default function SalesClient({
                   </div>
                 </div>
 
-                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md p-3 shadow-sm">
+                <div className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md p-3 shadow-sm min-w-0">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2 border-b border-slate-200 pb-1">
                     Invoice summary
                   </p>
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 text-[11px]">
-                    <span className="whitespace-nowrap text-slate-500">Packets</span>
-                    <span className="whitespace-nowrap text-right font-semibold tabular-nums text-slate-800">
-                      {committedItems.reduce((s, it) => s + (it.quantity || 0), 0).toLocaleString()}
-                    </span>
-                    <span className="whitespace-nowrap text-slate-500">Weight</span>
-                    <span className="whitespace-nowrap text-right font-semibold tabular-nums text-slate-800">
-                      {committedItems
-                        .reduce((s, it) => s + (it.quantity || 0) * (it.packetWeight || it.reamWeight || 0), 0)
-                        .toFixed(2)}{" "}
-                      kg
-                    </span>
-                    <span className="whitespace-nowrap text-slate-500">Subtotal</span>
-                    <span className="whitespace-nowrap text-right font-semibold tabular-nums">
-                      PKR {invoiceSubtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                    </span>
+                  <div className="space-y-1 text-[11px]">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="text-slate-500">Packets</span>
+                      <span className="shrink-0 text-right font-semibold tabular-nums text-slate-800">
+                        {committedItems.reduce((s, it) => s + (it.quantity || 0), 0).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="text-slate-500">Weight</span>
+                      <span className="shrink-0 text-right font-semibold tabular-nums text-slate-800">
+                        {committedItems
+                          .reduce((s, it) => s + (it.quantity || 0) * (it.packetWeight || it.reamWeight || 0), 0)
+                          .toFixed(2)}{" "}
+                        kg
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="text-slate-500">Subtotal</span>
+                      <span className="shrink-0 text-right font-semibold tabular-nums">
+                        PKR {invoiceSubtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
                     {numFreight > 0 ? (
-                      <>
-                        <span className="whitespace-nowrap text-slate-500">Freight</span>
-                        <span className="whitespace-nowrap text-right font-semibold tabular-nums">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <span className="text-slate-500">Freight</span>
+                        <span className="shrink-0 text-right font-semibold tabular-nums">
                           PKR {numFreight.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </span>
-                      </>
+                      </div>
                     ) : null}
-                    <span className="whitespace-nowrap border-t border-double border-slate-400 pt-1 font-bold uppercase">Total</span>
-                    <span className="whitespace-nowrap border-t border-double border-slate-400 pt-1 text-right font-bold tabular-nums">
-                      PKR {invoiceTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                    </span>
-                    <span className="whitespace-nowrap text-slate-500">Amount paid</span>
-                    <span className="whitespace-nowrap text-right font-semibold tabular-nums text-emerald-700">
-                      PKR {numPaid.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                    </span>
-                    <span className="whitespace-nowrap border-t border-slate-200 pt-1 font-bold">Balance due</span>
-                    <span
-                      className={`whitespace-nowrap border-t border-slate-200 pt-1 text-right font-bold tabular-nums ${
-                        balanceDue > 0 ? "text-rose-700" : "text-emerald-700"
-                      }`}
-                    >
-                      PKR {balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                    </span>
+                    <div className="flex items-baseline justify-between gap-3 border-t border-double border-slate-400 pt-1">
+                      <span className="font-bold uppercase">Total</span>
+                      <span className="shrink-0 text-right font-bold tabular-nums">
+                        PKR {invoiceTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="text-slate-500">Amount paid</span>
+                      <span className="shrink-0 text-right font-semibold tabular-nums text-emerald-700">
+                        PKR {numPaid.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-3 border-t border-slate-200 pt-1">
+                      <span className="font-bold">Balance due</span>
+                      <span
+                        className={`shrink-0 text-right font-bold tabular-nums ${
+                          balanceDue > 0 ? "text-rose-700" : "text-emerald-700"
+                        }`}
+                      >
+                        PKR {balanceDue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
                   </div>
                   <div className="mt-2 flex justify-end">
                     <span

@@ -44,15 +44,11 @@ interface PartnershipLotClientProps {
     name: string;
     lots?: Array<{ id: string; lotNumber: string; quantity: number }>;
   }>;
-  sourceLots?: Array<{ id: string; lotNumber: string; quantity: number }>;
-  linkedSourceLotId?: string | null;
 }
 
 export function PartnershipLotClient({
   initialData,
   destinationLocations,
-  sourceLots = [],
-  linkedSourceLotId = null,
 }: PartnershipLotClientProps) {
   const router = useRouter();
   const { lot, metrics, items, allocations, expenses, movements, payouts } = initialData;
@@ -791,8 +787,6 @@ export function PartnershipLotClient({
           partnerName={lot.partnerName}
           items={items}
           destinationLocations={destinationLocations}
-          sourceLots={sourceLots}
-          linkedSourceLotId={linkedSourceLotId}
         />
       )}
 
@@ -806,8 +800,6 @@ export function PartnershipLotClient({
           partnerName={lot.partnerName}
           items={items}
           destinationLocations={destinationLocations}
-          sourceLots={sourceLots}
-          linkedSourceLotId={linkedSourceLotId}
         />
       )}
 

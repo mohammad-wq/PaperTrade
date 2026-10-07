@@ -65,8 +65,11 @@ export function assertJournalBalanced(lines: JournalLineInput[]): void {
 export async function postJournal(
   params: PostJournalParams,
   tx: Prisma.TransactionClient,
+  options?: { requireBalance?: boolean },
 ): Promise<void> {
-  assertJournalBalanced(params.lines);
+  if (options?.requireBalance !== false) {
+    assertJournalBalanced(params.lines);
+  }
 
   for (const line of params.lines) {
     if (line.idempotencyKey) {

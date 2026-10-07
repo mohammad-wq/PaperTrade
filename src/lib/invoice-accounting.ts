@@ -1,4 +1,4 @@
-import { AccountType, LedgerAccountSubtype, PaymentMethod } from "@prisma/client";
+import { AccountType, PaymentMethod } from "@prisma/client";
 import { JournalLineInput } from "@/lib/ledger";
 import { getPaymentDestination } from "@/lib/payment-destinations";
 
@@ -40,7 +40,8 @@ export function buildOwnedPurchaseJournalLines(params: {
     const layerUnit = params.layerUnitCosts[idx] ?? item.unitCost;
     const lineTotal = item.quantity * layerUnit;
     lines.push({
-      accountType: AccountType.INVENTORY,
+      partyId: params.supplierId,
+      accountType: AccountType.PURCHASES,
       debit: lineTotal,
       credit: 0,
       description: `Inventory asset: ${params.invoiceNo} - ${item.description} @ ${layerUnit.toFixed(2)}`,
@@ -54,6 +55,7 @@ export function buildOwnedPurchaseJournalLines(params: {
       if (split.amount <= 0) continue;
       const dest = getPaymentDestination(split.method);
       lines.push({
+        partyId: params.supplierId,
         accountType: dest.accountType,
         debit: 0,
         credit: split.amount,
@@ -62,24 +64,6 @@ export function buildOwnedPurchaseJournalLines(params: {
         partnershipId: params.partnershipId,
       });
     }
-  }
-
-  if (params.unpaidBalance > 0.001) {
-    lines.push({
-      partyId:
-        params.isPartnerCapitalInjection && params.partnershipId
-          ? params.partnershipId
-          : params.supplierId,
-      accountType: AccountType.PAYABLE,
-      accountSubtype: LedgerAccountSubtype.TRADE_PAYABLE,
-      debit: 0,
-      credit: params.unpaidBalance,
-      description: params.isPartnerCapitalInjection
-        ? `Partner capital payable: ${params.invoiceNo}`
-        : `Accounts Payable: ${params.invoiceNo}`,
-      isPartnership: params.isPartnership,
-      partnershipId: params.partnershipId,
-    });
   }
 
   return lines;

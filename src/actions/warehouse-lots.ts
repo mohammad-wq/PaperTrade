@@ -11,6 +11,7 @@ import { revalidatePath } from "next/cache";
 import { getLotStockOnHand } from "@/lib/stock";
 
 import { revalidateWarehouseLots } from "@/lib/cached-lookups";
+import { isPartnershipTagLot, loadPartnershipTagIndex } from "@/lib/location-lots";
 import { canPerformAction } from "@/lib/auth/permissions";
 
 const createLotSchema = z.object({
@@ -33,7 +34,8 @@ export async function listWarehouseLotsAction(
   return runAction("warehouseLots.list", async () => {
     await requireSession();
 
-    const lots = await prisma.warehouseLot.findMany({
+    const tags = await loadPartnershipTagIndex();
+    const lots = (await prisma.warehouseLot.findMany({
       where: {
         ...(locationId ? { locationId } : {}),
         ...(includeInactive ? {} : { isActive: true, deletedAt: null }),
@@ -47,7 +49,7 @@ export async function listWarehouseLotsAction(
         },
       },
       orderBy: [{ isActive: "desc" }, { lotNumber: "asc" }],
-    });
+    })).filter((lot) => !isPartnershipTagLot(lot, tags));
 
     const lotIds = lots.map((l) => l.id);
     const stockSums =

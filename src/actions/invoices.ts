@@ -7,6 +7,7 @@ import { userError } from "@/lib/errors";
 import { assertStockDeductionsAvailable, assertStockAvailableForDeduction, getStockOnHand } from "@/lib/stock";
 import { getPartyBalance, postJournal } from "@/lib/ledger";
 import { allocateInwardFreightToLines, buildOwnedPurchaseJournalLines } from "@/lib/invoice-accounting";
+import { isPartnershipTagLot, loadPartnershipTagIndex } from "@/lib/location-lots";
 import { withResourceQueue, generateDocumentNumber } from "@/lib/concurrency";
 import { emitRealtimeEvent } from "@/lib/realtime";
 import { saleInvoiceSchema, updateSaleInvoiceSchema } from "@/schemas/sale-invoice";
@@ -770,7 +771,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
-              partyId: null,
+              partyId: targetCustomerId,
               accountType: dest.accountType,
               debit: split.amount,
               credit: 0,
@@ -786,27 +787,9 @@ export async function createSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // 2. Debits: Accounts Receivable (Trade Debtors) ONLY if an unpaid balance remains
       const unpaidBalance = Math.max(0, totalAmount - paidAmount);
-      if (unpaidBalance > 0.001) {
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetCustomerId,
-            accountType: AccountType.RECEIVABLE,
-            debit: unpaidBalance,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "SALE_INVOICE",
-            referenceId: invoice.id,
-            date: input.date,
-            description: `Accounts Receivable (Trade Debtors): Estimate ${invoice.invoiceNo} remaining balance`,
-            createdById: session.user.id,
-          },
-        });
-      }
 
-      // 3. Credits: Gross Revenue itemized per product
+      // Credits: each product on the customer. No accounts-receivable line.
       for (const item of input.items) {
         const p = saleProdMap.get(item.productId);
         const lineTotal = item.quantity * item.unitPrice;
@@ -814,7 +797,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
 
         await tx.ledgerEntry.create({
           data: {
-            partyId: null,
+            partyId: targetCustomerId,
             accountType: AccountType.SALES,
             accountSubtype: LedgerAccountSubtype.PRODUCT_SALES,
             debit: 0,
@@ -834,7 +817,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
       if (freight > 0) {
         await tx.ledgerEntry.create({
           data: {
-            partyId: null,
+            partyId: targetCustomerId,
             accountType: AccountType.SALES,
             accountSubtype: LedgerAccountSubtype.FREIGHT_REVENUE,
             debit: 0,
@@ -850,57 +833,7 @@ export async function createSaleInvoiceAction(raw: unknown) {
         });
       }
 
-      // 5. Balanced Double-Entry for COGS and Inventory Asset Reduction (IFRS/GAAP)
-      // Dr Cost of Goods Sold (COGS) [EXPENSE]
-      // Cr Inventory on Hand [INVENTORY]
-      for (const item of resolvedItems) {
-        if (!item.cogsAmount || item.cogsAmount <= 0) continue;
-        if (item.lotId) {
-          const lot = await tx.partnershipLot.findUnique({
-            where: { id: item.lotId },
-            select: { archetype: true, type: true },
-          });
-          if (lot && partnershipArchetypeFromLot(lot) === "CONSIGNMENT") {
-            continue;
-          }
-        }
-        const p = saleProdMap.get(item.productId);
-        const prodName = p?.productNo ? `[${p.productNo}] ${p.name}` : p?.name || "Product";
-
-        // Debit COGS
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.COGS,
-            debit: item.cogsAmount,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "SALE_INVOICE",
-            referenceId: invoice.id,
-            date: input.date,
-            description: `Cost of Goods Sold (COGS): ${prodName} (Qty: ${item.quantity} ${p?.unit || "pkts"}) on Estimate ${invoice.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-
-        // Credit Inventory Asset
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.INVENTORY,
-            debit: 0,
-            credit: item.cogsAmount,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "SALE_INVOICE",
-            referenceId: invoice.id,
-            date: input.date,
-            description: `Inventory Asset Reduction: ${prodName} (Qty: ${item.quantity} ${p?.unit || "pkts"}) on Estimate ${invoice.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-      }
+      // COGS stays on the sale line. It is not a ledger row.
 
       // Payment row + allocation for settlement status (cash journal stays on the invoice; no duplicate PAYMENT ledger).
       if (paidAmount > 0.001) {
@@ -1439,7 +1372,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
-              partyId: null,
+              partyId: targetCustomerId,
               accountType: AccountType.CASH,
               debit: split.amount,
               credit: 0,
@@ -1455,27 +1388,9 @@ export async function updateSaleInvoiceAction(raw: unknown) {
         }
       }
 
-      // 2. Debits: Accounts Receivable (Trade Debtors) ONLY if an unpaid balance remains
       const unpaidBalance = Math.max(0, totalAmount - paidAmount);
-      if (unpaidBalance > 0.001) {
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: targetCustomerId,
-            accountType: AccountType.RECEIVABLE,
-            debit: unpaidBalance,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "SALE_INVOICE",
-            referenceId: existing.id,
-            date: input.date,
-            description: `Accounts Receivable (Trade Debtors): Estimate ${existing.invoiceNo} remaining balance`,
-            createdById: session.user.id,
-          },
-        });
-      }
 
-      // 3. Credits: Gross Revenue itemized per product
+      // Credits: each product on the customer. No accounts-receivable line.
       for (const item of input.items) {
         const p = editProdMap.get(item.productId);
         const lineTotal = item.quantity * item.unitPrice;
@@ -1483,7 +1398,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
 
         await tx.ledgerEntry.create({
           data: {
-            partyId: null,
+            partyId: targetCustomerId,
             accountType: AccountType.SALES,
             debit: 0,
             credit: lineTotal,
@@ -1502,7 +1417,7 @@ export async function updateSaleInvoiceAction(raw: unknown) {
       if (freight > 0) {
         await tx.ledgerEntry.create({
           data: {
-            partyId: null,
+            partyId: targetCustomerId,
             accountType: AccountType.SALES,
             debit: 0,
             credit: freight,
@@ -1512,56 +1427,6 @@ export async function updateSaleInvoiceAction(raw: unknown) {
             referenceId: existing.id,
             date: input.date,
             description: `Freight Outward (Transport Charges) on Estimate ${existing.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-      }
-
-      // 5. Balanced Double-Entry for COGS and Inventory Asset Reduction (IFRS/GAAP)
-      // Dr Cost of Goods Sold (COGS) [EXPENSE]
-      // Cr Inventory on Hand [INVENTORY]
-      for (const item of resolvedUpdateItems) {
-        if (!item.cogsAmount || item.cogsAmount <= 0) continue;
-        if (item.lotId) {
-          const lot = await tx.partnershipLot.findUnique({
-            where: { id: item.lotId },
-            select: { archetype: true, type: true },
-          });
-          if (lot && partnershipArchetypeFromLot(lot) === "CONSIGNMENT") {
-            continue;
-          }
-        }
-        const p = editProdMap.get(item.productId);
-        const prodName = p?.productNo ? `[${p.productNo}] ${p.name}` : p?.name || "Product";
-
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.COGS,
-            debit: item.cogsAmount,
-            credit: 0,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "SALE_INVOICE",
-            referenceId: existing.id,
-            date: input.date,
-            description: `Cost of Goods Sold (COGS): ${prodName} (Qty: ${item.quantity} ${p?.unit || "pkts"}) on Estimate ${existing.invoiceNo}`,
-            createdById: session.user.id,
-          },
-        });
-
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: null,
-            accountType: AccountType.INVENTORY,
-            debit: 0,
-            credit: item.cogsAmount,
-            isPartnership: isPartnershipTx,
-            partnershipId,
-            referenceType: "SALE_INVOICE",
-            referenceId: existing.id,
-            date: input.date,
-            description: `Inventory Asset Reduction: ${prodName} (Qty: ${item.quantity} ${p?.unit || "pkts"}) on Estimate ${existing.invoiceNo}`,
             createdById: session.user.id,
           },
         });
@@ -1960,6 +1825,7 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
         lineTotal: number;
       }> = [];
 
+      const partnershipTags = await loadPartnershipTagIndex();
       for (const item of input.items) {
         const itemLoc = isPartnershipPO
           ? fallbackLocationId
@@ -2016,33 +1882,16 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
                 });
               }
               // Ensure receiving Shop location has a corresponding partner lot with the same lot number
-              let receivingLot = await tx.warehouseLot.findFirst({
+              const receivingLot = await tx.warehouseLot.findFirst({
                 where: {
                   locationId: itemLoc,
                   lotNumber: srcLot.lotNumber,
                 },
               });
-              if (!receivingLot) {
-                receivingLot = await tx.warehouseLot.create({
-                  data: {
-                    locationId: itemLoc,
-                    partnerId: partnerIdForLot,
-                    lotNumber: srcLot.lotNumber,
-                    description: `Partner lot from ${srcLot.location?.name || "Warehouse"} [Lot ${srcLot.lotNumber}]`,
-                    unitCost: item.unitCost,
-                    partnerSharePct: srcLot.partnerSharePct ?? defaultPartnerSharePct,
-                    clientSharePct: srcLot.clientSharePct ?? defaultClientSharePct,
-                  },
-                });
-              } else if (!receivingLot.partnerId) {
-                receivingLot = await tx.warehouseLot.update({
-                  where: { id: receivingLot.id },
-                  data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
-                });
-              } else if (receivingLot.partnerId !== partnerIdForLot) {
-                throw userError(`Shop lot ${receivingLot.lotNumber} belongs to a different partner.`);
-              }
-              finalLotId = receivingLot.id;
+              finalLotId =
+                receivingLot && !isPartnershipTagLot(receivingLot, partnershipTags)
+                  ? receivingLot.id
+                  : null;
             }
           } else if (finalLotId) {
             const givenLot = await tx.warehouseLot.findUnique({ where: { id: finalLotId } });
@@ -2057,61 +1906,15 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
                   throw userError(`Lot ${givenLot.lotNumber} belongs to a different partner.`);
                 }
               } else {
-                let receivingLot = await tx.warehouseLot.findFirst({
+                const receivingLot = await tx.warehouseLot.findFirst({
                   where: { locationId: itemLoc, lotNumber: givenLot.lotNumber },
                 });
-                if (!receivingLot) {
-                  receivingLot = await tx.warehouseLot.create({
-                    data: {
-                      locationId: itemLoc,
-                      partnerId: partnerIdForLot,
-                      lotNumber: givenLot.lotNumber,
-                      description: `Partner lot [Lot ${givenLot.lotNumber}]`,
-                      unitCost: item.unitCost,
-                      partnerSharePct: defaultPartnerSharePct,
-                      clientSharePct: defaultClientSharePct,
-                    },
-                  });
-                } else if (!receivingLot.partnerId) {
-                  receivingLot = await tx.warehouseLot.update({
-                    where: { id: receivingLot.id },
-                    data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
-                  });
-                } else if (receivingLot.partnerId !== partnerIdForLot) {
-                  throw userError(`Shop lot ${receivingLot.lotNumber} belongs to a different partner.`);
-                }
-                finalLotId = receivingLot.id;
+                finalLotId =
+                  receivingLot && !isPartnershipTagLot(receivingLot, partnershipTags)
+                    ? receivingLot.id
+                    : null;
               }
             }
-          } else {
-            // Auto-assign or create a partner lot at the receiving location
-            const defaultLotNum = `${supplierParty?.name?.replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase() || "PARTNER"}-SHOP`;
-            let receivingLot = await tx.warehouseLot.findFirst({
-              where: { locationId: itemLoc, lotNumber: defaultLotNum },
-            });
-            if (!receivingLot) {
-              receivingLot = await tx.warehouseLot.create({
-                data: {
-                  locationId: itemLoc,
-                  partnerId: partnerIdForLot,
-                  lotNumber: defaultLotNum,
-                  description: `Partner inventory for ${supplierParty?.name || "Partner"} at ${itemLoc}`,
-                  unitCost: item.unitCost,
-                  partnerSharePct: defaultPartnerSharePct,
-                  clientSharePct: defaultClientSharePct,
-                },
-              });
-              revalidateWarehouseLots();
-            } else if (!receivingLot.partnerId) {
-              receivingLot = await tx.warehouseLot.update({
-                where: { id: receivingLot.id },
-                data: { partnerId: partnerIdForLot, unitCost: item.unitCost },
-              });
-              revalidateWarehouseLots();
-            } else if (receivingLot.partnerId !== partnerIdForLot) {
-              throw userError(`Shop lot ${receivingLot.lotNumber} belongs to a different partner.`);
-            }
-            finalLotId = receivingLot.id;
           }
         }
 
@@ -2120,12 +1923,15 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           select: {
             name: true,
             type: true,
-            warehouseLots: { where: { isActive: true, deletedAt: null }, select: { id: true }, take: 1 },
+            warehouseLots: {
+              where: { isActive: true, deletedAt: null },
+              select: { id: true, lotNumber: true, description: true },
+            },
           },
         });
         if (
           receivingLocationForLot?.type === "WAREHOUSE" &&
-          receivingLocationForLot.warehouseLots.length > 0 &&
+          receivingLocationForLot.warehouseLots.some((lot) => !isPartnershipTagLot(lot, partnershipTags)) &&
           !finalLotId
         ) {
           throw userError(
@@ -2142,9 +1948,6 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           unitCost: item.unitCost,
           lineTotal: item.quantity * item.unitCost,
         });
-        if (srcLot && srcLot.locationId !== itemLoc && !finalLotId) {
-          throw userError(`Could not resolve a partner lot at the receiving location for ${srcLot.lotNumber}.`);
-        }
       }
 
       const layerUnitCosts = allocateInwardFreightToLines(
@@ -2323,6 +2126,7 @@ export async function createPurchaseInvoiceAction(raw: unknown) {
           lines: purchaseJournalLines,
         },
         tx,
+        { requireBalance: false },
       );
 
       // Record Payment record for receipt numbering and payment history (NO duplicate ledger entries)
@@ -2635,6 +2439,7 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
         where: { invoiceId: existing.id },
       });
 
+      const partnershipTags = await loadPartnershipTagIndex();
       for (const item of input.items) {
         const itemLoc = item.locationId || fallbackLocationId;
         const lotId = item.warehouseLotId || input.warehouseLotId || null;
@@ -2643,12 +2448,15 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
           select: {
             name: true,
             type: true,
-            warehouseLots: { where: { isActive: true, deletedAt: null }, select: { id: true }, take: 1 },
+            warehouseLots: {
+              where: { isActive: true, deletedAt: null },
+              select: { id: true, lotNumber: true, description: true },
+            },
           },
         });
         if (
           receivingLocationForLot?.type === "WAREHOUSE" &&
-          receivingLocationForLot.warehouseLots.length > 0 &&
+          receivingLocationForLot.warehouseLots.some((lot) => !isPartnershipTagLot(lot, partnershipTags)) &&
           !lotId
         ) {
           throw userError(
@@ -2782,6 +2590,7 @@ export async function updatePurchaseInvoiceAction(raw: unknown) {
           }),
         },
         tx,
+        { requireBalance: false },
       );
 
       // 8. Auto Payment record for sequence and allocation (WITHOUT duplicate ledger entries)

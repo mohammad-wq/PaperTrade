@@ -33,8 +33,6 @@ interface PullPartnershipStockModalProps {
     name: string;
     lots?: Array<{ id: string; lotNumber: string; quantity: number }>;
   }>;
-  sourceLots?: Array<{ id: string; lotNumber: string; quantity: number }>;
-  linkedSourceLotId?: string | null;
 }
 
 export function PullPartnershipStockModal({
@@ -46,14 +44,11 @@ export function PullPartnershipStockModal({
   partnerName,
   items,
   destinationLocations,
-  sourceLots = [],
-  linkedSourceLotId = null,
 }: PullPartnershipStockModalProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [destinationLocationId, setDestinationLocationId] = useState(destinationLocations[0]?.id || "");
   const [destinationWarehouseLotId, setDestinationWarehouseLotId] = useState("");
-  const [sourceWarehouseLotId, setSourceWarehouseLotId] = useState(linkedSourceLotId || "");
   const [notes, setNotes] = useState("");
   const destinationLots =
     destinationLocations.find((location) => location.id === destinationLocationId)?.lots ?? [];
@@ -94,10 +89,6 @@ export function PullPartnershipStockModal({
       toast.error("Select a lot at the destination. This location already has lots.");
       return;
     }
-    if (!linkedSourceLotId && sourceLots.length > 0 && !sourceWarehouseLotId) {
-      toast.error("Select the source lot at the partnership warehouse.");
-      return;
-    }
     if (totalPullItems.length === 0) {
       toast.error("Please enter a quantity greater than 0 for at least one item.");
       return;
@@ -109,7 +100,6 @@ export function PullPartnershipStockModal({
         lotId,
         destinationLocationId,
         destinationWarehouseLotId: destinationWarehouseLotId || null,
-        sourceWarehouseLotId: sourceWarehouseLotId || linkedSourceLotId || null,
         items: totalPullItems.map((it) => ({
           productId: it.productId,
           quantity: it.quantity,
@@ -182,24 +172,6 @@ export function PullPartnershipStockModal({
               >
                 <option value="">Select lot</option>
                 {destinationLots.map((lot) => (
-                  <option key={lot.id} value={lot.id}>
-                    Lot {lot.lotNumber} — {lot.quantity}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {!linkedSourceLotId && sourceLots.length > 0 && (
-            <div>
-              <Label className="text-xs font-semibold">Source lot</Label>
-              <select
-                value={sourceWarehouseLotId}
-                onChange={(e) => setSourceWarehouseLotId(e.target.value)}
-                className="w-full mt-1 px-3 py-2 text-sm border rounded-md bg-white"
-              >
-                <option value="">Select lot</option>
-                {sourceLots.map((lot) => (
                   <option key={lot.id} value={lot.id}>
                     Lot {lot.lotNumber} — {lot.quantity}
                   </option>

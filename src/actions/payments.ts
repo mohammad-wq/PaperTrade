@@ -371,7 +371,7 @@ export async function updatePaymentAction(raw: unknown) {
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
-              partyId: null,
+              partyId: input.partyId,
               accountType: dest.accountType,
               debit: split.amount,
               credit: 0,
@@ -386,48 +386,16 @@ export async function updatePaymentAction(raw: unknown) {
           });
         }
 
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: input.partyId,
-            accountType: AccountType.RECEIVABLE,
-            debit: 0,
-            credit: totalAmount,
-            isPartnership,
-            partnershipId,
-            referenceType: "PAYMENT",
-            referenceId: updatedPayment.id,
-            date: input.date,
-            description: `Payment received from customer against Voucher #${updatedPayment.receiptNo}`,
-            createdById: session.user.id,
-          },
-        });
-
       } else {
         const party = await tx.party.findUnique({ where: { id: input.partyId } });
         if (!party) throw userError("Party not found.");
-
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: input.partyId,
-            accountType: AccountType.PAYABLE,
-            debit: totalAmount,
-            credit: 0,
-            isPartnership,
-            partnershipId,
-            referenceType: "PAYMENT",
-            referenceId: updatedPayment.id,
-            date: input.date,
-            description: `Payment to supplier against Voucher #${updatedPayment.receiptNo}`,
-            createdById: session.user.id,
-          },
-        });
 
         for (const split of splitsToRecord) {
           const dest = getPaymentDestination(split.method);
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
-              partyId: null,
+              partyId: input.partyId,
               accountType: dest.accountType,
               debit: 0,
               credit: split.amount,
@@ -720,7 +688,7 @@ export async function createPaymentAction(raw: unknown) {
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
-              partyId: null,
+              partyId: party.id,
               accountType: dest.accountType,
               debit: split.amount,
               credit: 0,
@@ -735,45 +703,14 @@ export async function createPaymentAction(raw: unknown) {
           });
         }
 
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: party.id,
-            accountType: AccountType.RECEIVABLE,
-            debit: 0,
-            credit: totalAmount,
-            isPartnership,
-            partnershipId,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Payment received from customer against Voucher #${receiptNo}`,
-            createdById: session.user.id,
-          },
-        });
       } else {
         // Supplier Payment: decreases Accounts Payable (Debit), decreases Cash/Bank/Wallet (Credit)
-        await tx.ledgerEntry.create({
-          data: {
-            partyId: party.id,
-            accountType: AccountType.PAYABLE,
-            debit: totalAmount,
-            credit: 0,
-            isPartnership,
-            partnershipId,
-            referenceType: "PAYMENT",
-            referenceId: payment.id,
-            date: input.date,
-            description: `Payment to supplier against Voucher #${receiptNo}`,
-            createdById: session.user.id,
-          },
-        });
-
         for (const split of splitsToRecord) {
           const dest = getPaymentDestination(split.method);
           const refDesc = split.reference ? ` [Ref: ${split.reference}]` : "";
           await tx.ledgerEntry.create({
             data: {
-              partyId: null,
+              partyId: party.id,
               accountType: dest.accountType,
               debit: 0,
               credit: split.amount,

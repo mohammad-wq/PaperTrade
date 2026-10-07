@@ -27,8 +27,6 @@ export function VmiObtainFromLotModal({
   partnerName,
   items,
   destinationLocations,
-  sourceLots = [],
-  linkedSourceLotId = null,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -41,14 +39,11 @@ export function VmiObtainFromLotModal({
     name: string;
     lots?: Array<{ id: string; lotNumber: string; quantity: number }>;
   }>;
-  sourceLots?: Array<{ id: string; lotNumber: string; quantity: number }>;
-  linkedSourceLotId?: string | null;
 }) {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [destinationLocationId, setDestinationLocationId] = useState(destinationLocations[0]?.id || "");
   const [destinationWarehouseLotId, setDestinationWarehouseLotId] = useState("");
-  const [sourceWarehouseLotId, setSourceWarehouseLotId] = useState(linkedSourceLotId || "");
   const destinationLots =
     destinationLocations.find((location) => location.id === destinationLocationId)?.lots ?? [];
   const [dateTime, setDateTime] = useState(() => getLocalDateTimeInputValue());
@@ -73,10 +68,6 @@ export function VmiObtainFromLotModal({
       toast.error("Select a lot at the destination. This location already has lots.");
       return;
     }
-    if (!linkedSourceLotId && sourceLots.length > 0 && !sourceWarehouseLotId) {
-      toast.error("Select the source lot at the partnership warehouse.");
-      return;
-    }
     if (lines.length === 0) {
       toast.error("Enter quantity for at least one product.");
       return;
@@ -87,7 +78,6 @@ export function VmiObtainFromLotModal({
         lotId,
         destinationLocationId,
         destinationWarehouseLotId: destinationWarehouseLotId || null,
-        sourceWarehouseLotId: sourceWarehouseLotId || linkedSourceLotId || null,
         date: new Date(dateTime),
         amountPaid,
         notes: notes.trim() || null,
@@ -147,23 +137,6 @@ export function VmiObtainFromLotModal({
               >
                 <option value="">Select lot</option>
                 {destinationLots.map((lot) => (
-                  <option key={lot.id} value={lot.id}>
-                    Lot {lot.lotNumber} — {lot.quantity}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          {!linkedSourceLotId && sourceLots.length > 0 && (
-            <div>
-              <Label className="text-xs">Source lot</Label>
-              <select
-                className="w-full border rounded-md text-xs px-2 py-2 mt-1"
-                value={sourceWarehouseLotId}
-                onChange={(e) => setSourceWarehouseLotId(e.target.value)}
-              >
-                <option value="">Select lot</option>
-                {sourceLots.map((lot) => (
                   <option key={lot.id} value={lot.id}>
                     Lot {lot.lotNumber} — {lot.quantity}
                   </option>
